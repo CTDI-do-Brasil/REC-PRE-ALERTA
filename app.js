@@ -24,6 +24,7 @@ const defaultModels = [
 let preAlertaCache = new Map();
 let currentPendingUnit = null;
 let currentUser = null; // { username, level: 'admin' | 'operator' }
+let isProcessingRecebimento = false;
 // Backend server (presign + DB) - change if deployed elsewhere
 const SERVER_URL = localStorage.getItem('server_url') || (window.location.protocol === 'file:' ? 'http://localhost:4000' : window.location.origin);
 
@@ -714,6 +715,7 @@ function validateModelFields(modelo, serial, pon, mac) {
 }
 
 async function checkDuplicity(s, p, m) {
+    // 1. Check local browser cache
     const keys = await dbRecebidos.keys();
     for (const key of keys) {
         const item = await dbRecebidos.getItem(key);
@@ -721,6 +723,24 @@ async function checkDuplicity(s, p, m) {
         if ([s, p, m].some(v => v && vals.includes(v))) {
             return item;
         }
+    }
+    // 2. Check PostgreSQL backend
+    try {
+        const q = `${SERVER_URL.replace(/\/$/, '')}/api/recebimentos/check?serial=${encodeURIComponent(s || '')}&pon=${encodeURIComponent(p || '')}&mac=${encodeURIComponent(m || '')}`;
+        const res = await fetch(q);
+        if (res.ok) {
+            const json = await res.json();
+            if (json.duplicate) {
+                return {
+                    serial: json.data.serial,
+                    pon: json.data.pon,
+                    mac: json.data.mac,
+                    dataHora: json.data.datahora
+                };
+            }
+        }
+    } catch (err) {
+        console.error('Backend duplicity check failed:', err);
     }
     return null;
 }
@@ -741,84 +761,108 @@ async function checkPreAlertaOnServer(value) {
 }
 
 async function processRecebimento() {
-    hideMessage();
-    const modelo = document.getElementById('modelo').value;
-    const isException = (window.modelFieldsConfig[modelo] === 2);
+    if (isProcessingRecebimento) return;
+    isProcessingRecebimento = true;
 
-    const serial = document.getElementById('serial').value.trim().toUpperCase();
-    const pon = isException ? '' : document.getElementById('pon').value.trim().toUpperCase();
-    const mac = document.getElementById('mac').value.trim().toUpperCase();
+    const btnReceber = document.getElementById('btn-receber');
+    if (btnReceber) btnReceber.disabled = true;
 
-    if (!serial || (!isException && !pon) || !mac) {
-        showMessage('Preencha todos os campos necessarios para receber a unidade.', 'error');
-        return;
-    }
+    try {
+        hideMessage();
+        const modelo = document.getElementById('modelo').value;
+        const isException = (window.modelFieldsConfig[modelo] === 2);
 
-    if (serial === mac) {
-        showMessage('ERRO: O SERIAL e o MAC nao podem ser iguais. Limpe o campo e bipe novamente.', 'error');
-        return;
-    }
-    if (!isException && (serial === pon || pon === mac)) {
-        showMessage('ERRO: SERIAL, PON e MAC devem ser valores diferentes. Verifique a bipagem.', 'error');
-        return;
-    }
+        const serial = document.getElementById('serial').value.trim().toUpperCase();
+        const pon = isException ? '' : document.getElementById('pon').value.trim().toUpperCase();
+        const mac = document.getElementById('mac').value.trim().toUpperCase();
 
-    const validacao = validateModelFields(modelo, serial, pon, mac);
-    if (!validacao.valid) {
-        showMessage('ERRO: ' + validacao.error, 'error');
-        return;
-    }
+        if (!serial || (!isException && !pon) || !mac) {
+            showMessage('Preencha todos os campos necessarios para receber a unidade.', 'error');
+            isProcessingRecebimento = false;
+            if (btnReceber) btnReceber.disabled = false;
+            return;
+        }
 
-    const duplicate = await checkDuplicity(serial, pon, mac);
-    if (duplicate) {
-        const dateStr = new Date(duplicate.dataHora).toLocaleString('pt-BR');
-        showMessage('UNIDADE JA RECEBIDA (' + dateStr + ')', 'error');
-        document.getElementById('serial').value = '';
-        if (!isException) document.getElementById('pon').value = '';
-        document.getElementById('mac').value = '';
-        document.getElementById('serial').focus();
-        return;
-    }
+        if (serial === mac) {
+            showMessage('ERRO: O SERIAL e o MAC nao podem ser iguais. Limpe o campo e bipe novamente.', 'error');
+            isProcessingRecebimento = false;
+            if (btnReceber) btnReceber.disabled = false;
+            return;
+        }
+        if (!isException && (serial === pon || pon === mac)) {
+            showMessage('ERRO: SERIAL, PON e MAC devem ser valores diferentes. Verifique a bipagem.', 'error');
+            isProcessingRecebimento = false;
+            if (btnReceber) btnReceber.disabled = false;
+            return;
+        }
 
-    const unitData = {
-        id: Date.now().toString(),
-        modelo,
-        serial,
-        pon,
-        mac,
-        dataHora: new Date().toISOString(),
-        usuario: currentUser ? currentUser.username : 'DESCONHECIDO'
-    };
+        const validacao = validateModelFields(modelo, serial, pon, mac);
+        if (!validacao.valid) {
+            showMessage('ERRO: ' + validacao.error, 'error');
+            isProcessingRecebimento = false;
+            if (btnReceber) btnReceber.disabled = false;
+            return;
+        }
 
-    let preAlertaMatch = null;
-    let matchedValue = '';
+        const duplicate = await checkDuplicity(serial, pon, mac);
+        if (duplicate) {
+            const dateStr = new Date(duplicate.dataHora || duplicate.datahora).toLocaleString('pt-BR');
+            showMessage('UNIDADE JA RECEBIDA (' + dateStr + ')', 'error');
+            document.getElementById('serial').value = '';
+            if (!isException) document.getElementById('pon').value = '';
+            document.getElementById('mac').value = '';
+            document.getElementById('serial').focus();
+            isProcessingRecebimento = false;
+            if (btnReceber) btnReceber.disabled = false;
+            return;
+        }
 
-    // Check pre-alerta sequentially on PostgreSQL database
-    preAlertaMatch = await checkPreAlertaOnServer(serial);
-    if (preAlertaMatch) {
-        matchedValue = serial;
-    } else if (pon) {
-        preAlertaMatch = await checkPreAlertaOnServer(pon);
-        if (preAlertaMatch) matchedValue = pon;
-    }
-    if (!preAlertaMatch && mac) {
-        preAlertaMatch = await checkPreAlertaOnServer(mac);
-        if (preAlertaMatch) matchedValue = mac;
-    }
+        const unitData = {
+            id: Date.now().toString(),
+            modelo,
+            serial,
+            pon,
+            mac,
+            dataHora: new Date().toISOString(),
+            usuario: currentUser ? currentUser.username : 'DESCONHECIDO'
+        };
 
-    if (preAlertaMatch) {
-        unitData.noPreAlerta = true;
-        unitData.matchedValue = matchedValue;
-        unitData.codigo = preAlertaMatch.codigo;
-        unitData.descricao = preAlertaMatch.descricao;
-        unitData.fabricante = preAlertaMatch.fabricante;
-        await saveRecebimento(unitData);
-        showMessage('RECEBIDO', 'success');
-        setTimeout(hideMessage, 2000);
-    } else {
-        unitData.noPreAlerta = false;
-        currentPendingUnit = unitData;
-        document.getElementById('modal-segregar').classList.remove('hidden');
+        let preAlertaMatch = null;
+        let matchedValue = '';
+
+        // Check pre-alerta sequentially on PostgreSQL database
+        preAlertaMatch = await checkPreAlertaOnServer(serial);
+        if (preAlertaMatch) {
+            matchedValue = serial;
+        } else if (pon) {
+            preAlertaMatch = await checkPreAlertaOnServer(pon);
+            if (preAlertaMatch) matchedValue = pon;
+        }
+        if (!preAlertaMatch && mac) {
+            preAlertaMatch = await checkPreAlertaOnServer(mac);
+            if (preAlertaMatch) matchedValue = mac;
+        }
+
+        if (preAlertaMatch) {
+            unitData.noPreAlerta = true;
+            unitData.matchedValue = matchedValue;
+            unitData.codigo = preAlertaMatch.codigo;
+            unitData.descricao = preAlertaMatch.descricao;
+            unitData.fabricante = preAlertaMatch.fabricante;
+            await saveRecebimento(unitData);
+            showMessage('RECEBIDO', 'success');
+            setTimeout(hideMessage, 2000);
+            isProcessingRecebimento = false;
+            if (btnReceber) btnReceber.disabled = false;
+        } else {
+            unitData.noPreAlerta = false;
+            currentPendingUnit = unitData;
+            document.getElementById('modal-segregar').classList.remove('hidden');
+        }
+    } catch (err) {
+        console.error(err);
+        isProcessingRecebimento = false;
+        if (btnReceber) btnReceber.disabled = false;
     }
 }
 
@@ -828,6 +872,9 @@ async function confirmSegregar() {
         currentPendingUnit = null;
     }
     document.getElementById('modal-segregar').classList.add('hidden');
+    isProcessingRecebimento = false;
+    const btnReceber = document.getElementById('btn-receber');
+    if (btnReceber) btnReceber.disabled = false;
 }
 
 async function saveRecebimento(unitData) {

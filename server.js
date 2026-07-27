@@ -203,6 +203,28 @@ app.get('/api/pre-alerta/check', async (req, res) => {
   }
 });
 
+// Check duplicity of scans in Postgres
+app.get('/api/recebimentos/check', async (req, res) => {
+  const { serial, pon, mac } = req.query;
+  try {
+    const result = await pool.query(
+      `SELECT * FROM recebimentos 
+       WHERE (serial IS NOT NULL AND serial = $1)
+          OR (pon IS NOT NULL AND pon = $2)
+          OR (mac IS NOT NULL AND mac = $3)
+       LIMIT 1`,
+      [serial || null, pon || null, mac || null]
+    );
+    if (result.rows.length > 0) {
+      return res.json({ duplicate: true, data: result.rows[0] });
+    }
+    res.json({ duplicate: false });
+  } catch (err) {
+    console.error('Error checking duplicity:', err);
+    res.status(500).json({ error: 'DB check error' });
+  }
+});
+
 // Save scan results
 app.post('/api/recebimentos', async (req, res) => {
   const body = req.body;
