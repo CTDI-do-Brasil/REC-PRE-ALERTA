@@ -60,6 +60,23 @@ async function ensureDBAndMinIO() {
 
     // Ensure the auto-increment 'ordem' column exists for existing tables
     await client.query(`ALTER TABLE recebimentos ADD COLUMN IF NOT EXISTS ordem SERIAL`);
+
+    await client.query(`CREATE TABLE IF NOT EXISTS usuarios (
+      username TEXT PRIMARY KEY,
+      password TEXT,
+      level TEXT,
+      criado_em TIMESTAMP
+    )`);
+
+    const userCount = await client.query('SELECT COUNT(*)::int as count FROM usuarios');
+    if (userCount.rows[0].count === 0) {
+      await client.query(`
+        INSERT INTO usuarios(username, password, level, criado_em)
+        VALUES('RODRIGO.BARRETO', 'admin', 'admin', NOW())
+      `);
+      console.log('Default admin user created.');
+    }
+
     console.log('Postgres tables verified/created successfully.');
   } catch (err) {
     console.error('Error establishing database tables:', err);
@@ -257,6 +274,78 @@ app.delete('/api/recebimentos/clear', async (req, res) => {
   } catch (err) {
     console.error('Error clearing recebimentos:', err);
     res.status(500).json({ error: 'Failed to clear recebimentos.' });
+  }
+});
+
+// User management routes
+
+// Get all users
+app.get('/api/usuarios', async (req, res) => {
+  try {
+    const result = await pool.query('SELECT username, level, criado_em FROM usuarios ORDER BY username ASC');
+    res.json(result.rows);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Database error fetching users.' });
+  }
+});
+
+// Create/Update user
+app.post('/api/usuarios', async (req, res) => {
+  const { username, password, level } = req.body;
+  if (!username || !password || !level) {
+    return res.status(400).json({ error: 'Missing required fields' });
+  }
+  try {
+    await pool.query(
+      `INSERT INTO usuarios(username, password, level, criado_em)
+       VALUES($1, $2, $3, NOW())
+       ON CONFLICT (username) DO UPDATE SET
+         password = EXCLUDED.password,
+         level = EXCLUDED.level`,
+      [username.trim().toUpperCase(), password, level]
+    );
+    res.json({ ok: true });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Database error saving user.' });
+  }
+});
+
+// Delete user
+app.delete('/api/usuarios/:username', async (req, res) => {
+  const { username } = req.params;
+  if (username.toUpperCase() === 'RODRIGO.BARRETO') {
+    return res.status(400).json({ error: 'Cannot delete default admin' });
+  }
+  try {
+    await pool.query('DELETE FROM usuarios WHERE username = $1', [username.toUpperCase()]);
+    res.json({ ok: true });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Database error deleting user.' });
+  }
+});
+
+// User login authentication
+app.post('/api/usuarios/login', async (req, res) => {
+  const { username, password } = req.body;
+  if (!username || !password) return res.status(400).json({ error: 'Missing credentials' });
+  try {
+    const result = await pool.query(
+      'SELECT username, level, password FROM usuarios WHERE username = $1',
+      [username.toUpperCase()]
+    );
+    if (result.rows.length > 0 && result.rows[0].password === password) {
+      return res.json({
+        username: result.rows[0].username,
+        level: result.rows[0].level
+      });
+    }
+    res.status(401).json({ error: 'Invalid credentials' });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Database error during login.' });
   }
 });
 

@@ -60,17 +60,23 @@ function validateUsernameFormat(username) {
 }
 
 async function initUsuarios() {
-    const keys = await dbUsuarios.keys();
-    if (keys.length === 0) {
-        await dbUsuarios.setItem(DEFAULT_ADMIN.username, DEFAULT_ADMIN);
-    }
+    // No-op since backend auto-creates default admin in Postgres
 }
 
 async function doLogin(username, password) {
     const uname = username.trim().toUpperCase();
-    const user = await dbUsuarios.getItem(uname);
-    if (user && user.password === password) {
-        return user;
+    try {
+        const q = `${SERVER_URL.replace(/\/$/, '')}/api/usuarios/login`;
+        const res = await fetch(q, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ username: uname, password })
+        });
+        if (res.ok) {
+            return await res.json();
+        }
+    } catch (err) {
+        console.error('Login request failed:', err);
     }
     return null;
 }
@@ -298,73 +304,96 @@ async function renderUsersList() {
     if (!listEl) return;
     listEl.innerHTML = '';
     
-    const keys = await dbUsuarios.keys();
-    for (const key of keys) {
-        const u = await dbUsuarios.getItem(key);
-        if (!u) continue;
+    try {
+        const q = `${SERVER_URL.replace(/\/$/, '')}/api/usuarios`;
+        const res = await fetch(q);
+        if (!res.ok) throw new Error('Failed to fetch users list');
+        const users = await res.json();
         
-        const tr = document.createElement('tr');
-        tr.style.borderBottom = '1px solid rgba(255,255,255,0.05)';
-        
-        const tdName = document.createElement('td');
-        tdName.style.padding = '12px 10px';
-        tdName.textContent = u.username;
-        
-        const tdLevel = document.createElement('td');
-        tdLevel.style.padding = '12px 10px';
-        tdLevel.textContent = u.level === 'admin' ? 'Administrador' : 'Operador';
-        
-        const tdActions = document.createElement('td');
-        tdActions.style.padding = '12px 10px';
-        tdActions.style.textAlign = 'right';
-        
-        // Reset password button
-        const btnReset = document.createElement('button');
-        btnReset.className = 'btn btn-secondary';
-        btnReset.style.padding = '4px 8px';
-        btnReset.style.fontSize = '0.8rem';
-        btnReset.style.marginRight = '5px';
-        btnReset.style.background = 'rgba(255, 255, 255, 0.1)';
-        btnReset.style.color = 'white';
-        btnReset.textContent = 'Resetar Senha';
-        btnReset.addEventListener('click', async () => {
-            const newPassword = prompt(`Digite a nova senha para o usuario ${u.username}:`);
-            if (newPassword === null) return; // user cancelled
-            if (!newPassword.trim()) {
-                alert('A senha nao pode ser vazia!');
-                return;
-            }
-            u.password = newPassword.trim();
-            await dbUsuarios.setItem(u.username, u);
-            alert(`Senha de ${u.username} resetada com sucesso!`);
-            await renderUsersList();
-        });
-        
-        // Delete button
-        const btnDelete = document.createElement('button');
-        btnDelete.className = 'btn btn-danger';
-        btnDelete.style.padding = '4px 8px';
-        btnDelete.style.fontSize = '0.8rem';
-        btnDelete.textContent = 'Excluir';
-        btnDelete.addEventListener('click', async () => {
-            if (u.username === 'RODRIGO.BARRETO') {
-                alert('O administrador padrao nao pode ser excluido!');
-                return;
-            }
-            if (confirm(`Tem certeza que deseja excluir o usuario ${u.username}?`)) {
-                await dbUsuarios.removeItem(u.username);
-                alert(`Usuario ${u.username} excluido.`);
-                await renderUsersList();
-            }
-        });
-        
-        tdActions.appendChild(btnReset);
-        tdActions.appendChild(btnDelete);
-        
-        tr.appendChild(tdName);
-        tr.appendChild(tdLevel);
-        tr.appendChild(tdActions);
-        listEl.appendChild(tr);
+        for (const u of users) {
+            const tr = document.createElement('tr');
+            tr.style.borderBottom = '1px solid rgba(255,255,255,0.05)';
+            
+            const tdName = document.createElement('td');
+            tdName.style.padding = '12px 10px';
+            tdName.textContent = u.username;
+            
+            const tdLevel = document.createElement('td');
+            tdLevel.style.padding = '12px 10px';
+            tdLevel.textContent = u.level === 'admin' ? 'Administrador' : 'Operador';
+            
+            const tdActions = document.createElement('td');
+            tdActions.style.padding = '12px 10px';
+            tdActions.style.textAlign = 'right';
+            
+            // Reset password button
+            const btnReset = document.createElement('button');
+            btnReset.className = 'btn btn-secondary';
+            btnReset.style.padding = '4px 8px';
+            btnReset.style.fontSize = '0.8rem';
+            btnReset.style.marginRight = '5px';
+            btnReset.style.background = 'rgba(255, 255, 255, 0.1)';
+            btnReset.style.color = 'white';
+            btnReset.textContent = 'Resetar Senha';
+            btnReset.addEventListener('click', async () => {
+                const newPassword = prompt(`Digite a nova senha para o usuario ${u.username}:`);
+                if (newPassword === null) return; // user cancelled
+                if (!newPassword.trim()) {
+                    alert('A senha nao pode ser vazia!');
+                    return;
+                }
+                
+                try {
+                    const postUrl = `${SERVER_URL.replace(/\/$/, '')}/api/usuarios`;
+                    const postRes = await fetch(postUrl, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ username: u.username, password: newPassword.trim(), level: u.level })
+                    });
+                    if (!postRes.ok) throw new Error('Password reset failed');
+                    alert(`Senha de ${u.username} resetada com sucesso!`);
+                    await renderUsersList();
+                } catch (err) {
+                    console.error(err);
+                    alert('Erro ao resetar senha no banco de dados.');
+                }
+            });
+            
+            // Delete button
+            const btnDelete = document.createElement('button');
+            btnDelete.className = 'btn btn-danger';
+            btnDelete.style.padding = '4px 8px';
+            btnDelete.style.fontSize = '0.8rem';
+            btnDelete.textContent = 'Excluir';
+            btnDelete.addEventListener('click', async () => {
+                if (u.username === 'RODRIGO.BARRETO') {
+                    alert('O administrador padrao nao pode ser excluido!');
+                    return;
+                }
+                if (confirm(`Tem certeza que deseja excluir o usuario ${u.username}?`)) {
+                    try {
+                        const delUrl = `${SERVER_URL.replace(/\/$/, '')}/api/usuarios/${encodeURIComponent(u.username)}`;
+                        const delRes = await fetch(delUrl, { method: 'DELETE' });
+                        if (!delRes.ok) throw new Error('User deletion failed');
+                        alert(`Usuario ${u.username} excluido.`);
+                        await renderUsersList();
+                    } catch (err) {
+                        console.error(err);
+                        alert('Erro ao excluir usuario no banco de dados.');
+                    }
+                }
+            });
+            
+            tdActions.appendChild(btnReset);
+            tdActions.appendChild(btnDelete);
+            
+            tr.appendChild(tdName);
+            tr.appendChild(tdLevel);
+            tr.appendChild(tdActions);
+            listEl.appendChild(tr);
+        }
+    } catch (err) {
+        console.error('Failed to render users list:', err);
     }
 }
 
@@ -400,11 +429,21 @@ function setupAdminListeners() {
             return;
         }
 
-        const userData = { username, password, level, criadoEm: new Date().toISOString() };
-        await dbUsuarios.setItem(username, userData);
-        document.getElementById('modal-novo-usuario').classList.add('hidden');
-        alert('Usuario ' + username + ' salvo com sucesso!');
-        await renderUsersList();
+        try {
+            const q = `${SERVER_URL.replace(/\/$/, '')}/api/usuarios`;
+            const res = await fetch(q, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ username, password, level })
+            });
+            if (!res.ok) throw new Error('Failed to save user');
+            document.getElementById('modal-novo-usuario').classList.add('hidden');
+            alert('Usuario ' + username + ' salvo com sucesso!');
+            await renderUsersList();
+        } catch (err) {
+            console.error(err);
+            alert('Erro ao cadastrar usuario no banco de dados.');
+        }
     });
 }
 
