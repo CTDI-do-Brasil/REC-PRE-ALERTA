@@ -43,6 +43,7 @@ async function ensureDBAndMinIO() {
     )`);
 
     await client.query(`CREATE TABLE IF NOT EXISTS recebimentos (
+      ordem SERIAL,
       id TEXT PRIMARY KEY,
       modelo TEXT,
       serial TEXT,
@@ -56,6 +57,9 @@ async function ensureDBAndMinIO() {
       descricao TEXT,
       fabricante TEXT
     )`);
+
+    // Ensure the auto-increment 'ordem' column exists for existing tables
+    await client.query(`ALTER TABLE recebimentos ADD COLUMN IF NOT EXISTS ordem SERIAL`);
     console.log('Postgres tables verified/created successfully.');
   } catch (err) {
     console.error('Error establishing database tables:', err);
