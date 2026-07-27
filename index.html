@@ -196,6 +196,24 @@
                         </div>
                         <button id="btn-novo-usuario" class="btn btn-primary">Cadastrar Usuário</button>
                     </div>
+                    
+                    <div class="card glass report-card span-2" style="margin-top: 0.5rem; flex-direction: column; align-items: stretch;">
+                        <h3>Usuários Cadastrados</h3>
+                        <div style="overflow-x: auto; width: 100%;">
+                            <table style="width: 100%; border-collapse: collapse; margin-top: 1rem; text-align: left;">
+                                <thead>
+                                    <tr style="border-bottom: 2px solid rgba(255,255,255,0.1); color: var(--text-secondary); font-size: 0.9rem;">
+                                        <th style="padding: 12px 10px;">Usuário</th>
+                                        <th style="padding: 12px 10px;">Nível</th>
+                                        <th style="padding: 12px 10px; text-align: right;">Ações</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="users-list-table" style="font-size: 0.95rem;">
+                                    <!-- Populated via JS -->
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
 
                     <div class="card glass report-card">
                         <div class="report-icon" style="background: rgba(59, 130, 246, 0.1); color: var(--primary-color);">

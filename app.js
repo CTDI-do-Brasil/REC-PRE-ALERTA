@@ -136,7 +136,10 @@ function setupNavigation() {
             navLinks.forEach(l => l.classList.remove('active'));
             link.classList.add('active');
             tabs.forEach(tab => {
-                if (tab.id === target) tab.classList.add('active');
+                if (tab.id === target) {
+                    tab.classList.add('active');
+                    if (target === 'admin') renderUsersList();
+                }
                 else tab.classList.remove('active');
             });
         });
@@ -290,6 +293,81 @@ document.getElementById('btn-save-modelo').addEventListener('click', async () =>
 // ============================================================
 // Admin — Users Management
 // ============================================================
+async function renderUsersList() {
+    const listEl = document.getElementById('users-list-table');
+    if (!listEl) return;
+    listEl.innerHTML = '';
+    
+    const keys = await dbUsuarios.keys();
+    for (const key of keys) {
+        const u = await dbUsuarios.getItem(key);
+        if (!u) continue;
+        
+        const tr = document.createElement('tr');
+        tr.style.borderBottom = '1px solid rgba(255,255,255,0.05)';
+        
+        const tdName = document.createElement('td');
+        tdName.style.padding = '12px 10px';
+        tdName.textContent = u.username;
+        
+        const tdLevel = document.createElement('td');
+        tdLevel.style.padding = '12px 10px';
+        tdLevel.textContent = u.level === 'admin' ? 'Administrador' : 'Operador';
+        
+        const tdActions = document.createElement('td');
+        tdActions.style.padding = '12px 10px';
+        tdActions.style.textAlign = 'right';
+        
+        // Reset password button
+        const btnReset = document.createElement('button');
+        btnReset.className = 'btn btn-secondary';
+        btnReset.style.padding = '4px 8px';
+        btnReset.style.fontSize = '0.8rem';
+        btnReset.style.marginRight = '5px';
+        btnReset.style.background = 'rgba(255, 255, 255, 0.1)';
+        btnReset.style.color = 'white';
+        btnReset.textContent = 'Resetar Senha';
+        btnReset.addEventListener('click', async () => {
+            const newPassword = prompt(`Digite a nova senha para o usuario ${u.username}:`);
+            if (newPassword === null) return; // user cancelled
+            if (!newPassword.trim()) {
+                alert('A senha nao pode ser vazia!');
+                return;
+            }
+            u.password = newPassword.trim();
+            await dbUsuarios.setItem(u.username, u);
+            alert(`Senha de ${u.username} resetada com sucesso!`);
+            await renderUsersList();
+        });
+        
+        // Delete button
+        const btnDelete = document.createElement('button');
+        btnDelete.className = 'btn btn-danger';
+        btnDelete.style.padding = '4px 8px';
+        btnDelete.style.fontSize = '0.8rem';
+        btnDelete.textContent = 'Excluir';
+        btnDelete.addEventListener('click', async () => {
+            if (u.username === 'RODRIGO.BARRETO') {
+                alert('O administrador padrao nao pode ser excluido!');
+                return;
+            }
+            if (confirm(`Tem certeza que deseja excluir o usuario ${u.username}?`)) {
+                await dbUsuarios.removeItem(u.username);
+                alert(`Usuario ${u.username} excluido.`);
+                await renderUsersList();
+            }
+        });
+        
+        tdActions.appendChild(btnReset);
+        tdActions.appendChild(btnDelete);
+        
+        tr.appendChild(tdName);
+        tr.appendChild(tdLevel);
+        tr.appendChild(tdActions);
+        listEl.appendChild(tr);
+    }
+}
+
 function setupAdminListeners() {
     document.getElementById('btn-novo-usuario').addEventListener('click', () => {
         document.getElementById('modal-usuario-title').textContent = 'Cadastrar Usuario';
@@ -326,6 +404,7 @@ function setupAdminListeners() {
         await dbUsuarios.setItem(username, userData);
         document.getElementById('modal-novo-usuario').classList.add('hidden');
         alert('Usuario ' + username + ' salvo com sucesso!');
+        await renderUsersList();
     });
 }
 
