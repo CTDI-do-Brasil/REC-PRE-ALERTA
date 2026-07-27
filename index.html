@@ -1,0 +1,331 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Sistema de Pré-Alerta</title>
+    <!-- Font -->
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <!-- Scripts -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/localforage/1.10.0/localforage.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/PapaParse/5.4.1/papaparse.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+    <!-- Styles -->
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+    <div class="app-container">
+        <!-- Sidebar Navigation -->
+        <nav class="sidebar">
+            <div class="logo">
+                <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"></path><polyline points="3.27 6.96 12 12.01 20.73 6.96"></polyline><line x1="12" y1="22.08" x2="12" y2="12"></line></svg>
+                <span>Sist. de Recebimento</span>
+            </div>
+            <ul class="nav-links">
+                <li class="active" data-tab="recebimento">
+                    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20 7h-3a2 2 0 0 1-2-2V2"/><path d="M9 18a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h7l4 4v10a2 2 0 0 1-2 2z"/><path d="M3 15h6v6"/></svg>
+                    Recebimento
+                </li>
+                <li data-tab="pre-alerta">
+                    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
+                    Base Pré-Alerta
+                </li>
+                <li data-tab="relatorios">
+                    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/><polyline points="10 9 9 9 8 9"/></svg>
+                    Relatórios
+                </li>
+                <li id="nav-admin" data-tab="admin" style="display: none;">
+                    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"></rect><path d="M7 11V7a5 5 0 0 1 10 0v4"></path></svg>
+                    Administração
+                </li>
+            </ul>
+            <div class="sidebar-user-bar">
+                <div class="sidebar-user-info">
+                    <span class="sidebar-user-label">Usuário Logado</span>
+                    <strong id="display-user-name" class="sidebar-user-name">---</strong>
+                </div>
+                <button id="btn-logout" class="btn btn-secondary btn-icon" title="Sair">
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"></path><polyline points="16 17 21 12 16 7"></polyline><line x1="21" y1="12" x2="9" y2="12"></line></svg>
+                </button>
+            </div>
+        </nav>
+
+        <!-- Main Content -->
+        <main class="content">
+            
+            <!-- Recebimento Tab -->
+            <section id="recebimento" class="tab-content active">
+                <header class="section-header">
+                    <h1>Recebimento de Unidades</h1>
+                    <div class="stats">
+                        <div class="stat-card success">
+                            <span class="stat-title">No Pré-Alerta</span>
+                            <span class="stat-value" id="count-pre-alerta">0</span>
+                        </div>
+                        <div class="stat-card warning">
+                            <span class="stat-title">Fora do Pré-Alerta</span>
+                            <span class="stat-value" id="count-fora">0</span>
+                        </div>
+                    </div>
+                </header>
+
+                <div class="card glass">
+                    <div class="form-group">
+                        <label for="modelo">Modelo de Equipamento</label>
+                        <div class="input-with-action">
+                            <select id="modelo">
+                                <!-- Options populated via JS -->
+                            </select>
+                            <button id="btn-edit-modelo" class="btn btn-secondary" title="Editar Regras do Modelo" style="padding: 0.5rem;">
+                                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"></path><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"></path></svg>
+                            </button>
+                            <button id="btn-novo-modelo" class="btn btn-secondary">Novo</button>
+                        </div>
+                    </div>
+                    
+                    <form id="form-recebimento">
+                        <div class="scan-grid" id="scan-grid">
+                            <div class="form-group">
+                                <label for="serial">Serial</label>
+                                <input type="text" id="serial" class="scan-input" autocomplete="off" placeholder="Bipe o Serial">
+                            </div>
+                            <div class="form-group" id="group-pon">
+                                <label for="pon">PON ID / GPON</label>
+                                <input type="text" id="pon" class="scan-input" autocomplete="off" placeholder="Bipe o PON ID">
+                            </div>
+                            <div class="form-group">
+                                <label for="mac">MAC</label>
+                                <input type="text" id="mac" class="scan-input" autocomplete="off" placeholder="Bipe o MAC">
+                            </div>
+                        </div>
+
+                        <div class="action-row" style="display: flex; gap: 1rem; justify-content: flex-end;">
+                            <button type="button" id="btn-limpar" class="btn btn-secondary btn-large" style="background: rgba(255, 255, 255, 0.1); color: var(--text-primary);">Limpar Campos</button>
+                            <button type="submit" id="btn-receber" class="btn btn-primary btn-large">Receber Unidade</button>
+                        </div>
+                    </form>
+
+                    <div id="status-message" class="status-message hidden">
+                        <!-- Success/Error messages will appear here -->
+                    </div>
+                </div>
+                
+                <div class="recent-list-container">
+                    <h3>Últimos Recebimentos</h3>
+                    <ul id="recent-list" class="recent-list">
+                        <!-- Populated by JS -->
+                    </ul>
+                </div>
+            </section>
+
+            <!-- Pré-Alerta Tab -->
+            <section id="pre-alerta" class="tab-content">
+                <header class="section-header">
+                    <h1>Base de Pré-Alerta</h1>
+                </header>
+                
+                <div class="card glass">
+                    <p class="description">Faça o upload do arquivo Excel (.xlsx) ou CSV contendo as colunas: <strong>SERIAL, CODIGO, DESCRIÇÃO, FABRICANTE</strong>.</p>
+                    
+                    <div class="upload-zone" id="upload-zone">
+                        <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
+                        <p>Arraste o arquivo aqui ou <strong>clique para selecionar</strong></p>
+                        <input type="file" id="file-upload" accept=".csv, .xlsx, .xls" hidden>
+                    </div>
+
+                    <div id="upload-status" class="upload-status">
+                        Base atual: <strong id="base-count">0</strong> registros carregados.
+                    </div>
+                    
+                    <button id="btn-clear-base" class="btn btn-danger mt-4">Limpar Base Atual</button>
+                </div>
+            </section>
+
+            <!-- Relatórios Tab -->
+            <section id="relatorios" class="tab-content">
+                <header class="section-header">
+                    <div style="display: flex; justify-content: space-between; align-items: center; width: 100%; flex-wrap: wrap; gap: 1rem;">
+                        <h1 style="margin: 0;">Extração de Relatórios</h1>
+                        <div class="date-filter form-group" style="display: flex; gap: 0.5rem; align-items: center; margin: 0; background: rgba(0,0,0,0.2); padding: 0.5rem; border-radius: 8px;">
+                            <label style="margin: 0; font-size: 0.9rem; font-weight: 500;">De:</label>
+                            <input type="date" id="report-date-start" class="form-control" style="padding: 0.4rem; height: auto;">
+                            <label style="margin: 0; font-size: 0.9rem; font-weight: 500; margin-left: 0.5rem;">Até:</label>
+                            <input type="date" id="report-date-end" class="form-control" style="padding: 0.4rem; height: auto;">
+                        </div>
+                    </div>
+                </header>
+                
+                <div class="reports-grid">
+                    <div class="card glass report-card">
+                        <div class="report-icon success-icon">
+                            <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><polyline points="22 4 12 14.01 9 11.01"/></svg>
+                        </div>
+                        <h3>No Pré-Alerta</h3>
+                        <p>Exportar recebimentos que constavam no Pré-Alerta com as informações da base.</p>
+                        <button id="btn-export-prealerta" class="btn btn-primary">Exportar Relatório</button>
+                    </div>
+
+                    <div class="card glass report-card">
+                        <div class="report-icon warning-icon">
+                            <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
+                        </div>
+                        <h3>Fora do Pré-Alerta</h3>
+                        <p>Exportar unidades que não estavam na base e foram segregadas (com modelo).</p>
+                        <button id="btn-export-fora" class="btn btn-secondary">Exportar Relatório</button>
+                    </div>
+                    
+                    <div class="card glass report-card mt-4 span-2">
+                        <h3>Limpeza de Dados</h3>
+                        <p>Cuidado: esta ação apaga todos os registros de recebimento salvos localmente.</p>
+                        <button id="btn-clear-recebidos" class="btn btn-danger mt-2">Limpar Histórico de Recebimentos</button>
+                    </div>
+                </div>
+            </section>
+
+            <!-- Admin Tab -->
+            <section id="admin" class="tab-content">
+                <header class="section-header">
+                    <h1>Administração do Sistema</h1>
+                </header>
+                
+                <div class="reports-grid">
+                    <div class="card glass report-card span-2" style="flex-direction: row; align-items: center; justify-content: space-between; gap: 1rem; flex-wrap: wrap;">
+                        <div style="flex: 1;">
+                            <h3>Cadastro de Usuários</h3>
+                            <p style="margin: 0;">Cadastre novos operadores ou administradores. O formato deve ser NOME.SOBRENOME (ex: RODRIGO.BARRETO).</p>
+                        </div>
+                        <button id="btn-novo-usuario" class="btn btn-primary">Cadastrar Usuário</button>
+                    </div>
+
+                    <div class="card glass report-card">
+                        <div class="report-icon" style="background: rgba(59, 130, 246, 0.1); color: var(--primary-color);">
+                            <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"></path><circle cx="9" cy="7" r="4"></circle><path d="M23 21v-2a4 4 0 0 0-3-3.87"></path><path d="M16 3.13a4 4 0 0 1 0 7.75"></path></svg>
+                        </div>
+                        <h3>Relatório de Usuários</h3>
+                        <p>Exportar a lista completa de usuários cadastrados (sem as senhas).</p>
+                        <button id="btn-export-usuarios" class="btn btn-secondary">Exportar</button>
+                    </div>
+
+                    <div class="card glass report-card">
+                        <div class="report-icon" style="background: rgba(139, 92, 246, 0.1); color: #8b5cf6;">
+                            <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path><polyline points="14 2 14 8 20 8"></polyline><line x1="16" y1="13" x2="8" y2="13"></line><line x1="16" y1="17" x2="8" y2="17"></line><polyline points="10 9 9 9 8 9"></polyline></svg>
+                        </div>
+                        <h3>Relatório de Modelos</h3>
+                        <p>Exportar a base de modelos cadastrados e suas regras de validação.</p>
+                        <button id="btn-export-modelos" class="btn btn-secondary">Exportar</button>
+                    </div>
+                </div>
+            </section>
+        </main>
+    </div>
+
+    <!-- Login Overlay -->
+    <div id="login-overlay" class="modal-overlay">
+        <div class="modal glass-modal" style="border: 1px solid var(--glass-border);">
+            <div class="modal-icon" style="animation: none;">
+                <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="var(--primary-color)" stroke-width="2"><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"></path><polyline points="3.27 6.96 12 12.01 20.73 6.96"></polyline><line x1="12" y1="22.08" x2="12" y2="12"></line></svg>
+            </div>
+            <h2 style="margin-top: 1rem; color: var(--text-primary);">Acesso ao Sistema</h2>
+            <p style="color: var(--text-secondary); margin-bottom: 2rem; font-size: 0.9rem;">Insira suas credenciais para continuar.</p>
+            
+            <form id="form-login">
+                <div class="form-group" style="text-align: left;">
+                    <label for="login-username">Usuário</label>
+                    <input type="text" id="login-username" placeholder="NOME.SOBRENOME" autocomplete="off" required style="width: 100%; padding: 14px 16px; background: var(--input-bg); border: 1px solid var(--input-border); border-radius: 8px; color: white; font-family: inherit; font-size: 1rem; text-transform: uppercase;">
+                </div>
+                <div class="form-group" style="text-align: left; margin-bottom: 1.5rem;">
+                    <label for="login-password">Senha</label>
+                    <input type="password" id="login-password" placeholder="Sua senha" autocomplete="off" required style="width: 100%; padding: 14px 16px; background: var(--input-bg); border: 1px solid var(--input-border); border-radius: 8px; color: white; font-family: inherit; font-size: 1rem;">
+                </div>
+                <div id="login-error" class="status-message status-error hidden" style="margin-top: 0; margin-bottom: 1rem; padding: 8px; font-size: 0.9rem;">Credenciais inválidas. Verifique usuário e senha.</div>
+                <button type="submit" class="btn btn-primary" style="width: 100%;">Entrar</button>
+            </form>
+        </div>
+    </div>
+
+    <!-- Modals -->
+    <div id="modal-segregar" class="modal-overlay hidden">
+        <div class="modal glass-modal warning-modal">
+            <div class="modal-icon">
+                <svg width="64" height="64" viewBox="0 0 24 24" fill="none" stroke="#f43f5e" stroke-width="2"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
+            </div>
+            <h2>FORA DO PRE ALERTA, SEGREGAR</h2>
+            <p>Este serial não foi encontrado na base do Pré-Alerta. Separe esta unidade física agora mesmo.</p>
+            <button id="btn-modal-ok" class="btn btn-large btn-danger">OK, UNIDADE SEGREGADA</button>
+        </div>
+    </div>
+    
+    <div id="modal-novo-modelo" class="modal-overlay hidden">
+        <div class="modal glass-modal" style="max-height: 90vh; overflow-y: auto;">
+            <h2 id="modal-modelo-title">Adicionar Novo Modelo</h2>
+            <input type="hidden" id="input-modelo-original">
+            <input type="text" id="input-novo-modelo" class="form-control" placeholder="Nome do modelo...">
+            <div class="form-group" style="margin-top: 1rem; text-align: left;">
+                <label for="select-modelo-campos">Campos necessários:</label>
+                <select id="select-modelo-campos" class="form-control" style="width: 100%; margin-top: 0.5rem; background: rgba(255, 255, 255, 0.1); border: 1px solid rgba(255, 255, 255, 0.2); color: var(--text-primary); border-radius: 8px;">
+                    <option value="3" style="color: black;">3 Campos (SERIAL, PON ID/GPON, MAC)</option>
+                    <option value="2" style="color: black;">2 Campos (SERIAL, MAC)</option>
+                </select>
+            </div>
+            
+            <div class="form-group" style="margin-top: 1.5rem; text-align: left; background: rgba(0,0,0,0.1); padding: 1rem; border-radius: 8px; border: 1px solid rgba(255,255,255,0.05);">
+                <label style="font-weight: 600;">Regras de Validação (Opcional)</label>
+                <p style="font-size: 0.8rem; color: var(--text-secondary); margin-bottom: 0.5rem;">Especifique os inícios (prefixos) permitidos para cada campo, separados por vírgula. Ex: N7, OC</p>
+                
+                <label for="rule-serial" style="font-size: 0.85rem; margin-top: 0.5rem; display: block; color: var(--text-secondary);">Prefixos permitidos - SERIAL</label>
+                <input type="text" id="rule-serial" class="form-control" placeholder="Ex: N7, OC, ZTE3" style="margin-top: 0.2rem; margin-bottom: 0.8rem;">
+                
+                <div id="group-rule-pon">
+                    <label for="rule-pon" style="font-size: 0.85rem; display: block; color: var(--text-secondary);">Prefixos permitidos - PON ID</label>
+                    <input type="text" id="rule-pon" class="form-control" placeholder="Ex: SMBS, ZTEGD" style="margin-top: 0.2rem; margin-bottom: 0.8rem;">
+                </div>
+
+                <label for="rule-mac" style="font-size: 0.85rem; display: block; color: var(--text-secondary);">Prefixos permitidos - MAC</label>
+                <input type="text" id="rule-mac" class="form-control" placeholder="Ex: E4C0E2" style="margin-top: 0.2rem;">
+            </div>
+
+            <div class="modal-actions" style="margin-top: 1.5rem;">
+                <button id="btn-cancel-modelo" class="btn btn-secondary">Cancelar</button>
+                <button id="btn-save-modelo" class="btn btn-primary">Salvar</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Modal Novo Usuário -->
+    <div id="modal-novo-usuario" class="modal-overlay hidden">
+        <div class="modal glass-modal">
+            <h2 id="modal-usuario-title">Gerenciar Usuário</h2>
+            <div class="form-group" style="margin-top: 1rem; text-align: left;">
+                <label for="input-usuario-username">Usuário (NOME.SOBRENOME)</label>
+                <input type="text" id="input-usuario-username" placeholder="Ex: RODRIGO.BARRETO" style="width: 100%; padding: 14px 16px; background: var(--input-bg); border: 1px solid var(--input-border); border-radius: 8px; color: white; font-family: inherit; font-size: 1rem; text-transform: uppercase;">
+                <small style="color: var(--danger-color); display: none; margin-top: 4px;" id="usuario-username-error">Formato inválido. Use NOME.SOBRENOME (apenas letras)</small>
+            </div>
+            
+            <div class="form-group" style="margin-top: 1rem; text-align: left;">
+                <label for="input-usuario-password">Senha</label>
+                <input type="password" id="input-usuario-password" placeholder="Senha do usuário" style="width: 100%; padding: 14px 16px; background: var(--input-bg); border: 1px solid var(--input-border); border-radius: 8px; color: white; font-family: inherit; font-size: 1rem;">
+            </div>
+
+            <div class="form-group" style="margin-top: 1rem; text-align: left;">
+                <label for="select-usuario-level">Nível de Acesso</label>
+                <select id="select-usuario-level" class="form-control" style="width: 100%; margin-top: 0.5rem; background: rgba(255, 255, 255, 0.1); border: 1px solid rgba(255, 255, 255, 0.2); color: var(--text-primary); border-radius: 8px;">
+                    <option value="operator" style="color: black;">Operador</option>
+                    <option value="admin" style="color: black;">Administrador</option>
+                </select>
+            </div>
+
+            <div class="modal-actions" style="margin-top: 1.5rem;">
+                <button id="btn-cancel-usuario" class="btn btn-secondary">Cancelar</button>
+                <button id="btn-save-usuario" class="btn btn-primary">Salvar Usuário</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Watermark -->
+    <div style="position: fixed; bottom: 15px; right: 15px; font-family: 'Inter', sans-serif; font-size: 0.8rem; color: rgba(255, 255, 255, 0.4); pointer-events: none; z-index: 1000; font-weight: 500; letter-spacing: 0.5px;">
+        by: Barreto
+    </div>
+
+    <script src="app.js"></script>
+</body>
+</html>
