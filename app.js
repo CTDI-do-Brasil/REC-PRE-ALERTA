@@ -79,10 +79,17 @@ function applyAccessLevel(user) {
     currentUser = user;
     document.getElementById('display-user-name').textContent = user.username;
     const navAdmin = document.getElementById('nav-admin');
+    const navPreAlerta = document.querySelector('li[data-tab="pre-alerta"]');
+    const navRelatorios = document.querySelector('li[data-tab="relatorios"]');
+    
     if (user.level === 'admin') {
         navAdmin.style.display = '';
+        if (navPreAlerta) navPreAlerta.style.display = '';
+        if (navRelatorios) navRelatorios.style.display = '';
     } else {
         navAdmin.style.display = 'none';
+        if (navPreAlerta) navPreAlerta.style.display = 'none';
+        if (navRelatorios) navRelatorios.style.display = 'none';
     }
 }
 
