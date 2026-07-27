@@ -794,63 +794,91 @@ function isWithinRange(dateStr, start, end) {
 
 function setupReportListeners() {
     document.getElementById('btn-export-prealerta').addEventListener('click', async () => {
-        const keys = await dbRecebidos.keys();
-        const data = [];
-        const { start, end } = getReportDateRange();
-        for (const key of keys) {
-            const item = await dbRecebidos.getItem(key);
-            if (item.noPreAlerta && isWithinRange(item.dataHora, start, end)) {
-                data.push({
-                    "SERIAL PRE ALERTA": item.matchedValue || item.serial,
-                    SERIAL: item.serial,
-                    PON_ID: item.pon,
-                    MAC: item.mac,
-                    MODELO: item.modelo,
-                    CODIGO: item.codigo,
-                    DESCRICAO: item.descricao,
-                    FABRICANTE: item.fabricante,
-                    DATA_HORA: new Date(item.dataHora).toLocaleString('pt-BR'),
-                    USUARIO: item.usuario || ''
-                });
-            }
+        const startVal = document.getElementById('report-date-start').value;
+        const endVal = document.getElementById('report-date-end').value;
+        
+        let url = `${SERVER_URL.replace(/\/$/, '')}/api/recebimentos/report?noPreAlerta=true`;
+        if (startVal) url += `&start=${startVal}`;
+        if (endVal) url += `&end=${endVal}`;
+
+        try {
+            const res = await fetch(url);
+            if (!res.ok) throw new Error('Failed to fetch report');
+            const rows = await res.json();
+            
+            if (rows.length === 0) { alert("Nenhum dado encontrado para exportar nesse periodo."); return; }
+            
+            const data = rows.map(item => ({
+                "SERIAL PRE ALERTA": item.matched_value || item.serial,
+                SERIAL: item.serial,
+                PON_ID: item.pon,
+                MAC: item.mac,
+                MODELO: item.modelo,
+                CODIGO: item.codigo,
+                DESCRICAO: item.descricao,
+                FABRICANTE: item.fabricante,
+                DATA_HORA: new Date(item.datahora).toLocaleString('pt-BR'),
+                USUARIO: item.usuario || ''
+            }));
+
+            const worksheet = XLSX.utils.json_to_sheet(data);
+            const workbook = XLSX.utils.book_new();
+            XLSX.utils.book_append_sheet(workbook, worksheet, "Recebidos Pre-Alerta");
+            XLSX.writeFile(workbook, "relatorio_pre_alerta.xlsx");
+        } catch (err) {
+            console.error(err);
+            alert('Erro ao carregar dados do relatorio.');
         }
-        if (data.length === 0) { alert("Nenhum dado encontrado para exportar nesse periodo."); return; }
-        const worksheet = XLSX.utils.json_to_sheet(data);
-        const workbook = XLSX.utils.book_new();
-        XLSX.utils.book_append_sheet(workbook, worksheet, "Recebidos Pre-Alerta");
-        XLSX.writeFile(workbook, "relatorio_pre_alerta.xlsx");
     });
 
     document.getElementById('btn-export-fora').addEventListener('click', async () => {
-        const keys = await dbRecebidos.keys();
-        const data = [];
-        const { start, end } = getReportDateRange();
-        for (const key of keys) {
-            const item = await dbRecebidos.getItem(key);
-            if (!item.noPreAlerta && isWithinRange(item.dataHora, start, end)) {
-                data.push({
-                    SERIAL: item.serial,
-                    PON_ID: item.pon,
-                    MAC: item.mac,
-                    MODELO: item.modelo,
-                    DATA_HORA: new Date(item.dataHora).toLocaleString('pt-BR'),
-                    USUARIO: item.usuario || ''
-                });
-            }
+        const startVal = document.getElementById('report-date-start').value;
+        const endVal = document.getElementById('report-date-end').value;
+        
+        let url = `${SERVER_URL.replace(/\/$/, '')}/api/recebimentos/report?noPreAlerta=false`;
+        if (startVal) url += `&start=${startVal}`;
+        if (endVal) url += `&end=${endVal}`;
+
+        try {
+            const res = await fetch(url);
+            if (!res.ok) throw new Error('Failed to fetch report');
+            const rows = await res.json();
+            
+            if (rows.length === 0) { alert("Nenhum dado encontrado para exportar nesse periodo."); return; }
+            
+            const data = rows.map(item => ({
+                SERIAL: item.serial,
+                PON_ID: item.pon,
+                MAC: item.mac,
+                MODELO: item.modelo,
+                DATA_HORA: new Date(item.datahora).toLocaleString('pt-BR'),
+                USUARIO: item.usuario || ''
+            }));
+
+            const worksheet = XLSX.utils.json_to_sheet(data);
+            const workbook = XLSX.utils.book_new();
+            XLSX.utils.book_append_sheet(workbook, worksheet, "Recebidos Fora Pre-Alerta");
+            XLSX.writeFile(workbook, "relatorio_fora_pre_alerta.xlsx");
+        } catch (err) {
+            console.error(err);
+            alert('Erro ao carregar dados do relatorio.');
         }
-        if (data.length === 0) { alert("Nenhum dado encontrado para exportar nesse periodo."); return; }
-        const worksheet = XLSX.utils.json_to_sheet(data);
-        const workbook = XLSX.utils.book_new();
-        XLSX.utils.book_append_sheet(workbook, worksheet, "Recebidos Fora Pre-Alerta");
-        XLSX.writeFile(workbook, "relatorio_fora_pre_alerta.xlsx");
     });
 
     document.getElementById('btn-clear-recebidos').addEventListener('click', async () => {
         if (confirm("Tem certeza que deseja apagar TODO o historico de recebimentos? Faca os relatorios antes!")) {
-            await dbRecebidos.clear();
-            await updateCounters();
-            await loadRecentRecebimentos();
-            alert("Historico apagado com sucesso.");
+            try {
+                const q = `${SERVER_URL.replace(/\/$/, '')}/api/recebimentos/clear`;
+                const response = await fetch(q, { method: 'DELETE' });
+                if (!response.ok) throw new Error('Failed to clear recebimentos on server');
+                await dbRecebidos.clear();
+                await updateCounters();
+                await loadRecentRecebimentos();
+                alert("Historico apagado com sucesso no servidor e localmente.");
+            } catch (err) {
+                console.error(err);
+                alert("Erro ao apagar historico de recebimentos no servidor.");
+            }
         }
     });
 

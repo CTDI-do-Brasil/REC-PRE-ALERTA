@@ -212,5 +212,49 @@ app.post('/api/recebimentos', async (req, res) => {
   }
 });
 
+// Fetch recebimentos report data from Postgres
+app.get('/api/recebimentos/report', async (req, res) => {
+  const { start, end, noPreAlerta } = req.query;
+  try {
+    let query = 'SELECT * FROM recebimentos WHERE 1=1';
+    const params = [];
+    let paramIndex = 1;
+
+    if (start) {
+      query += ` AND datahora >= $${paramIndex}`;
+      params.push(new Date(start + 'T00:00:00'));
+      paramIndex++;
+    }
+    if (end) {
+      query += ` AND datahora <= $${paramIndex}`;
+      params.push(new Date(end + 'T23:59:59'));
+      paramIndex++;
+    }
+    if (noPreAlerta !== undefined) {
+      query += ` AND no_pre_alerta = $${paramIndex}`;
+      params.push(noPreAlerta === 'true');
+      paramIndex++;
+    }
+
+    query += ' ORDER BY datahora DESC';
+    const result = await pool.query(query, params);
+    res.json(result.rows);
+  } catch (err) {
+    console.error('Error fetching report data:', err);
+    res.status(500).json({ error: 'Failed to fetch report data.' });
+  }
+});
+
+// Clear recebimentos history in Postgres
+app.delete('/api/recebimentos/clear', async (req, res) => {
+  try {
+    await pool.query('DELETE FROM recebimentos');
+    res.json({ ok: true });
+  } catch (err) {
+    console.error('Error clearing recebimentos:', err);
+    res.status(500).json({ error: 'Failed to clear recebimentos.' });
+  }
+});
+
 const PORT = process.env.PORT || 4000;
 app.listen(PORT, () => console.log(`Unified server listening on port ${PORT}`));
