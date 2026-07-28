@@ -284,6 +284,11 @@ input[type="date"] {
     font-family: inherit;
 }
 
+input[type="date"]::-webkit-calendar-picker-indicator {
+    filter: invert(1);
+    cursor: pointer;
+}
+
 .scan-grid {
     display: grid;
     grid-template-columns: 1fr 1fr;
