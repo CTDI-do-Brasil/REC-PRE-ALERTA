@@ -344,7 +344,7 @@ app.get('/api/recebimentos/report', async (req, res) => {
       paramIndex++;
     }
 
-    query += ' ORDER BY data_hora DESC';
+    query += ' ORDER BY id ASC';
     const result = await pool.query(query, params);
     res.json(result.rows);
   } catch (err) {
