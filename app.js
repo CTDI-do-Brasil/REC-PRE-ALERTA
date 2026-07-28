@@ -536,18 +536,35 @@ async function savePreAlertaData(data) {
     if (itemsToImport.length > 0) {
         try {
             const q = `${SERVER_URL.replace(/\/$/, '')}/api/pre-alerta/import`;
-            const response = await fetch(q, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ items: itemsToImport })
-            });
-            if (!response.ok) throw new Error('Backend import failed');
-            const json = await response.json();
+            const chunkSize = 1000;
+            const totalItems = itemsToImport.length;
+            let importedCount = 0;
+
+            for (let i = 0; i < totalItems; i += chunkSize) {
+                const chunk = itemsToImport.slice(i, i + chunkSize);
+                const response = await fetch(q, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ items: chunk })
+                });
+                if (!response.ok) throw new Error('Chunk import failed');
+                
+                importedCount += chunk.length;
+                const percent = Math.round((importedCount / totalItems) * 100);
+                
+                uploadZone.innerHTML = `
+                    <p>Processando importacao...</p>
+                    <div style="width: 80%; max-width: 500px; background: rgba(255,255,255,0.1); height: 10px; border-radius: 5px; margin: 15px auto; overflow: hidden;">
+                        <div style="width: ${percent}%; background: var(--primary-color); height: 100%; transition: width 0.2s ease;"></div>
+                    </div>
+                    <p><strong>${percent}%</strong> (${importedCount} de ${totalItems} registros)</p>
+                `;
+            }
             
             await loadPreAlertaCache();
             uploadZone.innerHTML = `
                 <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="#10b981" stroke-width="1.5"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><polyline points="22 4 12 14.01 9 11.01"/></svg>
-                <p><strong>${json.count}</strong> registros importados com sucesso!</p>
+                <p><strong>${totalItems}</strong> registros importados com sucesso!</p>
                 <p style="font-size: 0.8rem; margin-top: 8px;">Clique para carregar mais.</p>
             `;
         } catch (err) {
