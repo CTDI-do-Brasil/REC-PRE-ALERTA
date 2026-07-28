@@ -305,11 +305,18 @@ app.delete('/api/recebimentos/clear', async (req, res) => {
   }
 });
 
-// Query scanned units (recebimentos) by Serial Number, MAC or GPON ID
-app.get('/api/consulta', async (req, res) => {
-  const { value } = req.query;
-  if (!value) return res.status(400).json({ error: 'Missing query parameter "value"' });
-  const cleanVal = value.trim().toUpperCase();
+// External API to query scanned units by Serial Number, MAC or GPON ID (protected with x-api-key)
+app.get('/api/external/units', async (req, res) => {
+  const apiKeyHeader = req.headers['x-api-key'];
+  const expectedApiKey = process.env.API_KEY || 'ctdi_76ep96llk6zF63CJgd1iXggfb2JCJr0VfgRr';
+
+  if (!apiKeyHeader || apiKeyHeader !== expectedApiKey) {
+    return res.status(401).json({ error: 'Unauthorized. Invalid or missing x-api-key.' });
+  }
+
+  const { search } = req.query;
+  if (!search) return res.status(400).json({ error: 'Missing query parameter "search"' });
+  const cleanVal = search.trim().toUpperCase();
 
   try {
     const result = await pool.query(
