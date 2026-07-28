@@ -42,24 +42,32 @@ async function ensureDBAndMinIO() {
       fabricante TEXT
     )`);
 
+    // Check if table 'recebimentos' exists and has column 'serial' (old schema)
+    const checkOldSchema = await client.query(`
+      SELECT column_name 
+      FROM information_schema.columns 
+      WHERE table_name = 'recebimentos' AND column_name = 'serial'
+    `);
+    if (checkOldSchema.rows.length > 0) {
+      await client.query(`ALTER TABLE recebimentos RENAME TO recebimentos_old`);
+      console.log('Renamed old recebimentos table to recebimentos_old.');
+    }
+
+    // Create recebimentos table with exact requested column order
     await client.query(`CREATE TABLE IF NOT EXISTS recebimentos (
-      ordem SERIAL,
-      id TEXT PRIMARY KEY,
+      id SERIAL PRIMARY KEY,
+      fabricante TEXT,
       modelo TEXT,
-      serial TEXT,
-      pon TEXT,
+      serial_number TEXT,
+      gpon_id TEXT,
       mac TEXT,
-      datahora TIMESTAMP,
       usuario TEXT,
+      data_hora TIMESTAMP,
       no_pre_alerta BOOLEAN,
       matched_value TEXT,
       codigo TEXT,
-      descricao TEXT,
-      fabricante TEXT
+      descricao TEXT
     )`);
-
-    // Ensure the auto-increment 'ordem' column exists for existing tables
-    await client.query(`ALTER TABLE recebimentos ADD COLUMN IF NOT EXISTS ordem SERIAL`);
 
     await client.query(`CREATE TABLE IF NOT EXISTS usuarios (
       username TEXT PRIMARY KEY,
@@ -209,8 +217,8 @@ app.get('/api/recebimentos/check', async (req, res) => {
   try {
     const result = await pool.query(
       `SELECT * FROM recebimentos 
-       WHERE (serial IS NOT NULL AND serial = $1)
-          OR (pon IS NOT NULL AND pon = $2)
+       WHERE (serial_number IS NOT NULL AND serial_number = $1)
+          OR (gpon_id IS NOT NULL AND gpon_id = $2)
           OR (mac IS NOT NULL AND mac = $3)
        LIMIT 1`,
       [serial || null, pon || null, mac || null]
@@ -228,24 +236,22 @@ app.get('/api/recebimentos/check', async (req, res) => {
 // Save scan results
 app.post('/api/recebimentos', async (req, res) => {
   const body = req.body;
-  if (!body || !body.id) return res.status(400).json({ error: 'Invalid payload' });
+  if (!body) return res.status(400).json({ error: 'Invalid payload' });
   try {
-    const query = `INSERT INTO recebimentos(id, modelo, serial, pon, mac, datahora, usuario, no_pre_alerta, matched_value, codigo, descricao, fabricante)
-      VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)
-      ON CONFLICT (id) DO UPDATE SET modelo = EXCLUDED.modelo`;
+    const query = `INSERT INTO recebimentos(fabricante, modelo, serial_number, gpon_id, mac, usuario, data_hora, no_pre_alerta, matched_value, codigo, descricao)
+      VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)`;
     const params = [
-      body.id,
+      body.fabricante || null,
       body.modelo,
       body.serial,
       body.pon || null,
       body.mac,
-      body.dataHora ? new Date(body.dataHora) : new Date(),
       body.usuario || null,
+      body.dataHora ? new Date(body.dataHora) : new Date(),
       body.noPreAlerta || false,
       body.matchedValue || null,
       body.codigo || null,
-      body.descricao || null,
-      body.fabricante || null
+      body.descricao || null
     ];
     await pool.query(query, params);
     res.json({ ok: true });
@@ -264,12 +270,12 @@ app.get('/api/recebimentos/report', async (req, res) => {
     let paramIndex = 1;
 
     if (start) {
-      query += ` AND datahora >= $${paramIndex}`;
+      query += ` AND data_hora >= $${paramIndex}`;
       params.push(new Date(start + 'T00:00:00'));
       paramIndex++;
     }
     if (end) {
-      query += ` AND datahora <= $${paramIndex}`;
+      query += ` AND data_hora <= $${paramIndex}`;
       params.push(new Date(end + 'T23:59:59'));
       paramIndex++;
     }
@@ -279,7 +285,7 @@ app.get('/api/recebimentos/report', async (req, res) => {
       paramIndex++;
     }
 
-    query += ' ORDER BY datahora DESC';
+    query += ' ORDER BY data_hora DESC';
     const result = await pool.query(query, params);
     res.json(result.rows);
   } catch (err) {

@@ -981,16 +981,16 @@ function setupReportListeners() {
             if (rows.length === 0) { alert("Nenhum dado encontrado para exportar nesse periodo."); return; }
             
             const data = rows.map(item => ({
-                "SERIAL PRE ALERTA": item.matched_value || item.serial,
-                SERIAL: item.serial,
-                PON_ID: item.pon,
-                MAC: item.mac,
-                MODELO: item.modelo,
-                CODIGO: item.codigo,
-                DESCRICAO: item.descricao,
-                FABRICANTE: item.fabricante,
-                DATA_HORA: new Date(item.datahora).toLocaleString('pt-BR'),
-                USUARIO: item.usuario || ''
+                ID: item.id,
+                Fabricante: item.fabricante || '',
+                Modelo: item.modelo || '',
+                "Serial Number": item.serial_number || '',
+                "GPON ID": item.gpon_id || '',
+                MAC: item.mac || '',
+                "Usuário": item.usuario || '',
+                Data_Hora: new Date(item.data_hora).toLocaleString('pt-BR'),
+                "Código": item.codigo || '',
+                "Descrição": item.descricao || ''
             }));
 
             const worksheet = XLSX.utils.json_to_sheet(data);
@@ -1019,12 +1019,14 @@ function setupReportListeners() {
             if (rows.length === 0) { alert("Nenhum dado encontrado para exportar nesse periodo."); return; }
             
             const data = rows.map(item => ({
-                SERIAL: item.serial,
-                PON_ID: item.pon,
-                MAC: item.mac,
-                MODELO: item.modelo,
-                DATA_HORA: new Date(item.datahora).toLocaleString('pt-BR'),
-                USUARIO: item.usuario || ''
+                ID: item.id,
+                Fabricante: item.fabricante || '',
+                Modelo: item.modelo || '',
+                "Serial Number": item.serial_number || '',
+                "GPON ID": item.gpon_id || '',
+                MAC: item.mac || '',
+                "Usuário": item.usuario || '',
+                Data_Hora: new Date(item.data_hora).toLocaleString('pt-BR')
             }));
 
             const worksheet = XLSX.utils.json_to_sheet(data);
