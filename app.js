@@ -971,8 +971,8 @@ function setupReportListeners() {
             
             if (rows.length === 0) { alert("Nenhum dado encontrado para exportar nesse periodo."); return; }
             
-            const data = rows.map(item => ({
-                ID: item.id,
+            const data = rows.map((item, index) => ({
+                ID: index + 1,
                 Fabricante: item.fabricante || '',
                 Modelo: item.modelo || '',
                 "Serial Number": item.serial_number || '',
@@ -1011,8 +1011,8 @@ function setupReportListeners() {
             
             if (rows.length === 0) { alert("Nenhum dado encontrado para exportar nesse periodo."); return; }
             
-            const data = rows.map(item => ({
-                ID: item.id,
+            const data = rows.map((item, index) => ({
+                ID: index + 1,
                 Fabricante: item.fabricante || '',
                 Modelo: item.modelo || '',
                 "Serial Number": item.serial_number || '',
