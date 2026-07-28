@@ -69,6 +69,28 @@ async function ensureDBAndMinIO() {
       descricao TEXT
     )`);
 
+    // Migrate data from recebimentos_old to the new table
+    const checkOldTable = await client.query(`
+      SELECT EXISTS (
+        SELECT FROM information_schema.tables 
+        WHERE table_name = 'recebimentos_old'
+      )
+    `);
+    if (checkOldTable.rows[0].exists) {
+      console.log('Migrating data from recebimentos_old to new recebimentos table...');
+      try {
+        await client.query(`
+          INSERT INTO recebimentos (fabricante, modelo, serial_number, gpon_id, mac, usuario, data_hora, no_pre_alerta, matched_value, codigo, descricao)
+          SELECT fabricante, modelo, serial, pon, mac, usuario, datahora, no_pre_alerta, matched_value, codigo, descricao
+          FROM recebimentos_old
+        `);
+        await client.query(`ALTER TABLE recebimentos_old RENAME TO recebimentos_migrated`);
+        console.log('Data migration complete. Renamed recebimentos_old to recebimentos_migrated.');
+      } catch (migrationErr) {
+        console.error('Error during data migration:', migrationErr);
+      }
+    }
+
     await client.query(`CREATE TABLE IF NOT EXISTS usuarios (
       username TEXT PRIMARY KEY,
       password TEXT,
