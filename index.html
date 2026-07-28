@@ -146,11 +146,15 @@
                 <header class="section-header">
                     <div style="display: flex; justify-content: space-between; align-items: center; width: 100%; flex-wrap: wrap; gap: 1rem;">
                         <h1 style="margin: 0;">Extração de Relatórios</h1>
-                        <div class="date-filter form-group" style="display: flex; gap: 0.5rem; align-items: center; margin: 0; background: rgba(0,0,0,0.2); padding: 0.5rem; border-radius: 8px;">
+                        <div class="date-filter form-group" style="display: flex; gap: 0.5rem; align-items: center; margin: 0; background: rgba(0,0,0,0.2); padding: 0.5rem; border-radius: 8px; flex-wrap: wrap;">
                             <label style="margin: 0; font-size: 0.9rem; font-weight: 500;">De:</label>
                             <input type="date" id="report-date-start" class="form-control" style="padding: 0.4rem; height: auto;">
                             <label style="margin: 0; font-size: 0.9rem; font-weight: 500; margin-left: 0.5rem;">Até:</label>
                             <input type="date" id="report-date-end" class="form-control" style="padding: 0.4rem; height: auto;">
+                            <label style="margin: 0; font-size: 0.9rem; font-weight: 500; margin-left: 0.5rem;">Modelo:</label>
+                            <select id="report-modelo" class="form-control" style="padding: 0.4rem; height: auto; background: rgba(0, 0, 0, 0.4); border: 1px solid rgba(255, 255, 255, 0.2); color: var(--text-primary); border-radius: 4px;">
+                                <option value="" style="color: black;">Todos</option>
+                            </select>
                         </div>
                     </div>
                 </header>

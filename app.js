@@ -197,7 +197,11 @@ async function loadModels() {
     window.modelFieldsConfig = {};
     window.modelRulesConfig = {};
     const select = document.getElementById('modelo');
-    select.innerHTML = '';
+    if (select) select.innerHTML = '';
+    const reportSelect = document.getElementById('report-modelo');
+    if (reportSelect) {
+        reportSelect.innerHTML = '<option value="" style="color: black;">Todos</option>';
+    }
 
     savedModels.forEach(model => {
         let name = model;
@@ -221,6 +225,14 @@ async function loadModels() {
         option.value = name;
         option.textContent = name;
         select.appendChild(option);
+
+        if (reportSelect) {
+            const optReport = document.createElement('option');
+            optReport.value = name;
+            optReport.textContent = name;
+            optReport.style.color = 'black';
+            reportSelect.appendChild(optReport);
+        }
     });
     if (typeof updateFormFields === 'function') updateFormFields();
 }
@@ -945,10 +957,12 @@ function setupReportListeners() {
     document.getElementById('btn-export-prealerta').addEventListener('click', async () => {
         const startVal = document.getElementById('report-date-start').value;
         const endVal = document.getElementById('report-date-end').value;
+        const modeloVal = document.getElementById('report-modelo').value;
         
         let url = `${SERVER_URL.replace(/\/$/, '')}/api/recebimentos/report?noPreAlerta=true`;
         if (startVal) url += `&start=${startVal}`;
         if (endVal) url += `&end=${endVal}`;
+        if (modeloVal) url += `&modelo=${encodeURIComponent(modeloVal)}`;
 
         try {
             const res = await fetch(url);
@@ -983,10 +997,12 @@ function setupReportListeners() {
     document.getElementById('btn-export-fora').addEventListener('click', async () => {
         const startVal = document.getElementById('report-date-start').value;
         const endVal = document.getElementById('report-date-end').value;
+        const modeloVal = document.getElementById('report-modelo').value;
         
         let url = `${SERVER_URL.replace(/\/$/, '')}/api/recebimentos/report?noPreAlerta=false`;
         if (startVal) url += `&start=${startVal}`;
         if (endVal) url += `&end=${endVal}`;
+        if (modeloVal) url += `&modelo=${encodeURIComponent(modeloVal)}`;
 
         try {
             const res = await fetch(url);

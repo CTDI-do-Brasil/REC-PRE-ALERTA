@@ -294,7 +294,7 @@ app.post('/api/recebimentos', async (req, res) => {
 
 // Fetch recebimentos report data from Postgres
 app.get('/api/recebimentos/report', async (req, res) => {
-  const { start, end, noPreAlerta } = req.query;
+  const { start, end, noPreAlerta, modelo } = req.query;
   try {
     let query = 'SELECT * FROM recebimentos WHERE 1=1';
     const params = [];
@@ -313,6 +313,11 @@ app.get('/api/recebimentos/report', async (req, res) => {
     if (noPreAlerta !== undefined) {
       query += ` AND no_pre_alerta = $${paramIndex}`;
       params.push(noPreAlerta === 'true');
+      paramIndex++;
+    }
+    if (modelo) {
+      query += ` AND modelo = $${paramIndex}`;
+      params.push(modelo);
       paramIndex++;
     }
 
