@@ -606,23 +606,6 @@ function setupEventListeners() {
         }
     });
 
-    let globalDebounce;
-    if (form) {
-        form.addEventListener('input', () => {
-            clearTimeout(globalDebounce);
-            globalDebounce = setTimeout(() => {
-                const modelo = document.getElementById('modelo').value;
-                const isEx = (window.modelFieldsConfig[modelo] === 2);
-                const s = document.getElementById('serial').value.trim();
-                const p = document.getElementById('pon').value.trim();
-                const m = document.getElementById('mac').value.trim();
-                if (s.length > 3 && m.length > 3 && (isEx || p.length > 3)) {
-                    processRecebimento();
-                }
-            }, 600);
-        });
-    }
-
     document.getElementById('btn-modal-ok').addEventListener('click', confirmSegregar);
     document.getElementById('modelo').addEventListener('change', updateFormFields);
 
@@ -804,9 +787,16 @@ async function processRecebimento() {
             return;
         }
 
-        const duplicate = await checkDuplicity(serial, pon, mac);
-        if (duplicate) {
-            const dateStr = new Date(duplicate.dataHora || duplicate.datahora).toLocaleString('pt-BR');
+        // Validate duplicate status and pre-alerta match in a single HTTP request!
+        const validateUrl = `${SERVER_URL.replace(/\/$/, '')}/api/recebimentos/validate?serial=${encodeURIComponent(serial)}&pon=${encodeURIComponent(pon)}&mac=${encodeURIComponent(mac)}`;
+        const valRes = await fetch(validateUrl);
+        if (!valRes.ok) throw new Error('Validation failed');
+        const validation = await valRes.json();
+
+        // 1. Check duplicate
+        if (validation.duplicate) {
+            const dup = validation.duplicateData;
+            const dateStr = new Date(dup.data_hora).toLocaleString('pt-BR');
             showMessage('UNIDADE JA RECEBIDA (' + dateStr + ')', 'error');
             document.getElementById('serial').value = '';
             if (!isException) document.getElementById('pon').value = '';
@@ -817,6 +807,7 @@ async function processRecebimento() {
             return;
         }
 
+        // 2. Setup unit data
         const unitData = {
             id: Date.now().toString(),
             modelo,
@@ -827,25 +818,11 @@ async function processRecebimento() {
             usuario: currentUser ? currentUser.username : 'DESCONHECIDO'
         };
 
-        let preAlertaMatch = null;
-        let matchedValue = '';
-
-        // Check pre-alerta sequentially on PostgreSQL database
-        preAlertaMatch = await checkPreAlertaOnServer(serial);
-        if (preAlertaMatch) {
-            matchedValue = serial;
-        } else if (pon) {
-            preAlertaMatch = await checkPreAlertaOnServer(pon);
-            if (preAlertaMatch) matchedValue = pon;
-        }
-        if (!preAlertaMatch && mac) {
-            preAlertaMatch = await checkPreAlertaOnServer(mac);
-            if (preAlertaMatch) matchedValue = mac;
-        }
-
-        if (preAlertaMatch) {
+        // 3. Check pre-alerta match
+        if (validation.preAlertaMatch) {
+            const preAlertaMatch = validation.preAlertaMatch;
             unitData.noPreAlerta = true;
-            unitData.matchedValue = matchedValue;
+            unitData.matchedValue = validation.matchedValue;
             unitData.codigo = preAlertaMatch.codigo;
             unitData.descricao = preAlertaMatch.descricao;
             unitData.fabricante = preAlertaMatch.fabricante;

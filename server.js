@@ -211,25 +211,56 @@ app.get('/api/pre-alerta/check', async (req, res) => {
   }
 });
 
-// Check duplicity of scans in Postgres
-app.get('/api/recebimentos/check', async (req, res) => {
+// Validate scan: checks duplicity and pre-alerta match in one database trip
+app.get('/api/recebimentos/validate', async (req, res) => {
   const { serial, pon, mac } = req.query;
+  const s = (serial || '').trim().toUpperCase();
+  const p = (pon || '').trim().toUpperCase();
+  const m = (mac || '').trim().toUpperCase();
+
   try {
-    const result = await pool.query(
+    // 1. Check duplicity in Postgres
+    const dupResult = await pool.query(
       `SELECT * FROM recebimentos 
        WHERE (serial_number IS NOT NULL AND serial_number = $1)
           OR (gpon_id IS NOT NULL AND gpon_id = $2)
           OR (mac IS NOT NULL AND mac = $3)
        LIMIT 1`,
-      [serial || null, pon || null, mac || null]
+      [s || null, p || null, m || null]
     );
-    if (result.rows.length > 0) {
-      return res.json({ duplicate: true, data: result.rows[0] });
+
+    if (dupResult.rows.length > 0) {
+      return res.json({ 
+        duplicate: true, 
+        duplicateData: dupResult.rows[0] 
+      });
     }
-    res.json({ duplicate: false });
+
+    // 2. Check Pre-Alerta match in Postgres
+    let preAlertaMatch = null;
+    let matchedValue = '';
+
+    const checkValues = [s, p, m].filter(Boolean);
+    if (checkValues.length > 0) {
+      // Find match
+      const matchResult = await pool.query(
+        'SELECT * FROM pre_alertas WHERE serial = ANY($1)',
+        [checkValues]
+      );
+      if (matchResult.rows.length > 0) {
+        preAlertaMatch = matchResult.rows[0];
+        matchedValue = preAlertaMatch.serial;
+      }
+    }
+
+    res.json({
+      duplicate: false,
+      preAlertaMatch,
+      matchedValue
+    });
   } catch (err) {
-    console.error('Error checking duplicity:', err);
-    res.status(500).json({ error: 'DB check error' });
+    console.error('Error validating scan:', err);
+    res.status(500).json({ error: 'Validation database error.' });
   }
 });
 
