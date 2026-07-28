@@ -302,12 +302,13 @@ app.get('/api/recebimentos/report', async (req, res) => {
 
     if (start) {
       query += ` AND data_hora >= $${paramIndex}`;
-      params.push(new Date(start + 'T00:00:00'));
+      params.push(`${start} 00:00:00`);
+      // or directly formatted string which is timezone-independent
       paramIndex++;
     }
     if (end) {
       query += ` AND data_hora <= $${paramIndex}`;
-      params.push(new Date(end + 'T23:59:59'));
+      params.push(`${end} 23:59:59`);
       paramIndex++;
     }
     if (noPreAlerta !== undefined) {
