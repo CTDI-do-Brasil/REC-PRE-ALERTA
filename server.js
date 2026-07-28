@@ -305,6 +305,32 @@ app.delete('/api/recebimentos/clear', async (req, res) => {
   }
 });
 
+// Query scanned units (recebimentos) by Serial Number, MAC or GPON ID
+app.get('/api/consulta', async (req, res) => {
+  const { value } = req.query;
+  if (!value) return res.status(400).json({ error: 'Missing query parameter "value"' });
+  const cleanVal = value.trim().toUpperCase();
+
+  try {
+    const result = await pool.query(
+      `SELECT id, fabricante, modelo, serial_number, gpon_id, mac, usuario, data_hora, no_pre_alerta, matched_value, codigo, descricao
+       FROM recebimentos 
+       WHERE UPPER(serial_number) = $1 
+          OR UPPER(gpon_id) = $1 
+          OR UPPER(mac) = $1
+       ORDER BY data_hora DESC`,
+      [cleanVal]
+    );
+    if (result.rows.length > 0) {
+      return res.json({ found: true, results: result.rows });
+    }
+    res.json({ found: false, message: 'No records found for the provided value.' });
+  } catch (err) {
+    console.error('Error querying recebimentos:', err);
+    res.status(500).json({ error: 'Database query error.' });
+  }
+});
+
 // User management routes
 
 // Get all users
