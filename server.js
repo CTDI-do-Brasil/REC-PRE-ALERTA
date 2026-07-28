@@ -308,7 +308,7 @@ app.delete('/api/recebimentos/clear', async (req, res) => {
 // External API to query scanned units by Serial Number, MAC or GPON ID (protected with x-api-key)
 app.get('/api/external/units', async (req, res) => {
   const apiKeyHeader = req.headers['x-api-key'];
-  const expectedApiKey = process.env.API_KEY || 'ctdi_76ep96llk6zF63CJgd1iXggfb2JCJr0VfgRr';
+  const expectedApiKey = process.env.API_KEY || process.env.EXTERNAL_API_KEY || 'ctdi_76ep96llk6zF63CJgd1iXggfb2JCJr0VfgRr';
 
   if (!apiKeyHeader || apiKeyHeader !== expectedApiKey) {
     return res.status(401).json({ error: 'Unauthorized. Invalid or missing x-api-key.' });
