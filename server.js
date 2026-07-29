@@ -113,6 +113,18 @@ async function ensureDBAndMinIO() {
       updated_at TIMESTAMP DEFAULT NOW()
     )`);
 
+    // Clean up unwanted test/seed models from database
+    const unwantedSeeds = ['GP1100X', 'H803A', 'EG8145V5', 'HG8145V5', 'EG8145V5-V2', 'HG8145V5-V2', 'HG8010H', 'EG8010H'];
+    await client.query('DELETE FROM modelos WHERE name = ANY($1)', [unwantedSeeds]);
+
+    // Ensure all 12 real CTDI default models exist in database
+    for (const m of DEFAULT_MODELS_SEED) {
+      await client.query(
+        'INSERT INTO modelos(name, data, updated_at) VALUES($1, $2, NOW()) ON CONFLICT(name) DO NOTHING',
+        [m.name, JSON.stringify(m)]
+      );
+    }
+
     console.log('Postgres tables verified/created successfully.');
   } catch (err) {
     console.error('Error establishing database tables:', err);
@@ -433,21 +445,23 @@ app.get('/api/external/units', async (req, res) => {
 });
 
 const DEFAULT_MODELS_SEED = [
-  { name: 'BCSKV630', fields: 2, rules: { serial: 'E4C0E2', gpon: '', mac: 'E4C0E2' } },
-  { name: 'BC-UM221E', fields: 2, rules: { serial: 'E4C0E2', gpon: '', mac: 'E4C0E2' } },
-  { name: 'GP1100X', fields: 3, rules: { serial: '', gpon: '', mac: '' } },
-  { name: 'H803A', fields: 3, rules: { serial: '', gpon: '', mac: '' } },
-  { name: 'EG8145V5', fields: 3, rules: { serial: '', gpon: '', mac: '' } },
-  { name: 'HG8145V5', fields: 3, rules: { serial: '', gpon: '', mac: '' } },
-  { name: 'EG8145V5-V2', fields: 3, rules: { serial: '', gpon: '', mac: '' } },
-  { name: 'HG8145V5-V2', fields: 3, rules: { serial: '', gpon: '', mac: '' } },
-  { name: 'HG8010H', fields: 3, rules: { serial: '', gpon: '', mac: '' } },
-  { name: 'EG8010H', fields: 3, rules: { serial: '', gpon: '', mac: '' } }
+  { name: "BCSKV630", fields: 2, rules: { serial: "BCSK" } },
+  { name: "FAST 5655 V2", fields: 3, rules: { serial: "N7", pon: "SMBS" } },
+  { name: "FAST 5657", fields: 3, rules: { serial: "N7", pon: "SMBS", mac: "C03C04" } },
+  { name: "FAST 5670 V2", fields: 3, rules: { serial: "N7, OC", pon: "SMBS", mac: "E4C0E2, 7C1689" } },
+  { name: "FGA2232", fields: 3, rules: { serial: "CP", pon: "TMBB", mac: "A0B53C, D4925E" } },
+  { name: "PG2447", fields: 3, rules: { serial: "GPO", pon: "KAON", mac: "1834AF" } },
+  { name: "NP5454T", fields: 3, rules: { serial: "T25", pon: "TLCT", mac: "104121" } },
+  { name: "ZXHN F680", fields: 3, rules: { serial: "ZTEEQ", pon: "ZTEGC" } },
+  { name: "ZXHN F6600P", fields: 3, rules: { serial: "ZTE3, ZTEGD", pon: "ZTE3, ZTEGD" } },
+  { name: "BC-UM221E", fields: 2, rules: { serial: "FTTH" } },
+  { name: "HG8145X6-10", fields: 3, rules: { serial: "2102315", pon: "HWTC" } },
+  { name: "NP7287", fields: 3, rules: { serial: "T25", pon: "TLCTA" } }
 ];
 
 // App Version Check for Auto-Update
 app.get('/api/version', (req, res) => {
-  res.json({ version: 'v1.4.5' });
+  res.json({ version: 'v1.4.6' });
 });
 
 // GET all models from Postgres
