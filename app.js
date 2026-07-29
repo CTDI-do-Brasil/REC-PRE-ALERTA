@@ -1,4 +1,4 @@
-const CURRENT_APP_VERSION = 'v1.4.3';
+const CURRENT_APP_VERSION = 'v1.4.4';
 
 function startVersionPolling() {
     setInterval(async () => {
@@ -249,11 +249,9 @@ function setupAuthListeners() {
         });
         formLogin.addEventListener('keypress', checkCapsLockChar);
     }
-    window.addEventListener('keyup', (e) => {
-        if (e.key === 'CapsLock' && e.getModifierState) {
-            updateCapsDisplay(e.getModifierState('CapsLock'));
-        }
-    });
+    window.addEventListener('keydown', checkCapsLockState);
+    window.addEventListener('keyup', checkCapsLockState);
+    window.addEventListener('click', checkCapsLockState);
 
     formLogin.addEventListener('submit', async (e) => {
         e.preventDefault();
