@@ -1,4 +1,4 @@
-const CURRENT_APP_VERSION = 'v1.3.11';
+const CURRENT_APP_VERSION = 'v1.3.12';
 
 function startVersionPolling() {
     setInterval(async () => {
@@ -153,9 +153,24 @@ document.addEventListener('DOMContentLoaded', async () => {
     setupEventListeners();
     setupAuthListeners();
     setupAdminListeners();
-    setupReportListeners();
-    // Show login overlay at start
-    showLoginOverlay();
+    // Check persisted login session on F5/refresh
+    const savedUserStr = localStorage.getItem('preAlertaLoggedUser');
+    let restoredSession = false;
+    if (savedUserStr) {
+        try {
+            const savedUser = JSON.parse(savedUserStr);
+            if (savedUser && savedUser.username) {
+                applyAccessLevel(savedUser);
+                hideLoginOverlay();
+                restoredSession = true;
+            }
+        } catch (err) {
+            console.warn('Invalid persisted session:', err);
+        }
+    }
+    if (!restoredSession) {
+        showLoginOverlay();
+    }
     startVersionPolling();
 });
 
@@ -198,6 +213,7 @@ function setupAuthListeners() {
         if (user) {
             applyAccessLevel(user);
             hideLoginOverlay();
+            localStorage.setItem('preAlertaLoggedUser', JSON.stringify(user));
         } else {
             document.getElementById('login-error').classList.remove('hidden');
         }
@@ -205,6 +221,7 @@ function setupAuthListeners() {
 
     document.getElementById('btn-logout').addEventListener('click', () => {
         currentUser = null;
+        localStorage.removeItem('preAlertaLoggedUser');
         // Navigate back to first tab
         const navLinks = document.querySelectorAll('.nav-links li');
         const tabs = document.querySelectorAll('.tab-content');
