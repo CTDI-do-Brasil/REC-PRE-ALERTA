@@ -1,4 +1,4 @@
-const CURRENT_APP_VERSION = 'v1.4.4';
+const CURRENT_APP_VERSION = 'v1.4.5';
 
 function startVersionPolling() {
     setInterval(async () => {
@@ -134,14 +134,14 @@ function showLoginOverlay() {
     document.getElementById('login-password').value = '';
     document.getElementById('login-error').classList.add('hidden');
     const capsWarning = document.getElementById('login-caps-warning');
-    if (capsWarning) capsWarning.classList.add('hidden');
+    if (capsWarning) capsWarning.style.display = 'none';
     setTimeout(() => document.getElementById('login-username').focus(), 100);
 }
 
 function hideLoginOverlay() {
     document.getElementById('login-overlay').classList.add('hidden');
     const capsWarning = document.getElementById('login-caps-warning');
-    if (capsWarning) capsWarning.classList.add('hidden');
+    if (capsWarning) capsWarning.style.display = 'none';
 }
 
 // ============================================================
@@ -216,9 +216,9 @@ function setupAuthListeners() {
         const capsWarning = document.getElementById('login-caps-warning');
         if (!capsWarning) return;
         if (active) {
-            capsWarning.classList.remove('hidden');
+            capsWarning.style.display = 'flex';
         } else {
-            capsWarning.classList.add('hidden');
+            capsWarning.style.display = 'none';
         }
     };
 
