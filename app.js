@@ -995,6 +995,7 @@ function setupReportListeners() {
                 "Serial Number": item.serial_number || '',
                 "GPON ID": item.gpon_id || '',
                 MAC: item.mac || '',
+                "Serial_Pre_Alerta": item.matched_value || '',
                 "Usuário": item.usuario || '',
                 Data_Hora: new Date(item.data_hora).toLocaleString('pt-BR'),
                 "Código": item.codigo || '',
@@ -1035,6 +1036,7 @@ function setupReportListeners() {
                 "Serial Number": item.serial_number || '',
                 "GPON ID": item.gpon_id || '',
                 MAC: item.mac || '',
+                "Serial_Pre_Alerta": item.matched_value || '',
                 "Usuário": item.usuario || '',
                 Data_Hora: new Date(item.data_hora).toLocaleString('pt-BR')
             }));
