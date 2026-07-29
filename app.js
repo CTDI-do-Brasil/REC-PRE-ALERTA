@@ -1,4 +1,4 @@
-const CURRENT_APP_VERSION = 'v1.4.0';
+const CURRENT_APP_VERSION = 'v1.4.1';
 
 function startVersionPolling() {
     setInterval(async () => {
@@ -191,6 +191,8 @@ function setupNavigation() {
                     tab.classList.add('active');
                     if (target === 'admin') {
                         renderUsersList();
+                    }
+                    if (target === 'relatorios' || target === 'admin') {
                         loadAdminProductionDashboard();
                     }
                 }

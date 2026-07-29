@@ -42,7 +42,7 @@
                 <div class="sidebar-user-info">
                     <span class="sidebar-user-label">Usuário Logado</span>
                     <strong id="display-user-name" class="sidebar-user-name">---</strong>
-                    <span class="sidebar-version" style="font-size: 0.7rem; color: rgba(255, 255, 255, 0.3); display: block; margin-top: 4px; font-weight: 500;">v1.4.0</span>
+                    <span class="sidebar-version" style="font-size: 0.7rem; color: rgba(255, 255, 255, 0.3); display: block; margin-top: 4px; font-weight: 500;">v1.4.1</span>
                 </div>
                 <button id="btn-logout" class="btn btn-secondary btn-icon" title="Sair">
                     <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"></path><polyline points="16 17 21 12 16 7"></polyline><line x1="21" y1="12" x2="9" y2="12"></line></svg>
@@ -160,39 +160,6 @@
                 </header>
                 
                 <div class="reports-grid">
-                    <div class="card glass report-card">
-                        <div class="report-icon success-icon">
-                            <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><polyline points="22 4 12 14.01 9 11.01"/></svg>
-                        </div>
-                        <h3>No Pré-Alerta</h3>
-                        <p>Exportar recebimentos que constavam no Pré-Alerta com as informações da base.</p>
-                        <button id="btn-export-prealerta" class="btn btn-primary">Exportar Relatório</button>
-                    </div>
-
-                    <div class="card glass report-card">
-                        <div class="report-icon warning-icon">
-                            <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
-                        </div>
-                        <h3>Fora do Pré-Alerta</h3>
-                        <p>Exportar unidades que não estavam na base e foram segregadas (com modelo).</p>
-                        <button id="btn-export-fora" class="btn btn-secondary">Exportar Relatório</button>
-                    </div>
-                    
-                    <div class="card glass report-card mt-4 span-2">
-                        <h3>Limpeza de Dados</h3>
-                        <p>Cuidado: esta ação apaga todos os registros de recebimento salvos localmente.</p>
-                        <button id="btn-clear-recebidos" class="btn btn-danger mt-2">Limpar Histórico de Recebimentos</button>
-                    </div>
-                </div>
-            </section>
-
-            <!-- Admin Tab -->
-            <section id="admin" class="tab-content">
-                <header class="section-header">
-                    <h1>Administração do Sistema</h1>
-                </header>
-                
-                <div class="reports-grid">
                     <div class="card glass report-card span-2" style="flex-direction: column; align-items: stretch; margin-bottom: 0.5rem;">
                         <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 1rem;">
                             <div>
@@ -231,6 +198,39 @@
                         </div>
                     </div>
 
+                    <div class="card glass report-card">
+                        <div class="report-icon success-icon">
+                            <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><polyline points="22 4 12 14.01 9 11.01"/></svg>
+                        </div>
+                        <h3>No Pré-Alerta</h3>
+                        <p>Exportar recebimentos que constavam no Pré-Alerta com as informações da base.</p>
+                        <button id="btn-export-prealerta" class="btn btn-primary">Exportar Relatório</button>
+                    </div>
+
+                    <div class="card glass report-card">
+                        <div class="report-icon warning-icon">
+                            <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
+                        </div>
+                        <h3>Fora do Pré-Alerta</h3>
+                        <p>Exportar unidades que não estavam na base e foram segregadas (com modelo).</p>
+                        <button id="btn-export-fora" class="btn btn-secondary">Exportar Relatório</button>
+                    </div>
+                    
+                    <div class="card glass report-card mt-4 span-2">
+                        <h3>Limpeza de Dados</h3>
+                        <p>Cuidado: esta ação apaga todos os registros de recebimento salvos localmente.</p>
+                        <button id="btn-clear-recebidos" class="btn btn-danger mt-2">Limpar Histórico de Recebimentos</button>
+                    </div>
+                </div>
+            </section>
+
+            <!-- Admin Tab -->
+            <section id="admin" class="tab-content">
+                <header class="section-header">
+                    <h1>Administração do Sistema</h1>
+                </header>
+                
+                <div class="reports-grid">
                     <div class="card glass report-card span-2" style="flex-direction: row; align-items: center; justify-content: space-between; gap: 1rem; flex-wrap: wrap;">
                         <div style="flex: 1;">
                             <h3>Cadastro de Usuários</h3>
