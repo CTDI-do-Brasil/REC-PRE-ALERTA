@@ -107,6 +107,12 @@ async function ensureDBAndMinIO() {
       console.log('Default admin user created.');
     }
 
+    await client.query(`CREATE TABLE IF NOT EXISTS modelos (
+      name TEXT PRIMARY KEY,
+      data JSONB NOT NULL,
+      updated_at TIMESTAMP DEFAULT NOW()
+    )`);
+
     console.log('Postgres tables verified/created successfully.');
   } catch (err) {
     console.error('Error establishing database tables:', err);
@@ -422,6 +428,66 @@ app.get('/api/external/units', async (req, res) => {
   } catch (err) {
     console.error('Error querying recebimentos:', err);
     res.status(500).json({ error: 'Database query error.' });
+  }
+});
+
+const DEFAULT_MODELS_SEED = [
+  { name: 'BCSKV630', fields: 2, rules: { serial: 'E4C0E2', gpon: '', mac: 'E4C0E2' } },
+  { name: 'BC-UM221E', fields: 2, rules: { serial: 'E4C0E2', gpon: '', mac: 'E4C0E2' } },
+  { name: 'GP1100X', fields: 3, rules: { serial: '', gpon: '', mac: '' } },
+  { name: 'H803A', fields: 3, rules: { serial: '', gpon: '', mac: '' } },
+  { name: 'EG8145V5', fields: 3, rules: { serial: '', gpon: '', mac: '' } },
+  { name: 'HG8145V5', fields: 3, rules: { serial: '', gpon: '', mac: '' } },
+  { name: 'EG8145V5-V2', fields: 3, rules: { serial: '', gpon: '', mac: '' } },
+  { name: 'HG8145V5-V2', fields: 3, rules: { serial: '', gpon: '', mac: '' } },
+  { name: 'HG8010H', fields: 3, rules: { serial: '', gpon: '', mac: '' } },
+  { name: 'EG8010H', fields: 3, rules: { serial: '', gpon: '', mac: '' } }
+];
+
+// App Version Check for Auto-Update
+app.get('/api/version', (req, res) => {
+  res.json({ version: 'v1.3.10' });
+});
+
+// GET all models from Postgres
+app.get('/api/modelos', async (req, res) => {
+  try {
+    const result = await pool.query('SELECT data FROM modelos ORDER BY name ASC');
+    if (result.rows.length === 0) {
+      for (const m of DEFAULT_MODELS_SEED) {
+        await pool.query(
+          'INSERT INTO modelos(name, data, updated_at) VALUES($1, $2, NOW()) ON CONFLICT(name) DO NOTHING',
+          [m.name, JSON.stringify(m)]
+        );
+      }
+      return res.json(DEFAULT_MODELS_SEED);
+    }
+    const list = result.rows.map(r => r.data);
+    res.json(list);
+  } catch (err) {
+    console.error('Error fetching modelos:', err);
+    res.status(500).json({ error: 'Failed to fetch modelos' });
+  }
+});
+
+// POST save/sync models list to Postgres (Admin only in UI)
+app.post('/api/modelos', async (req, res) => {
+  const { models } = req.body;
+  if (!Array.isArray(models)) return res.status(400).json({ error: 'Invalid models array' });
+  try {
+    for (const m of models) {
+      const name = typeof m === 'object' ? m.name : m;
+      const obj = typeof m === 'object' ? m : { name: m, fields: 3, rules: {} };
+      await pool.query(
+        `INSERT INTO modelos(name, data, updated_at) VALUES($1, $2, NOW())
+         ON CONFLICT(name) DO UPDATE SET data = EXCLUDED.data, updated_at = NOW()`,
+        [name, JSON.stringify(obj)]
+      );
+    }
+    res.json({ ok: true });
+  } catch (err) {
+    console.error('Error saving modelos:', err);
+    res.status(500).json({ error: 'Failed to save modelos' });
   }
 });
 

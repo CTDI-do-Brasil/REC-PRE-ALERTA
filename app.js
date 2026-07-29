@@ -1,3 +1,25 @@
+const CURRENT_APP_VERSION = 'v1.3.10';
+
+function startVersionPolling() {
+    setInterval(async () => {
+        try {
+            const res = await fetch(`${SERVER_URL.replace(/\/$/, '')}/api/version`);
+            if (res.ok) {
+                const data = await res.json();
+                if (data && data.version && data.version !== CURRENT_APP_VERSION) {
+                    const openModals = document.querySelectorAll('.modal-overlay:not(.hidden)');
+                    if (openModals.length === 0) {
+                        console.log(`Nova versão detectada (${data.version}). Atualizando navegador...`);
+                        window.location.reload(true);
+                    }
+                }
+            }
+        } catch (err) {
+            // Silently ignore network errors
+        }
+    }, 120000);
+}
+
 // Initialize LocalForage Instances
 const dbPreAlerta = localforage.createInstance({ name: "PreAlertaApp", storeName: "preAlerta" });
 const dbRecebidos = localforage.createInstance({ name: "PreAlertaApp", storeName: "recebidos" });
@@ -88,15 +110,21 @@ function applyAccessLevel(user) {
     const navAdmin = document.getElementById('nav-admin');
     const navPreAlerta = document.querySelector('li[data-tab="pre-alerta"]');
     const navRelatorios = document.querySelector('li[data-tab="relatorios"]');
+    const btnEditModelo = document.getElementById('btn-edit-modelo');
+    const btnNovoModelo = document.getElementById('btn-novo-modelo');
     
     if (user.level === 'admin') {
         navAdmin.style.display = '';
         if (navPreAlerta) navPreAlerta.style.display = '';
         if (navRelatorios) navRelatorios.style.display = '';
+        if (btnEditModelo) btnEditModelo.style.display = '';
+        if (btnNovoModelo) btnNovoModelo.style.display = '';
     } else {
         navAdmin.style.display = 'none';
         if (navPreAlerta) navPreAlerta.style.display = 'none';
         if (navRelatorios) navRelatorios.style.display = 'none';
+        if (btnEditModelo) btnEditModelo.style.display = 'none';
+        if (btnNovoModelo) btnNovoModelo.style.display = 'none';
     }
 }
 
@@ -128,6 +156,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     setupReportListeners();
     // Show login overlay at start
     showLoginOverlay();
+    startVersionPolling();
 });
 
 // ============================================================
@@ -190,8 +219,35 @@ function setupAuthListeners() {
 // ============================================================
 // Models Logic
 // ============================================================
+async function syncModelsToServer(modelsList) {
+    try {
+        await fetch(`${SERVER_URL.replace(/\/$/, '')}/api/modelos`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ models: modelsList })
+        });
+    } catch (err) {
+        console.warn('Falha ao sincronizar modelos com o servidor:', err);
+    }
+}
+
 async function loadModels() {
-    let savedModels = await dbModelos.getItem('lista');
+    let savedModels = null;
+    try {
+        const res = await fetch(`${SERVER_URL.replace(/\/$/, '')}/api/modelos`);
+        if (res.ok) {
+            const serverModels = await res.json();
+            if (Array.isArray(serverModels) && serverModels.length > 0) {
+                savedModels = serverModels;
+                await dbModelos.setItem('lista', savedModels);
+            }
+        }
+    } catch (err) {
+        console.warn('Servidor de modelos offline, utilizando cache local:', err);
+    }
+    if (!savedModels || !Array.isArray(savedModels) || savedModels.length === 0) {
+        savedModels = await dbModelos.getItem('lista');
+    }
     if (!savedModels) {
         savedModels = [...defaultModels];
         await dbModelos.setItem('lista', savedModels);
@@ -305,6 +361,7 @@ document.getElementById('btn-save-modelo').addEventListener('click', async () =>
         savedModels = savedModels.filter(m => (typeof m === 'object' ? m.name : m) !== newModel);
         savedModels.push({ name: newModel, fields: campos, rules: rules });
         await dbModelos.setItem('lista', savedModels);
+        await syncModelsToServer(savedModels);
         await loadModels();
         document.getElementById('modelo').value = newModel;
         if (typeof updateFormFields === 'function') updateFormFields();
@@ -1010,11 +1067,14 @@ async function saveRecebimento(unitData) {
 async function updateCounters() {
     let countPreAlerta = 0;
     let countFora = 0;
+    const todayStr = new Date().toDateString();
     const keys = await dbRecebidos.keys();
     for (const key of keys) {
         const item = await dbRecebidos.getItem(key);
-        if (item.noPreAlerta) countPreAlerta++;
-        else countFora++;
+        if (item && item.dataHora && new Date(item.dataHora).toDateString() === todayStr) {
+            if (item.noPreAlerta) countPreAlerta++;
+            else countFora++;
+        }
     }
     document.getElementById('count-pre-alerta').textContent = countPreAlerta;
     document.getElementById('count-fora').textContent = countFora;
