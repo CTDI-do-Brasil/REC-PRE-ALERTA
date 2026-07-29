@@ -1,4 +1,4 @@
-const CURRENT_APP_VERSION = 'v1.3.12';
+const CURRENT_APP_VERSION = 'v1.4.0';
 
 function startVersionPolling() {
     setInterval(async () => {
