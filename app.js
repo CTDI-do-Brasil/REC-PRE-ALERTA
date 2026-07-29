@@ -1,4 +1,4 @@
-const CURRENT_APP_VERSION = 'v1.3.10';
+const CURRENT_APP_VERSION = 'v1.3.11';
 
 function startVersionPolling() {
     setInterval(async () => {
@@ -493,6 +493,7 @@ async function loadAdminProductionDashboard() {
         stats.forEach(s => {
             statsMap[s.usuario] = {
                 total_hoje: parseInt(s.total_hoje) || 0,
+                total_ultima_hora: parseInt(s.total_ultima_hora) || 0,
                 pre_alerta_hoje: parseInt(s.pre_alerta_hoje) || 0,
                 fora_pre_alerta_hoje: parseInt(s.fora_pre_alerta_hoje) || 0,
                 ultima_bipagem: s.ultima_bipagem ? new Date(s.ultima_bipagem).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit', second: '2-digit' }) : '-'
@@ -503,6 +504,7 @@ async function loadAdminProductionDashboard() {
             if (!statsMap[username]) {
                 statsMap[username] = {
                     total_hoje: 0,
+                    total_ultima_hora: 0,
                     pre_alerta_hoje: 0,
                     fora_pre_alerta_hoje: 0,
                     ultima_bipagem: '-'
@@ -516,15 +518,29 @@ async function loadAdminProductionDashboard() {
         })).sort((a, b) => b.total_hoje - a.total_hoje);
 
         if (combinedList.length === 0) {
-            tbody.innerHTML = '<tr><td colspan="5" style="padding: 20px; text-align: center; color: var(--text-secondary);">Nenhum operador registrado no sistema.</td></tr>';
+            tbody.innerHTML = '<tr><td colspan="6" style="padding: 20px; text-align: center; color: var(--text-secondary);">Nenhum operador registrado no sistema.</td></tr>';
         } else {
-            tbody.innerHTML = combinedList.map(item => `
+            let sumHoje = 0;
+            let sumUltimaHora = 0;
+            let sumPreAlerta = 0;
+            let sumFora = 0;
+
+            const rowsHtml = combinedList.map(item => {
+                sumHoje += item.total_hoje;
+                sumUltimaHora += item.total_ultima_hora;
+                sumPreAlerta += item.pre_alerta_hoje;
+                sumFora += item.fora_pre_alerta_hoje;
+
+                return `
                 <tr style="border-bottom: 1px solid rgba(255,255,255,0.05);">
                     <td style="padding: 10px; font-weight: 600;">
                         ${item.usuario}
                     </td>
                     <td style="padding: 10px; text-align: center;">
                         <span class="badge badge-primary" style="font-size: 0.9rem; padding: 4px 10px;">${item.total_hoje}</span>
+                    </td>
+                    <td style="padding: 10px; text-align: center;">
+                        <span class="badge" style="background: rgba(59, 130, 246, 0.2); color: #60a5fa; font-size: 0.9rem; padding: 4px 10px; font-weight: 600;">${item.total_ultima_hora}</span>
                     </td>
                     <td style="padding: 10px; text-align: center; color: #10b981; font-weight: 600;">
                         ${item.pre_alerta_hoje}
@@ -536,7 +552,33 @@ async function loadAdminProductionDashboard() {
                         ${item.ultima_bipagem}
                     </td>
                 </tr>
-            `).join('');
+                `;
+            }).join('');
+
+            const totalHtml = `
+                <tr style="border-top: 2px solid rgba(255,255,255,0.2); background: rgba(255, 255, 255, 0.05); font-weight: 700;">
+                    <td style="padding: 14px 10px; color: #fff; text-transform: uppercase; font-size: 0.95rem;">
+                        TOTAL GERAL
+                    </td>
+                    <td style="padding: 14px 10px; text-align: center;">
+                        <span class="badge badge-primary" style="font-size: 0.95rem; padding: 5px 12px; background: #3b82f6; color: #fff;">${sumHoje}</span>
+                    </td>
+                    <td style="padding: 14px 10px; text-align: center;">
+                        <span class="badge" style="background: rgba(59, 130, 246, 0.3); color: #93c5fd; font-size: 0.95rem; padding: 5px 12px; font-weight: 700;">${sumUltimaHora}</span>
+                    </td>
+                    <td style="padding: 14px 10px; text-align: center; color: #10b981; font-size: 1rem;">
+                        ${sumPreAlerta}
+                    </td>
+                    <td style="padding: 14px 10px; text-align: center; color: #f43f5e; font-size: 1rem;">
+                        ${sumFora}
+                    </td>
+                    <td style="padding: 14px 10px; text-align: right; color: var(--text-secondary);">
+                        -
+                    </td>
+                </tr>
+            `;
+
+            tbody.innerHTML = rowsHtml + totalHtml;
         }
 
         if (updatedSpan) {
@@ -546,7 +588,7 @@ async function loadAdminProductionDashboard() {
     } catch (err) {
         console.error('Erro ao carregar dashboard de produção:', err);
         if (tbody) {
-            tbody.innerHTML = '<tr><td colspan="5" style="padding: 20px; text-align: center; color: #f43f5e;">Erro ao carregar dados do servidor.</td></tr>';
+            tbody.innerHTML = '<tr><td colspan="6" style="padding: 20px; text-align: center; color: #f43f5e;">Erro ao carregar dados do servidor.</td></tr>';
         }
         if (updatedSpan) updatedSpan.textContent = 'Erro na atualização';
     }

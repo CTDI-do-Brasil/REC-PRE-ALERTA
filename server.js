@@ -371,6 +371,7 @@ app.get('/api/recebimentos/stats/operadores', async (req, res) => {
       `SELECT 
          COALESCE(usuario, 'DESCONHECIDO') AS usuario,
          COUNT(*) AS total_hoje,
+         COUNT(CASE WHEN data_hora >= NOW() - INTERVAL '1 hour' THEN 1 END) AS total_ultima_hora,
          COUNT(CASE WHEN no_pre_alerta = true THEN 1 END) AS pre_alerta_hoje,
          COUNT(CASE WHEN no_pre_alerta = false THEN 1 END) AS fora_pre_alerta_hoje,
          MAX(data_hora) AS ultima_bipagem
@@ -446,7 +447,7 @@ const DEFAULT_MODELS_SEED = [
 
 // App Version Check for Auto-Update
 app.get('/api/version', (req, res) => {
-  res.json({ version: 'v1.3.10' });
+  res.json({ version: 'v1.3.11' });
 });
 
 // GET all models from Postgres
