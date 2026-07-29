@@ -353,6 +353,34 @@ app.get('/api/recebimentos/report', async (req, res) => {
   }
 });
 
+// Fetch operator production dashboard stats for a specific date (defaulting to today in YYYY-MM-DD)
+app.get('/api/recebimentos/stats/operadores', async (req, res) => {
+  const { date } = req.query;
+  const targetDate = date || new Date().toISOString().split('T')[0];
+  const startTimestamp = `${targetDate} 00:00:00`;
+  const endTimestamp = `${targetDate} 23:59:59`;
+
+  try {
+    const result = await pool.query(
+      `SELECT 
+         COALESCE(usuario, 'DESCONHECIDO') AS usuario,
+         COUNT(*) AS total_hoje,
+         COUNT(CASE WHEN no_pre_alerta = true THEN 1 END) AS pre_alerta_hoje,
+         COUNT(CASE WHEN no_pre_alerta = false THEN 1 END) AS fora_pre_alerta_hoje,
+         MAX(data_hora) AS ultima_bipagem
+       FROM recebimentos
+       WHERE data_hora >= $1 AND data_hora <= $2
+       GROUP BY COALESCE(usuario, 'DESCONHECIDO')
+       ORDER BY total_hoje DESC, ultima_bipagem DESC`,
+      [startTimestamp, endTimestamp]
+    );
+    res.json(result.rows);
+  } catch (err) {
+    console.error('Error fetching operator stats:', err);
+    res.status(500).json({ error: 'Failed to fetch operator stats.' });
+  }
+});
+
 // Clear recebimentos history in Postgres
 app.delete('/api/recebimentos/clear', async (req, res) => {
   try {

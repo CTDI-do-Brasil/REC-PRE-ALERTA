@@ -145,7 +145,10 @@ function setupNavigation() {
             tabs.forEach(tab => {
                 if (tab.id === target) {
                     tab.classList.add('active');
-                    if (target === 'admin') renderUsersList();
+                    if (target === 'admin') {
+                        renderUsersList();
+                        loadAdminProductionDashboard();
+                    }
                 }
                 else tab.classList.remove('active');
             });
@@ -410,7 +413,104 @@ async function renderUsersList() {
     }
 }
 
+async function loadAdminProductionDashboard() {
+    const tbody = document.getElementById('admin-operator-stats-table');
+    const updatedSpan = document.getElementById('admin-dashboard-updated');
+    if (!tbody) return;
+
+    try {
+        if (updatedSpan) updatedSpan.textContent = 'Atualizando...';
+        
+        const res = await fetch(`${SERVER_URL.replace(/\/$/, '')}/api/recebimentos/stats/operadores`);
+        if (!res.ok) throw new Error('Falha ao buscar dados de produção');
+        const stats = await res.json();
+
+        const userKeys = await dbUsuarios.keys();
+        const allUsers = [];
+        for (const k of userKeys) {
+            const u = await dbUsuarios.getItem(k);
+            if (u && u.username) allUsers.push(u.username);
+        }
+
+        const statsMap = {};
+        stats.forEach(s => {
+            statsMap[s.usuario] = {
+                total_hoje: parseInt(s.total_hoje) || 0,
+                pre_alerta_hoje: parseInt(s.pre_alerta_hoje) || 0,
+                fora_pre_alerta_hoje: parseInt(s.fora_pre_alerta_hoje) || 0,
+                ultima_bipagem: s.ultima_bipagem ? new Date(s.ultima_bipagem).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit', second: '2-digit' }) : '-'
+            };
+        });
+
+        allUsers.forEach(username => {
+            if (!statsMap[username]) {
+                statsMap[username] = {
+                    total_hoje: 0,
+                    pre_alerta_hoje: 0,
+                    fora_pre_alerta_hoje: 0,
+                    ultima_bipagem: '-'
+                };
+            }
+        });
+
+        const combinedList = Object.keys(statsMap).map(user => ({
+            usuario: user,
+            ...statsMap[user]
+        })).sort((a, b) => b.total_hoje - a.total_hoje);
+
+        if (combinedList.length === 0) {
+            tbody.innerHTML = '<tr><td colspan="5" style="padding: 20px; text-align: center; color: var(--text-secondary);">Nenhum operador registrado no sistema.</td></tr>';
+        } else {
+            tbody.innerHTML = combinedList.map(item => `
+                <tr style="border-bottom: 1px solid rgba(255,255,255,0.05);">
+                    <td style="padding: 10px; font-weight: 600;">
+                        ${item.usuario}
+                    </td>
+                    <td style="padding: 10px; text-align: center;">
+                        <span class="badge badge-primary" style="font-size: 0.9rem; padding: 4px 10px;">${item.total_hoje}</span>
+                    </td>
+                    <td style="padding: 10px; text-align: center; color: #10b981; font-weight: 600;">
+                        ${item.pre_alerta_hoje}
+                    </td>
+                    <td style="padding: 10px; text-align: center; color: #f43f5e; font-weight: 600;">
+                        ${item.fora_pre_alerta_hoje}
+                    </td>
+                    <td style="padding: 10px; text-align: right; color: var(--text-secondary);">
+                        ${item.ultima_bipagem}
+                    </td>
+                </tr>
+            `).join('');
+        }
+
+        if (updatedSpan) {
+            const nowTime = new Date().toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+            updatedSpan.textContent = `Última atualização às ${nowTime}`;
+        }
+    } catch (err) {
+        console.error('Erro ao carregar dashboard de produção:', err);
+        if (tbody) {
+            tbody.innerHTML = '<tr><td colspan="5" style="padding: 20px; text-align: center; color: #f43f5e;">Erro ao carregar dados do servidor.</td></tr>';
+        }
+        if (updatedSpan) updatedSpan.textContent = 'Erro na atualização';
+    }
+}
+
 function setupAdminListeners() {
+    const btnRefreshDash = document.getElementById('btn-refresh-dashboard');
+    if (btnRefreshDash) {
+        btnRefreshDash.addEventListener('click', () => {
+            loadAdminProductionDashboard();
+        });
+    }
+
+    // Auto-update operator production dashboard every 1 minute (60000ms) when admin tab is open
+    setInterval(() => {
+        const adminTab = document.getElementById('admin');
+        if (adminTab && adminTab.classList.contains('active')) {
+            loadAdminProductionDashboard();
+        }
+    }, 60000);
+
     document.getElementById('btn-novo-usuario').addEventListener('click', () => {
         document.getElementById('modal-usuario-title').textContent = 'Cadastrar Usuario';
         document.getElementById('input-usuario-username').value = '';
