@@ -1,4 +1,4 @@
-const CURRENT_APP_VERSION = 'v1.4.2';
+const CURRENT_APP_VERSION = 'v1.4.3';
 
 function startVersionPolling() {
     setInterval(async () => {
@@ -210,27 +210,51 @@ function setupNavigation() {
 // Auth Event Listeners
 // ============================================================
 function setupAuthListeners() {
-    const checkCapsLock = (e) => {
+    let capsLockActive = false;
+    const updateCapsDisplay = (active) => {
+        capsLockActive = active;
         const capsWarning = document.getElementById('login-caps-warning');
         if (!capsWarning) return;
-        if (e.getModifierState && e.getModifierState('CapsLock')) {
+        if (active) {
             capsWarning.classList.remove('hidden');
         } else {
             capsWarning.classList.add('hidden');
         }
     };
-    const inputUsername = document.getElementById('login-username');
-    const inputPassword = document.getElementById('login-password');
-    if (inputUsername) {
-        inputUsername.addEventListener('keyup', checkCapsLock);
-        inputUsername.addEventListener('keydown', checkCapsLock);
-    }
-    if (inputPassword) {
-        inputPassword.addEventListener('keyup', checkCapsLock);
-        inputPassword.addEventListener('keydown', checkCapsLock);
-    }
+
+    const checkCapsLockState = (e) => {
+        if (e && e.getModifierState && typeof e.getModifierState === 'function') {
+            const state = e.getModifierState('CapsLock');
+            updateCapsDisplay(state);
+        }
+    };
+
+    const checkCapsLockChar = (e) => {
+        if (e && e.key && e.key.length === 1) {
+            const char = e.key;
+            if (char.toLowerCase() !== char.toUpperCase()) {
+                const isShift = !!e.shiftKey;
+                const isUpper = char === char.toUpperCase();
+                const isLower = char === char.toLowerCase();
+                const capsOn = (isUpper && !isShift) || (isLower && isShift);
+                updateCapsDisplay(capsOn);
+            }
+        }
+    };
 
     const formLogin = document.getElementById('form-login');
+    if (formLogin) {
+        ['keyup', 'keydown', 'keypress', 'click', 'focusin', 'mousedown'].forEach(evt => {
+            formLogin.addEventListener(evt, checkCapsLockState);
+        });
+        formLogin.addEventListener('keypress', checkCapsLockChar);
+    }
+    window.addEventListener('keyup', (e) => {
+        if (e.key === 'CapsLock' && e.getModifierState) {
+            updateCapsDisplay(e.getModifierState('CapsLock'));
+        }
+    });
+
     formLogin.addEventListener('submit', async (e) => {
         e.preventDefault();
         const username = document.getElementById('login-username').value;
