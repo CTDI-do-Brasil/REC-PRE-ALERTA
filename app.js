@@ -1,4 +1,4 @@
-const CURRENT_APP_VERSION = 'v1.4.1';
+const CURRENT_APP_VERSION = 'v1.4.2';
 
 function startVersionPolling() {
     setInterval(async () => {
@@ -133,11 +133,15 @@ function showLoginOverlay() {
     document.getElementById('login-username').value = '';
     document.getElementById('login-password').value = '';
     document.getElementById('login-error').classList.add('hidden');
+    const capsWarning = document.getElementById('login-caps-warning');
+    if (capsWarning) capsWarning.classList.add('hidden');
     setTimeout(() => document.getElementById('login-username').focus(), 100);
 }
 
 function hideLoginOverlay() {
     document.getElementById('login-overlay').classList.add('hidden');
+    const capsWarning = document.getElementById('login-caps-warning');
+    if (capsWarning) capsWarning.classList.add('hidden');
 }
 
 // ============================================================
@@ -206,6 +210,26 @@ function setupNavigation() {
 // Auth Event Listeners
 // ============================================================
 function setupAuthListeners() {
+    const checkCapsLock = (e) => {
+        const capsWarning = document.getElementById('login-caps-warning');
+        if (!capsWarning) return;
+        if (e.getModifierState && e.getModifierState('CapsLock')) {
+            capsWarning.classList.remove('hidden');
+        } else {
+            capsWarning.classList.add('hidden');
+        }
+    };
+    const inputUsername = document.getElementById('login-username');
+    const inputPassword = document.getElementById('login-password');
+    if (inputUsername) {
+        inputUsername.addEventListener('keyup', checkCapsLock);
+        inputUsername.addEventListener('keydown', checkCapsLock);
+    }
+    if (inputPassword) {
+        inputPassword.addEventListener('keyup', checkCapsLock);
+        inputPassword.addEventListener('keydown', checkCapsLock);
+    }
+
     const formLogin = document.getElementById('form-login');
     formLogin.addEventListener('submit', async (e) => {
         e.preventDefault();
