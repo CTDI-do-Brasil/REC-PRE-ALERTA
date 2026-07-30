@@ -1,4 +1,4 @@
-const CURRENT_APP_VERSION = 'v1.4.6';
+const CURRENT_APP_VERSION = 'v1.4.7';
 
 function startVersionPolling() {
     setInterval(async () => {
@@ -157,6 +157,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     setupEventListeners();
     setupAuthListeners();
     setupAdminListeners();
+    setupReportListeners();
     // Check persisted login session on F5/refresh
     const savedUserStr = localStorage.getItem('preAlertaLoggedUser');
     let restoredSession = false;
