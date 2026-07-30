@@ -1,4 +1,4 @@
-const CURRENT_APP_VERSION = 'v1.4.7';
+const CURRENT_APP_VERSION = 'v1.4.8';
 
 function startVersionPolling() {
     setInterval(async () => {
@@ -104,8 +104,25 @@ async function doLogin(username, password) {
     return null;
 }
 
+let currentSessionDay = new Date().toLocaleDateString();
+
+function performLogout() {
+    currentUser = null;
+    localStorage.removeItem('preAlertaLoggedUser');
+    // Navigate back to first tab
+    const navLinks = document.querySelectorAll('.nav-links li');
+    const tabs = document.querySelectorAll('.tab-content');
+    navLinks.forEach(l => l.classList.remove('active'));
+    tabs.forEach(t => t.classList.remove('active'));
+    if (navLinks.length > 0) navLinks[0].classList.add('active');
+    const recebimentoTab = document.getElementById('recebimento');
+    if (recebimentoTab) recebimentoTab.classList.add('active');
+    showLoginOverlay();
+}
+
 function applyAccessLevel(user) {
     currentUser = user;
+    currentSessionDay = new Date().toLocaleDateString();
     document.getElementById('display-user-name').textContent = user.username;
     const navAdmin = document.getElementById('nav-admin');
     const navPreAlerta = document.querySelector('li[data-tab="pre-alerta"]');
@@ -144,6 +161,19 @@ function hideLoginOverlay() {
     if (capsWarning) capsWarning.style.display = 'none';
 }
 
+function startMidnightLogoutCheck() {
+    setInterval(() => {
+        if (currentUser && currentUser.level === 'operator') {
+            const today = new Date().toLocaleDateString();
+            if (today !== currentSessionDay) {
+                currentSessionDay = today;
+                console.log("Midnight day change detected. Logging out operator profile...");
+                performLogout();
+            }
+        }
+    }, 10000); // Check every 10 seconds
+}
+
 // ============================================================
 // Initialize App
 // ============================================================
@@ -158,6 +188,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     setupAuthListeners();
     setupAdminListeners();
     setupReportListeners();
+    startMidnightLogoutCheck();
     // Check persisted login session on F5/refresh
     const savedUserStr = localStorage.getItem('preAlertaLoggedUser');
     let restoredSession = false;
@@ -269,16 +300,7 @@ function setupAuthListeners() {
     });
 
     document.getElementById('btn-logout').addEventListener('click', () => {
-        currentUser = null;
-        localStorage.removeItem('preAlertaLoggedUser');
-        // Navigate back to first tab
-        const navLinks = document.querySelectorAll('.nav-links li');
-        const tabs = document.querySelectorAll('.tab-content');
-        navLinks.forEach(l => l.classList.remove('active'));
-        tabs.forEach(t => t.classList.remove('active'));
-        navLinks[0].classList.add('active');
-        document.getElementById('recebimento').classList.add('active');
-        showLoginOverlay();
+        performLogout();
     });
 }
 
