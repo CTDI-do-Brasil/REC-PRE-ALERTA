@@ -1,4 +1,4 @@
-const CURRENT_APP_VERSION = 'v1.4.8';
+const CURRENT_APP_VERSION = 'v1.4.9';
 
 function startVersionPolling() {
     setInterval(async () => {
@@ -803,19 +803,24 @@ fileUpload.addEventListener('change', (e) => {
 
 async function savePreAlertaData(data) {
     let itemsToImport = [];
+    const cleanKey = (k) => k.trim().normalize("NFD").replace(/[\u0300-\u036f]/g, "").toUpperCase();
+
     for (const row of data) {
-        let serialKey = Object.keys(row).find(k => k.trim().toUpperCase() === 'SERIAL');
-        let codKey = Object.keys(row).find(k => k.trim().toUpperCase() === 'CODIGO');
-        let descKey = Object.keys(row).find(k => k.trim().toUpperCase().includes('DESCRI'));
-        let fabKey = Object.keys(row).find(k => k.trim().toUpperCase().includes('FABRI'));
+        let serialKey = Object.keys(row).find(k => cleanKey(k) === 'SERIAL');
+        let codKey = Object.keys(row).find(k => {
+            const ck = cleanKey(k);
+            return ck === 'CODIGO' || ck === 'COD' || ck.startsWith('CODIGO') || ck.startsWith('COD_');
+        });
+        let descKey = Object.keys(row).find(k => cleanKey(k).includes('DESCRI'));
+        let fabKey = Object.keys(row).find(k => cleanKey(k).includes('FABRI'));
 
         if (serialKey && row[serialKey]) {
             const serial = String(row[serialKey]).trim().toUpperCase();
             itemsToImport.push({
                 serial: serial,
-                codigo: codKey ? String(row[codKey]) : '',
-                descricao: descKey ? String(row[descKey]) : '',
-                fabricante: fabKey ? String(row[fabKey]) : ''
+                codigo: codKey ? String(row[codKey]).trim() : '',
+                descricao: descKey ? String(row[descKey]).trim() : '',
+                fabricante: fabKey ? String(row[fabKey]).trim() : ''
             });
         }
     }
