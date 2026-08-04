@@ -31,6 +31,9 @@ const minioClient = new Minio.Client({
 const DATABASE_URL = process.env.DATABASE_URL || process.env.PG_CONNECTION_STRING || '';
 const pool = new Pool({ connectionString: DATABASE_URL });
 
+const SECOND_DATABASE_URL = process.env.SECOND_DATABASE_URL || '';
+const secondPool = SECOND_DATABASE_URL ? new Pool({ connectionString: SECOND_DATABASE_URL }) : null;
+
 async function ensureDBAndMinIO() {
   // 1. Ensure Postgres tables exist
   const client = await pool.connect();
@@ -325,6 +328,24 @@ app.post('/api/recebimentos', async (req, res) => {
       body.descricao || null
     ];
     await pool.query(query, params);
+
+    // Update second database if configured
+    if (secondPool && body.mac && body.serial) {
+      try {
+        const cleanMac = body.mac.trim();
+        const secondQuery = `
+          UPDATE "db-scanonu"
+          SET "cpe-sn" = $1
+          WHERE UPPER(mac) = UPPER($2) AND UPPER("cpe-sn") = 'N/A'
+        `;
+        const updateRes = await secondPool.query(secondQuery, [body.serial, cleanMac]);
+        console.log(`Second DB Sync for MAC ${cleanMac}: updated ${updateRes.rowCount} rows.`);
+      } catch (secondDbErr) {
+        console.error('Error updating second database:', secondDbErr);
+        // We ignore the error as requested, so the main save operation doesn't fail
+      }
+    }
+
     res.json({ ok: true });
   } catch (err) {
     console.error('Error saving recebimento:', err);
