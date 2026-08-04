@@ -329,8 +329,8 @@ app.post('/api/recebimentos', async (req, res) => {
     ];
     await pool.query(query, params);
 
-    // Update second database if configured
-    if (secondPool && body.mac && body.serial) {
+    // Update second database if configured (ONLY for model PG2447)
+    if (secondPool && body.mac && body.serial && body.modelo && body.modelo.trim().toUpperCase() === 'PG2447') {
       const serialUpper = body.serial.trim().toUpperCase();
       if (serialUpper.startsWith('GPO')) {
         try {
@@ -401,11 +401,11 @@ app.get('/api/admin/sync-legacy', async (req, res) => {
     return res.status(400).json({ error: 'Second database connection is not configured.' });
   }
   try {
-    // 1. Get all recebimentos with serial starting with 'GPO' and a valid mac
+    // 1. Get all recebimentos of model PG2447 with serial starting with 'GPO' and a valid mac
     const selectQuery = `
       SELECT serial_number, mac 
       FROM recebimentos 
-      WHERE serial_number ILIKE 'GPO%' AND mac IS NOT NULL AND TRIM(mac) != ''
+      WHERE serial_number ILIKE 'GPO%' AND UPPER(modelo) = 'PG2447' AND mac IS NOT NULL AND TRIM(mac) != ''
     `;
     const { rows } = await pool.query(selectQuery);
     
