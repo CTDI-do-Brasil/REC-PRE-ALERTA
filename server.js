@@ -337,8 +337,8 @@ app.post('/api/recebimentos', async (req, res) => {
           const cleanMac = body.mac.trim();
           const secondQuery = `
             UPDATE "db-scanonu"
-            SET "cpe-sn" = $1
-            WHERE UPPER(mac) = UPPER($2) AND UPPER("cpe-sn") = 'N/A'
+            SET cpe_sn = $1
+            WHERE UPPER(mac) = UPPER($2) AND UPPER(cpe_sn) = 'N/A'
           `;
           const updateRes = await secondPool.query(secondQuery, [body.serial.trim(), cleanMac]);
           console.log(`Second DB Sync for MAC ${cleanMac}: updated ${updateRes.rowCount} rows.`);
