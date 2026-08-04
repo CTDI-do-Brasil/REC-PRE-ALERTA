@@ -336,7 +336,7 @@ app.post('/api/recebimentos', async (req, res) => {
         try {
           const cleanMac = body.mac.trim();
           const secondQuery = `
-            UPDATE "db-scanonu"
+            UPDATE etiquetas_scan_onu
             SET cpe_sn = $1
             WHERE UPPER(mac) = UPPER($2) AND UPPER(cpe_sn) = 'N/A'
           `;
