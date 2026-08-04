@@ -331,18 +331,21 @@ app.post('/api/recebimentos', async (req, res) => {
 
     // Update second database if configured
     if (secondPool && body.mac && body.serial) {
-      try {
-        const cleanMac = body.mac.trim();
-        const secondQuery = `
-          UPDATE "db-scanonu"
-          SET "cpe-sn" = $1
-          WHERE UPPER(mac) = UPPER($2) AND UPPER("cpe-sn") = 'N/A'
-        `;
-        const updateRes = await secondPool.query(secondQuery, [body.serial, cleanMac]);
-        console.log(`Second DB Sync for MAC ${cleanMac}: updated ${updateRes.rowCount} rows.`);
-      } catch (secondDbErr) {
-        console.error('Error updating second database:', secondDbErr);
-        // We ignore the error as requested, so the main save operation doesn't fail
+      const serialUpper = body.serial.trim().toUpperCase();
+      if (serialUpper.startsWith('GPO')) {
+        try {
+          const cleanMac = body.mac.trim();
+          const secondQuery = `
+            UPDATE "db-scanonu"
+            SET "cpe-sn" = $1
+            WHERE UPPER(mac) = UPPER($2) AND UPPER("cpe-sn") = 'N/A'
+          `;
+          const updateRes = await secondPool.query(secondQuery, [body.serial.trim(), cleanMac]);
+          console.log(`Second DB Sync for MAC ${cleanMac}: updated ${updateRes.rowCount} rows.`);
+        } catch (secondDbErr) {
+          console.error('Error updating second database:', secondDbErr);
+          // We ignore the error as requested, so the main save operation doesn't fail
+        }
       }
     }
 
