@@ -395,6 +395,47 @@ app.get('/api/recebimentos/report', async (req, res) => {
   }
 });
 
+// Retroactive legacy sync endpoint
+app.get('/api/admin/sync-legacy', async (req, res) => {
+  if (!secondPool) {
+    return res.status(400).json({ error: 'Second database connection is not configured.' });
+  }
+  try {
+    // 1. Get all recebimentos with serial starting with 'GPO' and a valid mac
+    const selectQuery = `
+      SELECT serial_number, mac 
+      FROM recebimentos 
+      WHERE serial_number ILIKE 'GPO%' AND mac IS NOT NULL AND TRIM(mac) != ''
+    `;
+    const { rows } = await pool.query(selectQuery);
+    
+    let totalUpdated = 0;
+    
+    // 2. Loop and update the second DB
+    for (const row of rows) {
+      const serial = row.serial_number.trim();
+      const mac = row.mac.trim();
+      
+      const updateQuery = `
+        UPDATE etiquetas_scan_onu
+        SET cpe_sn = $1
+        WHERE UPPER(mac) = UPPER($2) AND UPPER(cpe_sn) = 'N/A'
+      `;
+      const updateRes = await secondPool.query(updateQuery, [serial, mac]);
+      totalUpdated += updateRes.rowCount;
+    }
+    
+    res.json({
+      success: true,
+      totalFound: rows.length,
+      totalUpdated: totalUpdated
+    });
+  } catch (err) {
+    console.error('Error during legacy sync:', err);
+    res.status(500).json({ error: 'Legacy sync database error.', details: err.message });
+  }
+});
+
 // Fetch operator production dashboard stats for a specific date (defaulting to today in YYYY-MM-DD)
 app.get('/api/recebimentos/stats/operadores', async (req, res) => {
   const { date } = req.query;
