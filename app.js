@@ -809,7 +809,7 @@ async function savePreAlertaData(data) {
         let serialKey = Object.keys(row).find(k => cleanKey(k) === 'SERIAL');
         let codKey = Object.keys(row).find(k => {
             const ck = cleanKey(k);
-            return ck === 'CODIGO' || ck === 'COD' || ck.startsWith('CODIGO') || ck.startsWith('COD_');
+            return ck === 'CODIGO' || ck === 'COD' || ck === 'TM' || ck.startsWith('CODIGO') || ck.startsWith('COD_');
         });
         let descKey = Object.keys(row).find(k => cleanKey(k).includes('DESCRI'));
         let fabKey = Object.keys(row).find(k => cleanKey(k).includes('FABRI'));
@@ -1165,9 +1165,17 @@ async function processRecebimento() {
 }
 
 async function confirmSegregar() {
-    if (currentPendingUnit) {
-        await saveRecebimento(currentPendingUnit);
-        currentPendingUnit = null;
+    const unit = currentPendingUnit;
+    if (unit) {
+        currentPendingUnit = null; // Clear immediately to prevent race conditions
+        const btnOk = document.getElementById('btn-modal-ok');
+        if (btnOk) btnOk.disabled = true; // Disable button immediately to prevent double clicks
+        
+        try {
+            await saveRecebimento(unit);
+        } finally {
+            if (btnOk) btnOk.disabled = false;
+        }
     }
     document.getElementById('modal-segregar').classList.add('hidden');
     isProcessingRecebimento = false;
