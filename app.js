@@ -188,6 +188,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     setupAuthListeners();
     setupAdminListeners();
     setupReportListeners();
+    setupExpedicaoListeners();
     startMidnightLogoutCheck();
     // Check persisted login session on F5/refresh
     const savedUserStr = localStorage.getItem('preAlertaLoggedUser');
@@ -230,6 +231,9 @@ function setupNavigation() {
                     }
                     if (target === 'relatorios' || target === 'admin') {
                         loadAdminProductionDashboard();
+                    }
+                    if (target === 'expedicao-pintura') {
+                        loadActivePallet();
                     }
                 }
                 else tab.classList.remove('active');
@@ -1423,3 +1427,332 @@ function getRulesDescription(modelo) {
     if (modelo === "ZXHN F6600P") return "SERIAL e PON ID nao podem ter mesmo prefixo (ZTE3 ou ZTEGD)";
     return "";
 }
+
+// ============================================================
+// EXPEDIÇÃO PINTURA MODULE
+// ============================================================
+let currentExpedicaoPallet = null;
+
+async function loadActivePallet() {
+    try {
+        const res = await fetch(`${SERVER_URL.replace(/\/$/, '')}/api/expedicao-pintura/active`);
+        if (res.ok) {
+            const data = await res.json();
+            currentExpedicaoPallet = data.pallet;
+            renderPalletData(data.pallet, data.items || []);
+        } else {
+            console.error('Falha ao carregar pallet ativo:', res.statusText);
+        }
+    } catch (err) {
+        console.error('Erro de conexão ao carregar pallet ativo:', err);
+    }
+}
+
+function renderPalletData(pallet, items) {
+    if (!pallet) return;
+    currentExpedicaoPallet = pallet;
+    
+    // Inputs & Badges
+    const inputCodigo = document.getElementById('exp-codigo-pallet');
+    const statPallet = document.getElementById('exp-stat-pallet');
+    const resumoCodigo = document.getElementById('exp-resumo-codigo');
+    const resumoStatus = document.getElementById('exp-resumo-status');
+    const statTotal = document.getElementById('exp-stat-total');
+    const resumoTotal = document.getElementById('exp-resumo-total');
+    const tabelaCount = document.getElementById('exp-tabela-count');
+    const tbody = document.getElementById('exp-itens-tbody');
+
+    const totalUnidades = (items && items.length !== undefined) ? items.length : (pallet.total_unidades || 0);
+
+    if (inputCodigo) inputCodigo.value = pallet.codigo_pallet;
+    if (statPallet) statPallet.textContent = pallet.codigo_pallet;
+    if (resumoCodigo) resumoCodigo.textContent = pallet.codigo_pallet;
+    
+    if (resumoStatus) {
+        resumoStatus.textContent = pallet.status || 'ABERTO';
+        resumoStatus.className = pallet.status === 'ABERTO' ? 'badge badge-success' : 'badge badge-danger';
+    }
+
+    if (statTotal) statTotal.textContent = totalUnidades;
+    if (resumoTotal) resumoTotal.textContent = `${totalUnidades} Unidades`;
+    if (tabelaCount) tabelaCount.textContent = `${totalUnidades} itens`;
+
+    // Render table
+    if (tbody) {
+        if (!items || items.length === 0) {
+            tbody.innerHTML = `
+                <tr>
+                    <td colspan="5" style="padding: 20px; text-align: center; color: var(--text-secondary);">
+                        Nenhuma unidade bipada ainda neste pallet.
+                    </td>
+                </tr>
+            `;
+        } else {
+            tbody.innerHTML = items.map((item, idx) => {
+                const num = items.length - idx;
+                const hora = item.data_bipagem ? new Date(item.data_bipagem).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit', second: '2-digit' }) : '';
+                return `
+                    <tr style="border-bottom: 1px solid rgba(255,255,255,0.05);">
+                        <td style="padding: 8px 10px; color: var(--text-secondary);">${num}</td>
+                        <td style="padding: 8px 10px; font-weight: 600; color: var(--text-primary); font-family: monospace;">${item.serial_number || '---'}</td>
+                        <td style="padding: 8px 10px; color: var(--primary-color);">${item.modelo || '---'}</td>
+                        <td style="padding: 8px 10px; color: var(--text-secondary); font-size: 0.8rem;">${hora}</td>
+                        <td style="padding: 8px 10px; text-align: right;">
+                            <button onclick="handleRemoverItemPallet(${item.id})" class="btn btn-secondary" style="padding: 2px 8px; font-size: 0.75rem; background: rgba(244, 63, 94, 0.2); color: #f43f5e; border: 1px solid rgba(244, 63, 94, 0.4);" title="Remover unidade">
+                                &times;
+                            </button>
+                        </td>
+                    </tr>
+                `;
+            }).join('');
+        }
+    }
+}
+
+async function handleRemoverItemPallet(itemId) {
+    if (!confirm("Deseja realmente remover esta unidade do pallet?")) return;
+    try {
+        const res = await fetch(`${SERVER_URL.replace(/\/$/, '')}/api/expedicao-pintura/item/${itemId}`, {
+            method: 'DELETE'
+        });
+        if (res.ok) {
+            await loadActivePallet();
+        } else {
+            alert("Erro ao remover item do pallet.");
+        }
+    } catch (err) {
+        console.error("Erro ao remover item:", err);
+    }
+}
+
+function showExpedicaoStatus(message, isError = false) {
+    const statusMsg = document.getElementById('exp-status-message');
+    if (!statusMsg) return;
+    statusMsg.className = `status-message ${isError ? 'status-error' : 'status-success'}`;
+    statusMsg.innerHTML = message;
+    statusMsg.classList.remove('hidden');
+    if (!isError) {
+        setTimeout(() => {
+            statusMsg.classList.add('hidden');
+        }, 5000);
+    }
+}
+
+function showUnidadeNaoRecebidaModal(msg) {
+    const modal = document.getElementById('modal-unidade-nao-recebida');
+    const text = document.getElementById('modal-unidade-nao-recebida-text');
+    if (text && msg) {
+        text.textContent = msg;
+    }
+    if (modal) {
+        modal.classList.remove('hidden');
+    }
+}
+
+function setupExpedicaoListeners() {
+    // Form Bipar Unidade
+    const formBipar = document.getElementById('form-expedicao-bipar');
+    const inputSerial = document.getElementById('exp-serial');
+    const inputPon = document.getElementById('exp-pon');
+    const inputMac = document.getElementById('exp-mac');
+    const btnLimpar = document.getElementById('btn-exp-limpar');
+    const btnNovoPallet = document.getElementById('btn-exp-novo-pallet');
+    const btnAbertos = document.getElementById('btn-exp-abertos');
+    const btnRefresh = document.getElementById('btn-exp-refresh');
+    const btnFecharPallet = document.getElementById('btn-exp-fechar-pallet');
+    const btnModalUnidadeOk = document.getElementById('btn-modal-unidade-ok');
+    const btnFecharModalPallets = document.getElementById('btn-fechar-modal-pallets');
+
+    // Limpar campos
+    const limparCampos = () => {
+        if (inputSerial) inputSerial.value = '';
+        if (inputPon) inputPon.value = '';
+        if (inputMac) inputMac.value = '';
+        if (inputSerial) inputSerial.focus();
+    };
+
+    if (btnLimpar) {
+        btnLimpar.addEventListener('click', limparCampos);
+    }
+
+    // Modal Unidade Não Recebida OK
+    if (btnModalUnidadeOk) {
+        btnModalUnidadeOk.addEventListener('click', () => {
+            document.getElementById('modal-unidade-nao-recebida').classList.add('hidden');
+            limparCampos();
+        });
+    }
+
+    // Modal Pallets Abertos Fechar
+    if (btnFecharModalPallets) {
+        btnFecharModalPallets.addEventListener('click', () => {
+            document.getElementById('modal-pallets-abertos').classList.add('hidden');
+        });
+    }
+
+    // Novo Pallet
+    if (btnNovoPallet) {
+        btnNovoPallet.addEventListener('click', async () => {
+            if (!confirm("Deseja criar um novo Pallet? A numeração sequencial será gerada automaticamente.")) return;
+            try {
+                const res = await fetch(`${SERVER_URL.replace(/\/$/, '')}/api/expedicao-pintura/novo-pallet`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ usuario: currentUser?.username || 'OPERADOR' })
+                });
+                if (res.ok) {
+                    const data = await res.json();
+                    currentExpedicaoPallet = data.pallet;
+                    renderPalletData(data.pallet, data.items || []);
+                    showExpedicaoStatus(`Novo pallet <strong>${data.pallet.codigo_pallet}</strong> criado com sucesso!`, false);
+                    limparCampos();
+                } else {
+                    alert("Erro ao criar novo pallet.");
+                }
+            } catch (err) {
+                console.error("Erro ao criar novo pallet:", err);
+            }
+        });
+    }
+
+    // Listar Pallets Abertos
+    if (btnAbertos) {
+        btnAbertos.addEventListener('click', async () => {
+            try {
+                const res = await fetch(`${SERVER_URL.replace(/\/$/, '')}/api/expedicao-pintura/pallets-abertos`);
+                if (res.ok) {
+                    const pallets = await res.json();
+                    const tbody = document.getElementById('pallets-abertos-tbody');
+                    if (tbody) {
+                        if (pallets.length === 0) {
+                            tbody.innerHTML = `<tr><td colspan="3" style="padding: 16px; text-align: center; color: var(--text-secondary);">Nenhum pallet aberto no momento.</td></tr>`;
+                        } else {
+                            tbody.innerHTML = pallets.map(p => `
+                                <tr style="border-bottom: 1px solid rgba(255,255,255,0.05);">
+                                    <td style="padding: 10px; font-weight: 700; color: var(--primary-color);">${p.codigo_pallet}</td>
+                                    <td style="padding: 10px; text-align: center; color: #fbbf24; font-weight: 600;">${p.total_unidades || 0}</td>
+                                    <td style="padding: 10px; text-align: right;">
+                                        <button onclick="selecionarPalletAberto('${p.codigo_pallet}')" class="btn btn-primary" style="padding: 4px 10px; font-size: 0.8rem;">
+                                            Selecionar
+                                        </button>
+                                    </td>
+                                </tr>
+                            `).join('');
+                        }
+                    }
+                    document.getElementById('modal-pallets-abertos').classList.remove('hidden');
+                }
+            } catch (err) {
+                console.error("Erro ao buscar pallets abertos:", err);
+            }
+        });
+    }
+
+    // Refresh Pallet
+    if (btnRefresh) {
+        btnRefresh.addEventListener('click', loadActivePallet);
+    }
+
+    // Fechar Pallet
+    if (btnFecharPallet) {
+        btnFecharPallet.addEventListener('click', async () => {
+            if (!currentExpedicaoPallet) return;
+            const cod = currentExpedicaoPallet.codigo_pallet;
+            const total = currentExpedicaoPallet.total_unidades || 0;
+            if (!confirm(`Deseja realmente fechar o Pallet ${cod} com ${total} unidades?`)) return;
+
+            try {
+                const res = await fetch(`${SERVER_URL.replace(/\/$/, '')}/api/expedicao-pintura/fechar-pallet`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ codigo_pallet: cod, usuario: currentUser?.username })
+                });
+                if (res.ok) {
+                    showExpedicaoStatus(`Pallet <strong>${cod}</strong> fechado com sucesso!`, false);
+                    // Automaticamente carrega ou cria o próximo pallet
+                    await loadActivePallet();
+                } else {
+                    alert("Erro ao fechar o pallet.");
+                }
+            } catch (err) {
+                console.error("Erro ao fechar pallet:", err);
+            }
+        });
+    }
+
+    // Bipagem Submit
+    if (formBipar) {
+        formBipar.addEventListener('submit', async (e) => {
+            e.preventDefault();
+            if (!currentExpedicaoPallet) {
+                alert("Nenhum pallet ativo selecionado.");
+                return;
+            }
+
+            const serial = inputSerial?.value.trim().toUpperCase() || '';
+            const pon = inputPon?.value.trim().toUpperCase() || '';
+            const mac = inputMac?.value.trim().toUpperCase() || '';
+
+            if (!serial && !pon && !mac) {
+                showExpedicaoStatus("Informe ou bipe ao menos o Serial da unidade.", true);
+                if (inputSerial) inputSerial.focus();
+                return;
+            }
+
+            try {
+                const res = await fetch(`${SERVER_URL.replace(/\/$/, '')}/api/expedicao-pintura/bipar`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        codigo_pallet: currentExpedicaoPallet.codigo_pallet,
+                        serial,
+                        pon,
+                        mac,
+                        usuario: currentUser?.username || 'OPERADOR'
+                    })
+                });
+
+                const data = await res.json();
+
+                if (!res.ok || !data.success) {
+                    const errorMsg = data.error || 'Erro na bipagem.';
+                    if (data.code === 'UNIDADE_NAO_RECEBIDA' || errorMsg.toLowerCase().includes('não recebida')) {
+                        showExpedicaoStatus(`⚠️ <strong>UNIDADE NÃO RECEBIDA</strong>: Esta unidade não consta na base de recebimento.`, true);
+                        showUnidadeNaoRecebidaModal(`O serial ${serial || pon || mac} não foi recebido no sistema.`);
+                    } else {
+                        showExpedicaoStatus(`❌ ${errorMsg}`, true);
+                    }
+                    if (inputSerial) {
+                        inputSerial.select();
+                        inputSerial.focus();
+                    }
+                    return;
+                }
+
+                // Sucesso
+                renderPalletData(currentExpedicaoPallet, data.items);
+                showExpedicaoStatus(`✅ Unidade <strong>${data.item.serial_number}</strong> (${data.item.modelo}) adicionada ao Pallet ${currentExpedicaoPallet.codigo_pallet}!`, false);
+                limparCampos();
+            } catch (err) {
+                console.error("Erro ao bipar unidade para o pallet:", err);
+                showExpedicaoStatus("Erro de comunicação com o servidor.", true);
+            }
+        });
+    }
+}
+
+window.selecionarPalletAberto = async function(codigo) {
+    try {
+        const res = await fetch(`${SERVER_URL.replace(/\/$/, '')}/api/expedicao-pintura/pallet/${encodeURIComponent(codigo)}`);
+        if (res.ok) {
+            const data = await res.json();
+            currentExpedicaoPallet = data.pallet;
+            renderPalletData(data.pallet, data.items || []);
+            document.getElementById('modal-pallets-abertos').classList.add('hidden');
+            showExpedicaoStatus(`Pallet ativo alterado para <strong>${codigo}</strong>.`, false);
+        }
+    } catch (err) {
+        console.error("Erro ao selecionar pallet:", err);
+    }
+};
+

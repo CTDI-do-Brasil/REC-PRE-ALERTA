@@ -128,6 +128,32 @@ async function ensureDBAndMinIO() {
       );
     }
 
+    // Ensure Pallets Pintura tables and sequence
+    await client.query(`CREATE SEQUENCE IF NOT EXISTS seq_pallet_pintura START WITH 1`);
+    await client.query(`CREATE TABLE IF NOT EXISTS pallets_pintura (
+      id SERIAL PRIMARY KEY,
+      codigo_pallet TEXT UNIQUE NOT NULL,
+      status TEXT DEFAULT 'ABERTO',
+      data_criacao TIMESTAMP DEFAULT NOW(),
+      data_fechamento TIMESTAMP,
+      usuario_criacao TEXT,
+      total_unidades INTEGER DEFAULT 0
+    )`);
+    await client.query(`CREATE TABLE IF NOT EXISTS pallet_pintura_itens (
+      id SERIAL PRIMARY KEY,
+      pallet_id INTEGER REFERENCES pallets_pintura(id) ON DELETE CASCADE,
+      codigo_pallet TEXT NOT NULL,
+      serial_number TEXT NOT NULL,
+      gpon_id TEXT,
+      mac TEXT,
+      modelo TEXT,
+      fabricante TEXT,
+      data_bipagem TIMESTAMP DEFAULT NOW(),
+      usuario TEXT
+    )`);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_pallet_itens_serial ON pallet_pintura_itens(serial_number)`);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_pallet_itens_codigo ON pallet_pintura_itens(codigo_pallet)`);
+
     console.log('Postgres tables verified/created successfully.');
   } catch (err) {
     console.error('Error establishing database tables:', err);
@@ -640,6 +666,218 @@ app.post('/api/usuarios/login', async (req, res) => {
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: 'Database error during login.' });
+  }
+});
+
+// ============================================================
+// Expedição Pintura Routes
+// ============================================================
+
+async function generateNextPalletCode(clientOrPool) {
+  const res = await clientOrPool.query("SELECT nextval('seq_pallet_pintura') AS num");
+  const num = parseInt(res.rows[0].num, 10);
+  return 'PP' + String(num).padStart(8, '0');
+}
+
+// Get active open pallet (or creates initial one)
+app.get('/api/expedicao-pintura/active', async (req, res) => {
+  try {
+    const palletRes = await pool.query(
+      "SELECT * FROM pallets_pintura WHERE status = 'ABERTO' ORDER BY data_criacao DESC LIMIT 1"
+    );
+    if (palletRes.rows.length === 0) {
+      const codigo = await generateNextPalletCode(pool);
+      const newPallet = await pool.query(
+        "INSERT INTO pallets_pintura(codigo_pallet, status, usuario_criacao, total_unidades, data_criacao) VALUES($1, 'ABERTO', 'SISTEMA', 0, NOW()) RETURNING *",
+        [codigo]
+      );
+      return res.json({ pallet: newPallet.rows[0], items: [] });
+    }
+    const pallet = palletRes.rows[0];
+    const itemsRes = await pool.query(
+      "SELECT * FROM pallet_pintura_itens WHERE UPPER(codigo_pallet) = UPPER($1) ORDER BY id DESC",
+      [pallet.codigo_pallet]
+    );
+    res.json({ pallet, items: itemsRes.rows });
+  } catch (err) {
+    console.error('Error fetching active pallet:', err);
+    res.status(500).json({ error: 'Database error fetching active pallet.' });
+  }
+});
+
+// Create new pallet
+app.post('/api/expedicao-pintura/novo-pallet', async (req, res) => {
+  try {
+    const { usuario } = req.body;
+    const codigo = await generateNextPalletCode(pool);
+    const newPallet = await pool.query(
+      "INSERT INTO pallets_pintura(codigo_pallet, status, usuario_criacao, total_unidades, data_criacao) VALUES($1, 'ABERTO', $2, 0, NOW()) RETURNING *",
+      [codigo, usuario || 'OPERADOR']
+    );
+    res.json({ success: true, pallet: newPallet.rows[0], items: [] });
+  } catch (err) {
+    console.error('Error creating new pallet:', err);
+    res.status(500).json({ error: 'Database error creating new pallet.' });
+  }
+});
+
+// Get specific pallet
+app.get('/api/expedicao-pintura/pallet/:codigo', async (req, res) => {
+  try {
+    const codigo = req.params.codigo.trim().toUpperCase();
+    const palletRes = await pool.query("SELECT * FROM pallets_pintura WHERE UPPER(codigo_pallet) = $1", [codigo]);
+    if (palletRes.rows.length === 0) return res.status(404).json({ error: 'Pallet não encontrado.' });
+    const pallet = palletRes.rows[0];
+    const itemsRes = await pool.query("SELECT * FROM pallet_pintura_itens WHERE UPPER(codigo_pallet) = $1 ORDER BY id DESC", [codigo]);
+    res.json({ pallet, items: itemsRes.rows });
+  } catch (err) {
+    console.error('Error loading pallet:', err);
+    res.status(500).json({ error: 'Database error loading pallet.' });
+  }
+});
+
+// Get list of open pallets
+app.get('/api/expedicao-pintura/pallets-abertos', async (req, res) => {
+  try {
+    const result = await pool.query("SELECT * FROM pallets_pintura WHERE status = 'ABERTO' ORDER BY data_criacao DESC");
+    res.json(result.rows);
+  } catch (err) {
+    console.error('Error fetching open pallets:', err);
+    res.status(500).json({ error: 'Database error fetching open pallets.' });
+  }
+});
+
+// Scan/Add unit to pallet
+app.post('/api/expedicao-pintura/bipar', async (req, res) => {
+  try {
+    const { codigo_pallet, serial, pon, mac, usuario } = req.body;
+    if (!codigo_pallet || (!serial && !pon && !mac)) {
+      return res.status(400).json({ error: 'Informe ao menos um campo da unidade (Serial, PON ou MAC).' });
+    }
+    const cleanSerial = serial ? serial.trim().toUpperCase() : '';
+    const cleanPon = pon ? pon.trim().toUpperCase() : '';
+    const cleanMac = mac ? mac.trim().toUpperCase() : '';
+    const codPallet = codigo_pallet.trim().toUpperCase();
+
+    // 1. Check if pallet exists and is ABERTO
+    const palletRes = await pool.query('SELECT * FROM pallets_pintura WHERE UPPER(codigo_pallet) = $1', [codPallet]);
+    if (palletRes.rows.length === 0) {
+      return res.status(404).json({ error: 'Pallet não encontrado.' });
+    }
+    const pallet = palletRes.rows[0];
+    if (pallet.status !== 'ABERTO') {
+      return res.status(400).json({ error: 'Este pallet já está fechado.' });
+    }
+
+    // 2. Query recebimentos to check if unit was received
+    const searchTerms = [cleanSerial, cleanPon, cleanMac].filter(Boolean);
+    const recRes = await pool.query(`
+      SELECT * FROM recebimentos 
+      WHERE (serial_number IS NOT NULL AND serial_number != '' AND UPPER(TRIM(serial_number)) = ANY($1))
+         OR (gpon_id IS NOT NULL AND gpon_id != '' AND UPPER(TRIM(gpon_id)) = ANY($1))
+         OR (mac IS NOT NULL AND mac != '' AND UPPER(TRIM(mac)) = ANY($1))
+      ORDER BY id DESC LIMIT 1
+    `, [searchTerms]);
+
+    if (recRes.rows.length === 0) {
+      return res.status(400).json({
+        success: false,
+        code: 'UNIDADE_NAO_RECEBIDA',
+        error: 'Unidade não recebida'
+      });
+    }
+
+    const unitReceived = recRes.rows[0];
+    const unitSerial = unitReceived.serial_number || cleanSerial;
+    const unitPon = unitReceived.gpon_id || cleanPon;
+    const unitMac = unitReceived.mac || cleanMac;
+    const unitModelo = unitReceived.modelo || 'NÃO INFORMADO';
+    const unitFabricante = unitReceived.fabricante || 'NÃO INFORMADO';
+
+    // 3. Check if unit is already in any pallet
+    const unitIdentifiers = [unitSerial, unitPon, unitMac].filter(Boolean);
+    const checkItem = await pool.query(`
+      SELECT * FROM pallet_pintura_itens
+      WHERE (serial_number IS NOT NULL AND serial_number != '' AND UPPER(TRIM(serial_number)) = ANY($1))
+         OR (gpon_id IS NOT NULL AND gpon_id != '' AND UPPER(TRIM(gpon_id)) = ANY($1))
+         OR (mac IS NOT NULL AND mac != '' AND UPPER(TRIM(mac)) = ANY($1))
+      LIMIT 1
+    `, [unitIdentifiers]);
+
+    if (checkItem.rows.length > 0) {
+      const existing = checkItem.rows[0];
+      return res.status(400).json({
+        success: false,
+        code: 'JA_BIPADO',
+        error: `Unidade já bipada no pallet ${existing.codigo_pallet}`
+      });
+    }
+
+    // 4. Insert into pallet_pintura_itens
+    const insertRes = await pool.query(`
+      INSERT INTO pallet_pintura_itens (pallet_id, codigo_pallet, serial_number, gpon_id, mac, modelo, fabricante, data_bipagem, usuario)
+      VALUES ($1, $2, $3, $4, $5, $6, $7, NOW(), $8)
+      RETURNING *
+    `, [pallet.id, codPallet, unitSerial, unitPon, unitMac, unitModelo, unitFabricante, usuario || 'OPERADOR']);
+
+    // 5. Update total_unidades
+    await pool.query(`
+      UPDATE pallets_pintura 
+      SET total_unidades = (SELECT COUNT(*)::int FROM pallet_pintura_itens WHERE UPPER(codigo_pallet) = $1)
+      WHERE UPPER(codigo_pallet) = $1
+    `, [codPallet]);
+
+    const itemsRes = await pool.query(
+      "SELECT * FROM pallet_pintura_itens WHERE UPPER(codigo_pallet) = $1 ORDER BY id DESC",
+      [codPallet]
+    );
+
+    res.json({
+      success: true,
+      item: insertRes.rows[0],
+      total_unidades: itemsRes.rows.length,
+      items: itemsRes.rows
+    });
+  } catch (err) {
+    console.error('Error scanning unit to pallet:', err);
+    res.status(500).json({ error: 'Database error during scan.' });
+  }
+});
+
+// Close pallet
+app.post('/api/expedicao-pintura/fechar-pallet', async (req, res) => {
+  try {
+    const { codigo_pallet } = req.body;
+    const codPallet = codigo_pallet.trim().toUpperCase();
+    await pool.query(`
+      UPDATE pallets_pintura 
+      SET status = 'FECHADO', data_fechamento = NOW() 
+      WHERE UPPER(codigo_pallet) = $1
+    `, [codPallet]);
+    res.json({ success: true, message: `Pallet ${codPallet} fechado com sucesso.` });
+  } catch (err) {
+    console.error('Error closing pallet:', err);
+    res.status(500).json({ error: 'Database error closing pallet.' });
+  }
+});
+
+// Remove item from pallet
+app.delete('/api/expedicao-pintura/item/:id', async (req, res) => {
+  try {
+    const itemId = req.params.id;
+    const itemRes = await pool.query('SELECT * FROM pallet_pintura_itens WHERE id = $1', [itemId]);
+    if (itemRes.rows.length === 0) return res.status(404).json({ error: 'Item não encontrado.' });
+    const item = itemRes.rows[0];
+    await pool.query('DELETE FROM pallet_pintura_itens WHERE id = $1', [itemId]);
+    await pool.query(`
+      UPDATE pallets_pintura 
+      SET total_unidades = (SELECT COUNT(*)::int FROM pallet_pintura_itens WHERE UPPER(codigo_pallet) = $1)
+      WHERE UPPER(codigo_pallet) = UPPER($2)
+    `, [item.codigo_pallet, item.codigo_pallet]);
+    res.json({ success: true, codigo_pallet: item.codigo_pallet });
+  } catch (err) {
+    console.error('Error removing item:', err);
+    res.status(500).json({ error: 'Database error removing item.' });
   }
 });
 

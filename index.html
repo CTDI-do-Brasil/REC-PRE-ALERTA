@@ -125,11 +125,136 @@
             <!-- Expedição Pintura Tab -->
             <section id="expedicao-pintura" class="tab-content">
                 <header class="section-header">
-                    <h1>Expedição Pintura</h1>
+                    <h1>Expedição Pintura - Palletização</h1>
+                    <div class="stats">
+                        <div class="stat-card success">
+                            <span class="stat-title">Pallet Atual</span>
+                            <span class="stat-value" id="exp-stat-pallet">PP00000001</span>
+                        </div>
+                        <div class="stat-card warning" style="border-bottom: 3px solid #f59e0b;">
+                            <span class="stat-title">Unidades Bipadas</span>
+                            <span class="stat-value" id="exp-stat-total" style="color: #fbbf24;">0</span>
+                        </div>
+                    </div>
                 </header>
                 
-                <div class="card glass">
-                    <p class="description">Módulo de Expedição Pintura.</p>
+                <div style="display: grid; grid-template-columns: 1.15fr 1fr; gap: 24px; align-items: start;">
+                    <!-- Coluna da Esquerda: Controle do Pallet e Bipagem -->
+                    <div style="display: flex; flex-direction: column; gap: 20px;">
+                        
+                        <!-- Card Código do Pallet (Sequencial) -->
+                        <div class="card glass" style="border-left: 4px solid var(--danger-color);">
+                            <label style="display: block; font-weight: 600; margin-bottom: 8px; color: var(--text-secondary); font-size: 0.95rem;">
+                                📦 Código do Pallet (Sequencial)
+                            </label>
+                            <div class="input-with-action">
+                                <input type="text" id="exp-codigo-pallet" readonly style="font-size: 1.3rem; font-weight: 700; letter-spacing: 1px; color: var(--primary-color); background: rgba(0, 0, 0, 0.4);" placeholder="Carregando...">
+                                <button type="button" id="btn-exp-novo-pallet" class="btn btn-primary" style="white-space: nowrap;">+ Novo Pallet</button>
+                                <button type="button" id="btn-exp-abertos" class="btn btn-secondary" title="Listar Pallets Abertos" style="white-space: nowrap;">Pallets Abertos</button>
+                            </div>
+                        </div>
+
+                        <!-- Card Bipagem da Unidade -->
+                        <div class="card glass" style="border-left: 4px solid #8b5cf6;">
+                            <h3 style="margin-bottom: 6px; display: flex; align-items: center; gap: 8px; font-size: 1.1rem;">
+                                <span>🔍 Bipar Informações da Unidade</span>
+                                <span class="badge badge-success" style="font-size: 0.7rem;">Qualquer Modelo</span>
+                            </h3>
+                            <p style="font-size: 0.85rem; color: var(--text-secondary); margin-bottom: 16px;">
+                                Bipe o Serial, GPON ou MAC. O sistema validará se a unidade foi recebida previamente.
+                            </p>
+
+                            <form id="form-expedicao-bipar">
+                                <div class="scan-grid" style="grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 12px; margin-bottom: 16px;">
+                                    <div class="form-group" style="margin-bottom: 0;">
+                                        <label for="exp-serial">Serial Number *</label>
+                                        <input type="text" id="exp-serial" class="scan-input" autocomplete="off" placeholder="Bipe o Serial da Unidade">
+                                    </div>
+                                    <div class="form-group" style="margin-bottom: 0;">
+                                        <label for="exp-pon">PON ID / GPON</label>
+                                        <input type="text" id="exp-pon" class="scan-input" autocomplete="off" placeholder="Bipe o PON ID (opcional)">
+                                    </div>
+                                    <div class="form-group" style="margin-bottom: 0;">
+                                        <label for="exp-mac">MAC</label>
+                                        <input type="text" id="exp-mac" class="scan-input" autocomplete="off" placeholder="Bipe o MAC (opcional)">
+                                    </div>
+                                </div>
+
+                                <div class="action-row" style="display: flex; gap: 1rem; justify-content: flex-end; margin-top: 16px;">
+                                    <button type="button" id="btn-exp-limpar" class="btn btn-secondary btn-large" style="background: rgba(255, 255, 255, 0.1); color: var(--text-primary);">Limpar Campos</button>
+                                    <button type="submit" id="btn-exp-adicionar" class="btn btn-primary btn-large" style="background: #10b981; border-color: #10b981;">Adicionar ao Pallet</button>
+                                </div>
+                            </form>
+
+                            <div id="exp-status-message" class="status-message hidden" style="margin-top: 16px;"></div>
+                        </div>
+
+                    </div>
+
+                    <!-- Coluna da Direita: Resumo do Pallet Atual -->
+                    <div class="card glass" style="display: flex; flex-direction: column; gap: 16px;">
+                        <div style="display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid var(--glass-border); padding-bottom: 12px;">
+                            <h3 style="margin: 0; font-size: 1.15rem; display: flex; align-items: center; gap: 8px;">
+                                📊 Resumo do Pallet Atual
+                            </h3>
+                            <div style="display: flex; gap: 8px;">
+                                <button id="btn-exp-refresh" class="btn btn-secondary btn-icon" title="Atualizar dados do Pallet">
+                                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="23 4 23 10 17 10"></polyline><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"></path></svg>
+                                </button>
+                                <button id="btn-exp-fechar-pallet" class="btn btn-danger" style="font-size: 0.85rem; padding: 6px 14px;">Fechar Pallet</button>
+                            </div>
+                        </div>
+
+                        <!-- Detalhes do Pallet -->
+                        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 12px;">
+                            <div style="background: rgba(0,0,0,0.25); padding: 10px 14px; border-radius: 8px;">
+                                <span style="font-size: 0.75rem; color: var(--text-secondary); text-transform: uppercase; font-weight: 600;">Código do Pallet</span>
+                                <strong id="exp-resumo-codigo" style="font-size: 1.15rem; color: var(--primary-color); display: block; margin-top: 2px;">PP00000001</strong>
+                            </div>
+                            <div style="background: rgba(0,0,0,0.25); padding: 10px 14px; border-radius: 8px;">
+                                <span style="font-size: 0.75rem; color: var(--text-secondary); text-transform: uppercase; font-weight: 600;">Status</span>
+                                <div style="margin-top: 2px;">
+                                    <span id="exp-resumo-status" class="badge badge-success">ABERTO</span>
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- Total de Unidades (Em Amarelo / Destaque) -->
+                        <div style="background: rgba(245, 158, 11, 0.15); border: 1px solid rgba(245, 158, 11, 0.4); padding: 14px 18px; border-radius: 10px; display: flex; justify-content: space-between; align-items: center;">
+                            <div>
+                                <span style="font-size: 0.85rem; color: #fbbf24; text-transform: uppercase; font-weight: 700; letter-spacing: 0.05em;">Total de Unidades no Pallet:</span>
+                                <div style="font-size: 0.8rem; color: var(--text-secondary); margin-top: 2px;">Sem limite de capacidade</div>
+                            </div>
+                            <strong id="exp-resumo-total" style="font-size: 1.8rem; color: #fbbf24; font-weight: 800;">0 Unidades</strong>
+                        </div>
+
+                        <!-- Tabela de Itens Bipados no Pallet -->
+                        <div>
+                            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
+                                <h4 style="font-size: 0.95rem; margin: 0; color: var(--text-secondary);">Itens Bipados neste Pallet</h4>
+                                <span id="exp-tabela-count" style="font-size: 0.8rem; color: var(--text-secondary);">0 itens</span>
+                            </div>
+                            <div style="max-height: 320px; overflow-y: auto; border: 1px solid rgba(255,255,255,0.08); border-radius: 8px; background: rgba(0,0,0,0.2);">
+                                <table style="width: 100%; border-collapse: collapse; text-align: left;">
+                                    <thead>
+                                        <tr style="border-bottom: 1px solid rgba(255,255,255,0.1); color: var(--text-secondary); font-size: 0.8rem; background: rgba(0,0,0,0.3); position: sticky; top: 0;">
+                                            <th style="padding: 8px 10px;">#</th>
+                                            <th style="padding: 8px 10px;">Serial</th>
+                                            <th style="padding: 8px 10px;">Modelo</th>
+                                            <th style="padding: 8px 10px;">Hora</th>
+                                            <th style="padding: 8px 10px; text-align: right;">Ação</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody id="exp-itens-tbody" style="font-size: 0.85rem;">
+                                        <tr>
+                                            <td colspan="5" style="padding: 20px; text-align: center; color: var(--text-secondary);">Nenhuma unidade bipada ainda neste pallet.</td>
+                                        </tr>
+                                    </tbody>
+                                </table>
+                            </div>
+                        </div>
+
+                    </div>
                 </div>
             </section>
 
@@ -401,6 +526,43 @@
     </div>
 
 
+
+    <!-- Modal Unidade Não Recebida -->
+    <div id="modal-unidade-nao-recebida" class="modal-overlay hidden">
+        <div class="modal glass-modal warning-modal">
+            <div class="modal-icon">
+                <svg width="64" height="64" viewBox="0 0 24 24" fill="none" stroke="#f43f5e" stroke-width="2"><circle cx="12" cy="12" r="10"></circle><line x1="15" y1="9" x2="9" y2="15"></line><line x1="9" y1="9" x2="15" y2="15"></line></svg>
+            </div>
+            <h2 style="color: var(--danger-color); font-size: 1.6rem; letter-spacing: -0.01em;">UNIDADE NÃO RECEBIDA</h2>
+            <p id="modal-unidade-nao-recebida-text" style="font-size: 1.05rem; margin-bottom: 1.5rem;">Esta unidade não consta como recebida no sistema. Não é possível adicioná-la ao pallet.</p>
+            <button id="btn-modal-unidade-ok" class="btn btn-large btn-danger" style="width: 100%;">OK, ENTENDIDO</button>
+        </div>
+    </div>
+
+    <!-- Modal Pallets Abertos -->
+    <div id="modal-pallets-abertos" class="modal-overlay hidden">
+        <div class="modal glass-modal" style="max-height: 80vh; overflow-y: auto; width: 550px; max-width: 95%;">
+            <h2>Pallets Abertos</h2>
+            <p style="font-size: 0.85rem; color: var(--text-secondary); margin-bottom: 1rem;">Selecione um pallet aberto para continuar a bipagem:</p>
+            <div style="max-height: 300px; overflow-y: auto; border: 1px solid rgba(255,255,255,0.08); border-radius: 8px;">
+                <table style="width: 100%; border-collapse: collapse; text-align: left;">
+                    <thead>
+                        <tr style="border-bottom: 1px solid rgba(255,255,255,0.1); color: var(--text-secondary); font-size: 0.85rem;">
+                            <th style="padding: 10px;">Código</th>
+                            <th style="padding: 10px; text-align: center;">Unidades</th>
+                            <th style="padding: 10px; text-align: right;">Ação</th>
+                        </tr>
+                    </thead>
+                    <tbody id="pallets-abertos-tbody" style="font-size: 0.9rem;">
+                        <!-- Populated via JS -->
+                    </tbody>
+                </table>
+            </div>
+            <div class="modal-actions" style="margin-top: 1.5rem;">
+                <button id="btn-fechar-modal-pallets" class="btn btn-secondary">Fechar</button>
+            </div>
+        </div>
+    </div>
 
     <script src="app.js"></script>
 </body>
