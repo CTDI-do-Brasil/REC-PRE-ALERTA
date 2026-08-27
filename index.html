@@ -157,31 +157,21 @@
                         <!-- Card Bipagem da Unidade -->
                         <div class="card glass" style="border-left: 4px solid #8b5cf6;">
                             <h3 style="margin-bottom: 6px; display: flex; align-items: center; gap: 8px; font-size: 1.1rem;">
-                                <span>🔍 Bipar Informações da Unidade</span>
+                                <span>🔍 Bipar Unidade</span>
                                 <span class="badge badge-success" style="font-size: 0.7rem;">Qualquer Modelo</span>
                             </h3>
                             <p style="font-size: 0.85rem; color: var(--text-secondary); margin-bottom: 16px;">
-                                Bipe o Serial, GPON ou MAC. O sistema validará se a unidade foi recebida previamente.
+                                Bipe o <strong>Serial Number</strong>, <strong>GPON ID</strong> ou <strong>MAC</strong> da unidade.
                             </p>
 
                             <form id="form-expedicao-bipar">
-                                <div class="scan-grid" style="grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 12px; margin-bottom: 16px;">
-                                    <div class="form-group" style="margin-bottom: 0;">
-                                        <label for="exp-serial">Serial Number *</label>
-                                        <input type="text" id="exp-serial" class="scan-input" autocomplete="off" placeholder="Bipe o Serial da Unidade">
-                                    </div>
-                                    <div class="form-group" style="margin-bottom: 0;">
-                                        <label for="exp-pon">PON ID / GPON</label>
-                                        <input type="text" id="exp-pon" class="scan-input" autocomplete="off" placeholder="Bipe o PON ID (opcional)">
-                                    </div>
-                                    <div class="form-group" style="margin-bottom: 0;">
-                                        <label for="exp-mac">MAC</label>
-                                        <input type="text" id="exp-mac" class="scan-input" autocomplete="off" placeholder="Bipe o MAC (opcional)">
-                                    </div>
+                                <div class="form-group" style="margin-bottom: 16px;">
+                                    <label for="exp-scan-input">Serial Number / GPON / MAC *</label>
+                                    <input type="text" id="exp-scan-input" class="scan-input" autocomplete="off" placeholder="BIPE O SERIAL, GPON OU MAC DA UNIDADE..." autofocus style="font-size: 1.1rem; padding: 14px 16px; width: 100%;">
                                 </div>
 
                                 <div class="action-row" style="display: flex; gap: 1rem; justify-content: flex-end; margin-top: 16px;">
-                                    <button type="button" id="btn-exp-limpar" class="btn btn-secondary btn-large" style="background: rgba(255, 255, 255, 0.1); color: var(--text-primary);">Limpar Campos</button>
+                                    <button type="button" id="btn-exp-limpar" class="btn btn-secondary btn-large" style="background: rgba(255, 255, 255, 0.1); color: var(--text-primary);">Limpar Campo</button>
                                     <button type="submit" id="btn-exp-adicionar" class="btn btn-primary btn-large" style="background: #10b981; border-color: #10b981;">Adicionar ao Pallet</button>
                                 </div>
                             </form>

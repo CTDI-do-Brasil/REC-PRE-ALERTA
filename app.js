@@ -1440,6 +1440,8 @@ async function loadActivePallet() {
             const data = await res.json();
             currentExpedicaoPallet = data.pallet;
             renderPalletData(data.pallet, data.items || []);
+            const inputScan = document.getElementById('exp-scan-input');
+            if (inputScan) setTimeout(() => inputScan.focus(), 100);
         } else {
             console.error('Falha ao carregar pallet ativo:', res.statusText);
         }
@@ -1552,9 +1554,7 @@ function showUnidadeNaoRecebidaModal(msg) {
 function setupExpedicaoListeners() {
     // Form Bipar Unidade
     const formBipar = document.getElementById('form-expedicao-bipar');
-    const inputSerial = document.getElementById('exp-serial');
-    const inputPon = document.getElementById('exp-pon');
-    const inputMac = document.getElementById('exp-mac');
+    const inputScan = document.getElementById('exp-scan-input');
     const btnLimpar = document.getElementById('btn-exp-limpar');
     const btnNovoPallet = document.getElementById('btn-exp-novo-pallet');
     const btnAbertos = document.getElementById('btn-exp-abertos');
@@ -1563,12 +1563,12 @@ function setupExpedicaoListeners() {
     const btnModalUnidadeOk = document.getElementById('btn-modal-unidade-ok');
     const btnFecharModalPallets = document.getElementById('btn-fechar-modal-pallets');
 
-    // Limpar campos
+    // Limpar campo
     const limparCampos = () => {
-        if (inputSerial) inputSerial.value = '';
-        if (inputPon) inputPon.value = '';
-        if (inputMac) inputMac.value = '';
-        if (inputSerial) inputSerial.focus();
+        if (inputScan) {
+            inputScan.value = '';
+            inputScan.focus();
+        }
     };
 
     if (btnLimpar) {
@@ -1587,6 +1587,7 @@ function setupExpedicaoListeners() {
     if (btnFecharModalPallets) {
         btnFecharModalPallets.addEventListener('click', () => {
             document.getElementById('modal-pallets-abertos').classList.add('hidden');
+            if (inputScan) inputScan.focus();
         });
     }
 
@@ -1689,13 +1690,11 @@ function setupExpedicaoListeners() {
                 return;
             }
 
-            const serial = inputSerial?.value.trim().toUpperCase() || '';
-            const pon = inputPon?.value.trim().toUpperCase() || '';
-            const mac = inputMac?.value.trim().toUpperCase() || '';
+            const valorScan = inputScan?.value.trim().toUpperCase() || '';
 
-            if (!serial && !pon && !mac) {
-                showExpedicaoStatus("Informe ou bipe ao menos o Serial da unidade.", true);
-                if (inputSerial) inputSerial.focus();
+            if (!valorScan) {
+                showExpedicaoStatus("Bipe o Serial, GPON ou MAC da unidade.", true);
+                if (inputScan) inputScan.focus();
                 return;
             }
 
@@ -1705,9 +1704,8 @@ function setupExpedicaoListeners() {
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({
                         codigo_pallet: currentExpedicaoPallet.codigo_pallet,
-                        serial,
-                        pon,
-                        mac,
+                        scan: valorScan,
+                        serial: valorScan,
                         usuario: currentUser?.username || 'OPERADOR'
                     })
                 });
@@ -1718,13 +1716,13 @@ function setupExpedicaoListeners() {
                     const errorMsg = data.error || 'Erro na bipagem.';
                     if (data.code === 'UNIDADE_NAO_RECEBIDA' || errorMsg.toLowerCase().includes('não recebida')) {
                         showExpedicaoStatus(`⚠️ <strong>UNIDADE NÃO RECEBIDA</strong>: Esta unidade não consta na base de recebimento.`, true);
-                        showUnidadeNaoRecebidaModal(`O serial ${serial || pon || mac} não foi recebido no sistema.`);
+                        showUnidadeNaoRecebidaModal(`A unidade "${valorScan}" não foi recebida no sistema.`);
                     } else {
                         showExpedicaoStatus(`❌ ${errorMsg}`, true);
                     }
-                    if (inputSerial) {
-                        inputSerial.select();
-                        inputSerial.focus();
+                    if (inputScan) {
+                        inputScan.select();
+                        inputScan.focus();
                     }
                     return;
                 }
@@ -1750,6 +1748,8 @@ window.selecionarPalletAberto = async function(codigo) {
             renderPalletData(data.pallet, data.items || []);
             document.getElementById('modal-pallets-abertos').classList.add('hidden');
             showExpedicaoStatus(`Pallet ativo alterado para <strong>${codigo}</strong>.`, false);
+            const inputScan = document.getElementById('exp-scan-input');
+            if (inputScan) inputScan.focus();
         }
     } catch (err) {
         console.error("Erro ao selecionar pallet:", err);
