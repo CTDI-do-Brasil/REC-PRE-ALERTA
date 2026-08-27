@@ -526,7 +526,7 @@ const DEFAULT_MODELS_SEED = [
 
 // App Version Check for Auto-Update
 app.get('/api/version', (req, res) => {
-  res.json({ version: 'v1.4.9' });
+  res.json({ version: 'v1.5.0' });
 });
 
 // GET all models from Postgres

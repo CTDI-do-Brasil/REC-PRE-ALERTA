@@ -25,6 +25,10 @@
                     <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20 7h-3a2 2 0 0 1-2-2V2"/><path d="M9 18a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h7l4 4v10a2 2 0 0 1-2 2z"/><path d="M3 15h6v6"/></svg>
                     Recebimento
                 </li>
+                <li data-tab="expedicao-pintura">
+                    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="1" y="3" width="15" height="13"></rect><polygon points="16 8 20 8 23 11 23 16 16 16 16 8"></polygon><circle cx="5.5" cy="18.5" r="2.5"></circle><circle cx="18.5" cy="18.5" r="2.5"></circle></svg>
+                    Expedição Pintura
+                </li>
                 <li data-tab="pre-alerta">
                     <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
                     Base Pré-Alerta
@@ -42,7 +46,7 @@
                 <div class="sidebar-user-info">
                     <span class="sidebar-user-label">Usuário Logado</span>
                     <strong id="display-user-name" class="sidebar-user-name">---</strong>
-                    <span class="sidebar-version" style="font-size: 0.7rem; color: rgba(255, 255, 255, 0.3); display: block; margin-top: 4px; font-weight: 500;">v1.4.9</span>
+                    <span class="sidebar-version" style="font-size: 0.7rem; color: rgba(255, 255, 255, 0.3); display: block; margin-top: 4px; font-weight: 500;">v1.5.0</span>
                 </div>
                 <button id="btn-logout" class="btn btn-secondary btn-icon" title="Sair">
                     <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"></path><polyline points="16 17 21 12 16 7"></polyline><line x1="21" y1="12" x2="9" y2="12"></line></svg>
@@ -115,6 +119,17 @@
                     <ul id="recent-list" class="recent-list">
                         <!-- Populated by JS -->
                     </ul>
+                </div>
+            </section>
+
+            <!-- Expedição Pintura Tab -->
+            <section id="expedicao-pintura" class="tab-content">
+                <header class="section-header">
+                    <h1>Expedição Pintura</h1>
+                </header>
+                
+                <div class="card glass">
+                    <p class="description">Módulo de Expedição Pintura.</p>
                 </div>
             </section>
 
