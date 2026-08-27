@@ -151,7 +151,7 @@
                             <div class="input-with-action">
                                 <input type="text" id="exp-codigo-pallet" readonly style="font-size: 1.3rem; font-weight: 700; letter-spacing: 1px; color: var(--primary-color); background: rgba(0, 0, 0, 0.4);" placeholder="Carregando...">
                                 <button type="button" id="btn-exp-novo-pallet" class="btn btn-primary" style="white-space: nowrap;">+ Novo Pallet</button>
-                                <button type="button" id="btn-exp-abertos" class="btn btn-secondary" title="Listar Pallets Abertos" style="white-space: nowrap;">Pallets Abertos</button>
+                                <button type="button" id="btn-exp-abertos" class="btn btn-secondary" title="Histórico e Busca de Pallets" style="white-space: nowrap;">Histórico de Pallets</button>
                             </div>
                         </div>
 
@@ -193,6 +193,7 @@
                                     <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="23 4 23 10 17 10"></polyline><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"></path></svg>
                                 </button>
                                 <button id="btn-exp-imprimir" class="btn btn-secondary" style="font-size: 0.85rem; padding: 6px 14px;" title="Imprimir Folha A4 do Pallet">🖨️ Imprimir</button>
+                                <button id="btn-exp-reabrir-pallet" class="btn btn-warning" style="font-size: 0.85rem; padding: 6px 14px; display: none; background: #f59e0b; color: #000; font-weight: 600;">Reabrir Pallet</button>
                                 <button id="btn-exp-fechar-pallet" class="btn btn-danger" style="font-size: 0.85rem; padding: 6px 14px;">Fechar Pallet</button>
                             </div>
                         </div>
@@ -530,16 +531,22 @@
         </div>
     </div>
 
-    <!-- Modal Pallets Abertos -->
+    <!-- Modal Histórico de Pallets -->
     <div id="modal-pallets-abertos" class="modal-overlay hidden">
-        <div class="modal glass-modal" style="max-height: 80vh; overflow-y: auto; width: 550px; max-width: 95%;">
-            <h2>Pallets Abertos</h2>
-            <p style="font-size: 0.85rem; color: var(--text-secondary); margin-bottom: 1rem;">Selecione um pallet aberto para continuar a bipagem:</p>
-            <div style="max-height: 300px; overflow-y: auto; border: 1px solid rgba(255,255,255,0.08); border-radius: 8px;">
+        <div class="modal glass-modal" style="max-height: 85vh; overflow-y: auto; width: 620px; max-width: 95%;">
+            <h2>Histórico de Pallets</h2>
+            <p style="font-size: 0.85rem; color: var(--text-secondary); margin-bottom: 0.8rem;">Busque ou selecione um pallet (aberto ou fechado) para visualizar, ajustar ou reabrir:</p>
+            
+            <div style="margin-bottom: 1rem;">
+                <input type="text" id="input-busca-pallets" placeholder="Filtrar por código do pallet (ex: PP00000001)..." class="form-control" style="width: 100%; padding: 10px 14px; font-size: 0.95rem;">
+            </div>
+
+            <div style="max-height: 320px; overflow-y: auto; border: 1px solid rgba(255,255,255,0.08); border-radius: 8px;">
                 <table style="width: 100%; border-collapse: collapse; text-align: left;">
                     <thead>
-                        <tr style="border-bottom: 1px solid rgba(255,255,255,0.1); color: var(--text-secondary); font-size: 0.85rem;">
+                        <tr style="border-bottom: 1px solid rgba(255,255,255,0.1); color: var(--text-secondary); font-size: 0.85rem; background: rgba(0,0,0,0.3); position: sticky; top: 0;">
                             <th style="padding: 10px;">Código</th>
+                            <th style="padding: 10px; text-align: center;">Status</th>
                             <th style="padding: 10px; text-align: center;">Unidades</th>
                             <th style="padding: 10px; text-align: right;">Ação</th>
                         </tr>

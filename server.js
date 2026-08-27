@@ -899,20 +899,66 @@ app.post('/api/expedicao-pintura/fechar-pallet', async (req, res) => {
   }
 });
 
-// Remove item from pallet
+// Get all pallets (open and closed)
+app.get('/api/expedicao-pintura/pallets-todos', async (req, res) => {
+  try {
+    const result = await pool.query("SELECT * FROM pallets_pintura ORDER BY id DESC");
+    res.json(result.rows);
+  } catch (err) {
+    console.error('Error fetching all pallets:', err);
+    res.status(500).json({ error: 'Database error fetching pallets.' });
+  }
+});
+
+// Reopen a closed pallet
+app.post('/api/expedicao-pintura/reabrir-pallet', async (req, res) => {
+  try {
+    const { codigo_pallet } = req.body;
+    const codPallet = codigo_pallet.trim().toUpperCase();
+    await pool.query(`
+      UPDATE pallets_pintura 
+      SET status = 'ABERTO' 
+      WHERE UPPER(codigo_pallet) = $1
+    `, [codPallet]);
+    res.json({ success: true, message: `Pallet ${codPallet} reaberto com sucesso.` });
+  } catch (err) {
+    console.error('Error reopening pallet:', err);
+    res.status(500).json({ error: 'Database error reopening pallet.' });
+  }
+});
+
+// Remove item from pallet (and revert unit status in recebimentos back to 'Recebida')
 app.delete('/api/expedicao-pintura/item/:id', async (req, res) => {
   try {
     const itemId = req.params.id;
     const itemRes = await pool.query('SELECT * FROM pallet_pintura_itens WHERE id = $1', [itemId]);
     if (itemRes.rows.length === 0) return res.status(404).json({ error: 'Item não encontrado.' });
     const item = itemRes.rows[0];
+
+    // 1. Delete item from pallet
     await pool.query('DELETE FROM pallet_pintura_itens WHERE id = $1', [itemId]);
+
+    // 2. Revert unit status in recebimentos to 'Recebida'
+    const identifiers = [item.serial_number, item.gpon_id, item.mac].filter(Boolean);
+    if (identifiers.length > 0) {
+      await pool.query(`
+        UPDATE recebimentos
+        SET status = 'Recebida'
+        WHERE (serial_number IS NOT NULL AND serial_number != '' AND UPPER(TRIM(serial_number)) = ANY($1))
+           OR (gpon_id IS NOT NULL AND gpon_id != '' AND UPPER(TRIM(gpon_id)) = ANY($1))
+           OR (mac IS NOT NULL AND mac != '' AND UPPER(TRIM(mac)) = ANY($1))
+      `, [identifiers]);
+    }
+
+    // 3. Recalculate total_unidades on pallet
     await pool.query(`
       UPDATE pallets_pintura 
-      SET total_unidades = (SELECT COUNT(*)::int FROM pallet_pintura_itens WHERE UPPER(codigo_pallet) = $1)
-      WHERE UPPER(codigo_pallet) = UPPER($2)
-    `, [item.codigo_pallet, item.codigo_pallet]);
-    res.json({ success: true, codigo_pallet: item.codigo_pallet });
+      SET total_unidades = (SELECT COUNT(*)::int FROM pallet_pintura_itens WHERE UPPER(codigo_pallet) = UPPER($1))
+      WHERE UPPER(codigo_pallet) = UPPER($1)
+    `, [item.codigo_pallet]);
+
+    console.log(`Item ${item.serial_number} removido do pallet ${item.codigo_pallet}. Status revertido para 'Recebida'.`);
+    res.json({ success: true, codigo_pallet: item.codigo_pallet, serial: item.serial_number });
   } catch (err) {
     console.error('Error removing item:', err);
     res.status(500).json({ error: 'Database error removing item.' });

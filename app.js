@@ -1481,6 +1481,17 @@ function renderPalletData(pallet, items) {
         resumoStatus.className = pallet.status === 'ABERTO' ? 'badge badge-success' : 'badge badge-danger';
     }
 
+    // Toggle Reabrir vs Fechar buttons
+    const btnFechar = document.getElementById('btn-exp-fechar-pallet');
+    const btnReabrir = document.getElementById('btn-exp-reabrir-pallet');
+    if (pallet.status === 'FECHADO') {
+        if (btnFechar) btnFechar.style.display = 'none';
+        if (btnReabrir) btnReabrir.style.display = '';
+    } else {
+        if (btnFechar) btnFechar.style.display = '';
+        if (btnReabrir) btnReabrir.style.display = 'none';
+    }
+
     if (statTotal) statTotal.textContent = totalUnidades;
     if (resumoTotal) resumoTotal.textContent = `${totalUnidades} Unidades`;
     if (tabelaCount) tabelaCount.textContent = `${totalUnidades} itens`;
@@ -1506,7 +1517,7 @@ function renderPalletData(pallet, items) {
                         <td style="padding: 8px 10px; color: var(--primary-color);">${item.modelo || '---'}</td>
                         <td style="padding: 8px 10px; color: var(--text-secondary); font-size: 0.8rem;">${hora}</td>
                         <td style="padding: 8px 10px; text-align: right;">
-                            <button onclick="handleRemoverItemPallet(${item.id})" class="btn btn-secondary" style="padding: 2px 8px; font-size: 0.75rem; background: rgba(244, 63, 94, 0.2); color: #f43f5e; border: 1px solid rgba(244, 63, 94, 0.4);" title="Remover unidade">
+                            <button onclick="handleRemoverItemPallet(${item.id})" class="btn btn-secondary" style="padding: 2px 8px; font-size: 0.75rem; background: rgba(244, 63, 94, 0.2); color: #f43f5e; border: 1px solid rgba(244, 63, 94, 0.4);" title="Remover unidade do pallet">
                                 &times;
                             </button>
                         </td>
@@ -1518,13 +1529,19 @@ function renderPalletData(pallet, items) {
 }
 
 async function handleRemoverItemPallet(itemId) {
-    if (!confirm("Deseja realmente remover esta unidade do pallet?")) return;
+    if (!confirm("Deseja realmente remover esta unidade do pallet? O status dela no sistema retornará para 'Recebida'.")) return;
     try {
         const res = await fetch(`${SERVER_URL.replace(/\/$/, '')}/api/expedicao-pintura/item/${itemId}`, {
             method: 'DELETE'
         });
         if (res.ok) {
-            await loadActivePallet();
+            const data = await res.json();
+            showExpedicaoStatus(`Unidade <strong>${data.serial || ''}</strong> removida do pallet e seu status retornou para 'Recebida'.`, false);
+            if (currentExpedicaoPallet) {
+                await selecionarPalletAberto(currentExpedicaoPallet.codigo_pallet);
+            } else {
+                await loadActivePallet();
+            }
         } else {
             alert("Erro ao remover item do pallet.");
         }
@@ -1976,35 +1993,84 @@ function setupExpedicaoListeners() {
         });
     }
 
-    // Listar Pallets Abertos
+    // Listar Histórico de Pallets (Abertos e Fechados)
+    let allPalletsCache = [];
+    const renderPalletsModalTable = (list) => {
+        const tbody = document.getElementById('pallets-abertos-tbody');
+        if (!tbody) return;
+        if (!list || list.length === 0) {
+            tbody.innerHTML = `<tr><td colspan="4" style="padding: 16px; text-align: center; color: var(--text-secondary);">Nenhum pallet encontrado.</td></tr>`;
+            return;
+        }
+        tbody.innerHTML = list.map(p => `
+            <tr style="border-bottom: 1px solid rgba(255,255,255,0.05);">
+                <td style="padding: 10px; font-weight: 700; color: var(--primary-color);">${p.codigo_pallet}</td>
+                <td style="padding: 10px; text-align: center;">
+                    <span class="badge ${p.status === 'ABERTO' ? 'badge-success' : 'badge-danger'}" style="font-size: 0.75rem;">
+                        ${p.status || 'ABERTO'}
+                    </span>
+                </td>
+                <td style="padding: 10px; text-align: center; color: #fbbf24; font-weight: 600;">${p.total_unidades || 0}</td>
+                <td style="padding: 10px; text-align: right;">
+                    <button onclick="selecionarPalletAberto('${p.codigo_pallet}')" class="btn btn-primary" style="padding: 4px 10px; font-size: 0.8rem;">
+                        Selecionar
+                    </button>
+                </td>
+            </tr>
+        `).join('');
+    };
+
+    const inputBuscaPallets = document.getElementById('input-busca-pallets');
+    if (inputBuscaPallets) {
+        inputBuscaPallets.addEventListener('input', (e) => {
+            const termo = e.target.value.trim().toUpperCase();
+            if (!termo) {
+                renderPalletsModalTable(allPalletsCache);
+            } else {
+                const filtrados = allPalletsCache.filter(p => p.codigo_pallet.toUpperCase().includes(termo));
+                renderPalletsModalTable(filtrados);
+            }
+        });
+    }
+
     if (btnAbertos) {
         btnAbertos.addEventListener('click', async () => {
             try {
-                const res = await fetch(`${SERVER_URL.replace(/\/$/, '')}/api/expedicao-pintura/pallets-abertos`);
+                const res = await fetch(`${SERVER_URL.replace(/\/$/, '')}/api/expedicao-pintura/pallets-todos`);
                 if (res.ok) {
-                    const pallets = await res.json();
-                    const tbody = document.getElementById('pallets-abertos-tbody');
-                    if (tbody) {
-                        if (pallets.length === 0) {
-                            tbody.innerHTML = `<tr><td colspan="3" style="padding: 16px; text-align: center; color: var(--text-secondary);">Nenhum pallet aberto no momento.</td></tr>`;
-                        } else {
-                            tbody.innerHTML = pallets.map(p => `
-                                <tr style="border-bottom: 1px solid rgba(255,255,255,0.05);">
-                                    <td style="padding: 10px; font-weight: 700; color: var(--primary-color);">${p.codigo_pallet}</td>
-                                    <td style="padding: 10px; text-align: center; color: #fbbf24; font-weight: 600;">${p.total_unidades || 0}</td>
-                                    <td style="padding: 10px; text-align: right;">
-                                        <button onclick="selecionarPalletAberto('${p.codigo_pallet}')" class="btn btn-primary" style="padding: 4px 10px; font-size: 0.8rem;">
-                                            Selecionar
-                                        </button>
-                                    </td>
-                                </tr>
-                            `).join('');
-                        }
-                    }
+                    allPalletsCache = await res.json();
+                    if (inputBuscaPallets) inputBuscaPallets.value = '';
+                    renderPalletsModalTable(allPalletsCache);
                     document.getElementById('modal-pallets-abertos').classList.remove('hidden');
                 }
             } catch (err) {
-                console.error("Erro ao buscar pallets abertos:", err);
+                console.error("Erro ao buscar pallets:", err);
+            }
+        });
+    }
+
+    // Reabrir Pallet
+    const btnReabrirPallet = document.getElementById('btn-exp-reabrir-pallet');
+    if (btnReabrirPallet) {
+        btnReabrirPallet.addEventListener('click', async () => {
+            if (!currentExpedicaoPallet) return;
+            const cod = currentExpedicaoPallet.codigo_pallet;
+            if (!confirm(`Deseja realmente reabrir o Pallet ${cod} para continuar adicionando ou ajustando unidades?`)) return;
+
+            try {
+                const res = await fetch(`${SERVER_URL.replace(/\/$/, '')}/api/expedicao-pintura/reabrir-pallet`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ codigo_pallet: cod })
+                });
+                if (res.ok) {
+                    showExpedicaoStatus(`Pallet <strong>${cod}</strong> reaberto com sucesso!`, false);
+                    await selecionarPalletAberto(cod);
+                } else {
+                    alert("Erro ao reabrir o pallet.");
+                }
+            } catch (err) {
+                console.error("Erro ao reabrir pallet:", err);
             }
         });
     }
