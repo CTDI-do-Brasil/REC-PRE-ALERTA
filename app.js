@@ -1360,6 +1360,49 @@ function setupReportListeners() {
         }
     });
 
+    document.getElementById('btn-export-exp-pintura').addEventListener('click', async () => {
+        const startVal = document.getElementById('report-date-start').value;
+        const endVal = document.getElementById('report-date-end').value;
+        const modeloVal = document.getElementById('report-modelo').value;
+        
+        let url = `${SERVER_URL.replace(/\/$/, '')}/api/expedicao-pintura/report?`;
+        if (startVal) url += `&start=${startVal}`;
+        if (endVal) url += `&end=${endVal}`;
+        if (modeloVal) url += `&modelo=${encodeURIComponent(modeloVal)}`;
+
+        try {
+            const res = await fetch(url);
+            if (!res.ok) throw new Error('Failed to fetch report');
+            const rows = await res.json();
+            
+            if (rows.length === 0) { alert("Nenhum dado encontrado para exportar nesse periodo."); return; }
+            
+            const data = rows.map((item, index) => ({
+                ID: index + 1,
+                "Código Pallet": item.codigo_pallet || '',
+                "Status Pallet": item.pallet_status || '',
+                "Data Criação Pallet": item.data_criacao ? new Date(item.data_criacao).toLocaleString('pt-BR') : '',
+                "Data Fechamento Pallet": item.data_fechamento ? new Date(item.data_fechamento).toLocaleString('pt-BR') : 'Aberto',
+                Fabricante: item.fabricante || '',
+                Modelo: item.modelo || '',
+                "Serial Number": item.serial_number || '',
+                "GPON ID": item.gpon_id || '',
+                MAC: item.mac || '',
+                "Usuário Bipagem": item.usuario || '',
+                "Data Bipagem": item.data_bipagem ? new Date(item.data_bipagem).toLocaleString('pt-BR') : '',
+                "Status Item": item.status || ''
+            }));
+
+            const worksheet = XLSX.utils.json_to_sheet(data);
+            const workbook = XLSX.utils.book_new();
+            XLSX.utils.book_append_sheet(workbook, worksheet, "Itens Expedição Pintura");
+            XLSX.writeFile(workbook, "relatorio_expedicao_pintura.xlsx");
+        } catch (err) {
+            console.error(err);
+            alert('Erro ao carregar dados do relatorio.');
+        }
+    });
+
     document.getElementById('btn-clear-recebidos').addEventListener('click', async () => {
         if (confirm("Tem certeza que deseja apagar TODO o historico de recebimentos? Faca os relatorios antes!")) {
             try {

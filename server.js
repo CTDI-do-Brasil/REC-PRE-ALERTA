@@ -910,6 +910,44 @@ app.get('/api/expedicao-pintura/pallets-todos', async (req, res) => {
   }
 });
 
+// Get report data for expedicao pintura
+app.get('/api/expedicao-pintura/report', async (req, res) => {
+  const { start, end, modelo } = req.query;
+  try {
+    let query = `
+      SELECT ppi.*, p.data_criacao, p.data_fechamento, p.status as pallet_status 
+      FROM pallet_pintura_itens ppi
+      JOIN pallets_pintura p ON ppi.pallet_id = p.id
+      WHERE 1=1
+    `;
+    const params = [];
+    let paramIndex = 1;
+
+    if (start) {
+      query += ` AND ppi.data_bipagem >= $${paramIndex}`;
+      params.push(`${start} 00:00:00`);
+      paramIndex++;
+    }
+    if (end) {
+      query += ` AND ppi.data_bipagem <= $${paramIndex}`;
+      params.push(`${end} 23:59:59`);
+      paramIndex++;
+    }
+    if (modelo) {
+      query += ` AND ppi.modelo = $${paramIndex}`;
+      params.push(modelo);
+      paramIndex++;
+    }
+
+    query += ' ORDER BY ppi.id ASC';
+    const result = await pool.query(query, params);
+    res.json(result.rows);
+  } catch (err) {
+    console.error('Error fetching expedicao pintura report:', err);
+    res.status(500).json({ error: 'Failed to fetch report data.' });
+  }
+});
+
 // Reopen a closed pallet
 app.post('/api/expedicao-pintura/reabrir-pallet', async (req, res) => {
   try {
