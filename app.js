@@ -1623,7 +1623,7 @@ function imprimirFolhaA4PalletGenerica(dados) {
   } = dados;
 
   const barcodeSvgHtml = generateCode128SvgHtml(palletId, 68, 3.2);
-  const qrContent = (listaUnidades && listaUnidades.length > 0) ? listaUnidades.join('\n') : palletId;
+  const qrContent = (listaUnidades && listaUnidades.length > 0) ? listaUnidades.join(';') : palletId;
 
   const printWindow = window.open('', '_blank', 'width=1100,height=850');
   if (!printWindow) {
