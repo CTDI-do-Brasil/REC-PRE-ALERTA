@@ -149,10 +149,16 @@ async function ensureDBAndMinIO() {
       modelo TEXT,
       fabricante TEXT,
       data_bipagem TIMESTAMP DEFAULT NOW(),
-      usuario TEXT
+      usuario TEXT,
+      status TEXT DEFAULT 'Em Pallet'
     )`);
     await client.query(`CREATE INDEX IF NOT EXISTS idx_pallet_itens_serial ON pallet_pintura_itens(serial_number)`);
     await client.query(`CREATE INDEX IF NOT EXISTS idx_pallet_itens_codigo ON pallet_pintura_itens(codigo_pallet)`);
+
+    // Ensure status column in recebimentos and pallet_pintura_itens
+    await client.query(`ALTER TABLE recebimentos ADD COLUMN IF NOT EXISTS status TEXT DEFAULT 'Recebida'`);
+    await client.query(`UPDATE recebimentos SET status = 'Recebida' WHERE status IS NULL`);
+    await client.query(`ALTER TABLE pallet_pintura_itens ADD COLUMN IF NOT EXISTS status TEXT DEFAULT 'Em Pallet'`);
 
     console.log('Postgres tables verified/created successfully.');
   } catch (err) {
@@ -338,8 +344,8 @@ app.post('/api/recebimentos', async (req, res) => {
   const body = req.body;
   if (!body) return res.status(400).json({ error: 'Invalid payload' });
   try {
-    const query = `INSERT INTO recebimentos(fabricante, modelo, serial_number, gpon_id, mac, usuario, data_hora, no_pre_alerta, matched_value, codigo, descricao)
-      VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)`;
+    const query = `INSERT INTO recebimentos(fabricante, modelo, serial_number, gpon_id, mac, usuario, data_hora, no_pre_alerta, matched_value, codigo, descricao, status)
+      VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)`;
     const params = [
       body.fabricante || null,
       body.modelo,
@@ -351,7 +357,8 @@ app.post('/api/recebimentos', async (req, res) => {
       body.noPreAlerta || false,
       body.matchedValue || null,
       body.codigo || null,
-      body.descricao || null
+      body.descricao || null,
+      'Recebida'
     ];
     await pool.query(query, params);
 
@@ -849,12 +856,43 @@ app.post('/api/expedicao-pintura/fechar-pallet', async (req, res) => {
   try {
     const { codigo_pallet } = req.body;
     const codPallet = codigo_pallet.trim().toUpperCase();
+
+    // 1. Update status of units in recebimentos to "Aguardando retorno de pintura"
+    const updateRecebimentosQuery = `
+      UPDATE recebimentos
+      SET status = 'Aguardando retorno de pintura'
+      WHERE id IN (
+        SELECT r.id FROM recebimentos r
+        JOIN pallet_pintura_itens ppi ON (
+          (r.serial_number IS NOT NULL AND r.serial_number != '' AND UPPER(TRIM(r.serial_number)) = UPPER(TRIM(ppi.serial_number)))
+          OR (r.gpon_id IS NOT NULL AND r.gpon_id != '' AND UPPER(TRIM(r.gpon_id)) = UPPER(TRIM(ppi.gpon_id)))
+          OR (r.mac IS NOT NULL AND r.mac != '' AND UPPER(TRIM(r.mac)) = UPPER(TRIM(ppi.mac)))
+        )
+        WHERE UPPER(ppi.codigo_pallet) = $1
+      )
+    `;
+    const updateRecRes = await pool.query(updateRecebimentosQuery, [codPallet]);
+
+    // 2. Update status of items in pallet_pintura_itens
+    await pool.query(`
+      UPDATE pallet_pintura_itens
+      SET status = 'Aguardando retorno de pintura'
+      WHERE UPPER(codigo_pallet) = $1
+    `, [codPallet]);
+
+    // 3. Close the pallet
     await pool.query(`
       UPDATE pallets_pintura 
       SET status = 'FECHADO', data_fechamento = NOW() 
       WHERE UPPER(codigo_pallet) = $1
     `, [codPallet]);
-    res.json({ success: true, message: `Pallet ${codPallet} fechado com sucesso.` });
+
+    console.log(`Pallet ${codPallet} fechado. ${updateRecRes.rowCount} unidades com status atualizado para 'Aguardando retorno de pintura'.`);
+    res.json({
+      success: true,
+      message: `Pallet ${codPallet} fechado com sucesso. ${updateRecRes.rowCount} unidades atualizadas para 'Aguardando retorno de pintura'.`,
+      unidadesAtualizadas: updateRecRes.rowCount
+    });
   } catch (err) {
     console.error('Error closing pallet:', err);
     res.status(500).json({ error: 'Database error closing pallet.' });

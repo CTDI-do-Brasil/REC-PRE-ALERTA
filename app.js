@@ -1306,7 +1306,8 @@ function setupReportListeners() {
                 "Usuário": item.usuario || '',
                 Data_Hora: new Date(item.data_hora).toLocaleString('pt-BR'),
                 "Código": item.codigo || '',
-                "Descrição": item.descricao || ''
+                "Descrição": item.descricao || '',
+                Status: item.status || 'Recebida'
             }));
 
             const worksheet = XLSX.utils.json_to_sheet(data);
@@ -1345,7 +1346,8 @@ function setupReportListeners() {
                 MAC: item.mac || '',
                 "Serial_Pre_Alerta": item.matched_value || '',
                 "Usuário": item.usuario || '',
-                Data_Hora: new Date(item.data_hora).toLocaleString('pt-BR')
+                Data_Hora: new Date(item.data_hora).toLocaleString('pt-BR'),
+                Status: item.status || 'Recebida'
             }));
 
             const worksheet = XLSX.utils.json_to_sheet(data);
