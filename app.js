@@ -1435,12 +1435,15 @@ function getRulesDescription(modelo) {
 // ============================================================
 let currentExpedicaoPallet = null;
 
+let currentExpedicaoItems = [];
+
 async function loadActivePallet() {
     try {
         const res = await fetch(`${SERVER_URL.replace(/\/$/, '')}/api/expedicao-pintura/active`);
         if (res.ok) {
             const data = await res.json();
             currentExpedicaoPallet = data.pallet;
+            currentExpedicaoItems = data.items || [];
             renderPalletData(data.pallet, data.items || []);
             const inputScan = document.getElementById('exp-scan-input');
             if (inputScan) setTimeout(() => inputScan.focus(), 100);
@@ -1455,6 +1458,7 @@ async function loadActivePallet() {
 function renderPalletData(pallet, items) {
     if (!pallet) return;
     currentExpedicaoPallet = pallet;
+    currentExpedicaoItems = items || [];
     
     // Inputs & Badges
     const inputCodigo = document.getElementById('exp-codigo-pallet');
@@ -1553,6 +1557,358 @@ function showUnidadeNaoRecebidaModal(msg) {
     }
 }
 
+/* ==========================================================================
+   GERADOR VETORIAL SVG DE CÓDIGO DE BARRAS CODE 128 (100% OFFLINE / NATIVO)
+   ========================================================================== */
+function generateCode128SvgHtml(text, height = 70, scale = 3.2) {
+  const patterns = [
+    '11011001100','11001101100','11001100110','10010011000','10010001100','10001001100','10011001000','10011000100','10001100100','11001001000',
+    '11001000100','11000100100','10110011100','10011011100','10011001110','10111001100','10011101100','10011100110','11001110010','11001011100',
+    '11001001110','11011100100','11001110100','11101101110','11101001100','11100101100','11100100110','11101100100','11100110100','11100110010',
+    '11011011000','11011000110','11000110110','10100011000','10001011000','10001000110','10110001000','10001101000','10001100010','11010001000',
+    '11000101000','11000100010','10110111000','10110001110','10001101110','10111011000','10111000110','10001110110','11101110110','11010001110',
+    '11000101110','11011101000','11011100010','11011101110','11101011000','11101000110','11100010110','11101101000','11101100010','11100011010',
+    '11101111010','11001000010','11110001010','10100110000','10100001100','10010110000','10010000110','10000101100','10000100110','10110010000',
+    '10110000100','10011010000','10011000010','10000110100','10000110010','11000010010','11001010000','11110111010','11000010100','10001111010',
+    '10100111100','10010111100','10010011110','10111100100','10011110100','10011110010','11110100100','11110010100','11110010010','11011011110',
+    '11011110110','11110110110','10101111000','10100011110','10001011110','10111101000','10111100010','11110101000','11110100010','10111011110',
+    '10111101110','11101011110','11110101110','11010000100','11010010000','11010011100','1100011101011'
+  ];
+
+  const START_B = 104;
+  const STOP = 106;
+  const str = String(text || '').trim();
+
+  let checksum = START_B;
+  let bitString = patterns[START_B];
+
+  for (let i = 0; i < str.length; i++) {
+    const code = str.charCodeAt(i) - 32;
+    if (code >= 0 && code < patterns.length) {
+      checksum += code * (i + 1);
+      bitString += patterns[code];
+    }
+  }
+
+  const checkCode = checksum % 103;
+  bitString += patterns[checkCode];
+  bitString += patterns[STOP];
+
+  const width = bitString.length * scale;
+  let svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}" viewBox="0 0 ${width} ${height}">`;
+  svg += `<rect width="100%" height="100%" fill="#fff"/>`;
+
+  let posX = 0;
+  for (let i = 0; i < bitString.length; i++) {
+    if (bitString[i] === '1') {
+      svg += `<rect x="${posX}" y="0" width="${scale}" height="${height}" fill="#000"/>`;
+    }
+    posX += scale;
+  }
+  svg += `</svg>`;
+  return svg;
+}
+
+/* ==========================================================================
+   FUNÇÃO PRINCIPAL DE IMPRESSÃO DA FOLHA A4 DO PALLET (COM QR CODE)
+   ========================================================================== */
+function imprimirFolhaA4PalletGenerica(dados) {
+  const {
+    palletId = 'PP00000001',
+    modelo = 'HG6145F3',
+    dataHora = new Date().toLocaleString('pt-BR'),
+    totalUnidades = 0,
+    listaUnidades = [],
+    logoUrl = 'logo.png'
+  } = dados;
+
+  const barcodeSvgHtml = generateCode128SvgHtml(palletId, 68, 3.2);
+  const qrContent = (listaUnidades && listaUnidades.length > 0) ? listaUnidades.join('\n') : palletId;
+
+  const printWindow = window.open('', '_blank', 'width=1100,height=850');
+  if (!printWindow) {
+    alert("Por favor, permita pop-ups no navegador para abrir a folha de impressão!");
+    return;
+  }
+
+  const printHtml = `
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8">
+  <title>Identificação do Pallet - ${palletId}</title>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
+  <style>
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+      font-family: 'Arial', 'Helvetica', sans-serif;
+    }
+    body {
+      background-color: #fff;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      padding: 0;
+      margin: 0;
+    }
+    .no-print {
+      padding: 12px;
+      text-align: center;
+      background: #0f172a;
+      width: 100%;
+    }
+    .btn-print {
+      background-color: #0284c7;
+      color: #fff;
+      border: none;
+      padding: 10px 26px;
+      font-size: 16px;
+      font-weight: bold;
+      border-radius: 6px;
+      cursor: pointer;
+    }
+    .btn-print:hover {
+      background-color: #0369a1;
+    }
+    .page-a4 {
+      width: 297mm;
+      height: 200mm;
+      background: white;
+      padding: 8mm 14mm;
+      position: relative;
+      display: flex;
+      flex-direction: column;
+      justify-content: flex-start;
+      overflow: hidden;
+    }
+    .header-logo {
+      position: absolute;
+      top: 8mm;
+      right: 14mm;
+    }
+    .header-logo img {
+      height: 48px;
+      width: auto;
+    }
+    .pallet-header {
+      text-align: center;
+      margin-top: 1mm;
+      margin-bottom: 5mm;
+    }
+    .pallet-title {
+      font-size: 34pt;
+      font-weight: 900;
+      letter-spacing: 2px;
+      color: #000;
+      line-height: 1;
+    }
+    .pallet-code {
+      font-size: 52pt;
+      font-weight: 900;
+      letter-spacing: 3px;
+      color: #000;
+      margin: 2px 0 4px 0;
+      line-height: 1;
+    }
+    .barcode-container {
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      margin-top: 4px;
+    }
+    .barcode-container svg {
+      max-width: 520px;
+      height: 68px;
+    }
+    
+    .content-grid {
+      display: flex;
+      gap: 12mm;
+      margin-top: 2mm;
+      flex: 1;
+    }
+    
+    .card-lote {
+      flex: 1.1;
+      border: 2.5px solid #000;
+      border-radius: 10px;
+      padding: 18px 22px;
+      display: flex;
+      flex-direction: column;
+      justify-content: space-around;
+      background: #fdfdfd;
+    }
+    .data-group {
+      margin-bottom: 12px;
+    }
+    .data-group:last-child {
+      margin-bottom: 0;
+    }
+    .data-label {
+      font-size: 11pt;
+      font-weight: 800;
+      color: #555;
+      text-transform: uppercase;
+      margin-bottom: 4px;
+      letter-spacing: 1px;
+    }
+    .data-value-model {
+      font-size: 24pt;
+      font-weight: 900;
+      color: #000;
+      line-height: 1.1;
+    }
+    .data-value-date {
+      font-size: 18pt;
+      font-weight: 800;
+      color: #000;
+      line-height: 1.2;
+    }
+    .data-value-units {
+      font-size: 26pt;
+      font-weight: 900;
+      color: #000;
+      letter-spacing: 1px;
+    }
+    
+    .card-qrcode {
+      flex: 1.2;
+      border: 2.5px solid #000;
+      border-radius: 10px;
+      padding: 14px;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      background: #fdfdfd;
+    }
+    .qrcode-header {
+      font-size: 15pt;
+      font-weight: 900;
+      color: #000;
+      text-align: center;
+      margin-bottom: 8px;
+      padding-bottom: 4px;
+      border-bottom: 2px solid #000;
+      text-transform: uppercase;
+      letter-spacing: 1px;
+      width: 100%;
+    }
+    #qrcode-target {
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      margin: auto;
+      padding: 6px;
+      background: #fff;
+    }
+    #qrcode-target canvas, #qrcode-target img {
+      max-width: 220px;
+      max-height: 220px;
+    }
+    .qrcode-footer {
+      font-size: 10pt;
+      font-weight: 800;
+      color: #333;
+      text-align: center;
+      margin-top: 6px;
+      letter-spacing: 0.5px;
+    }
+    
+    @media print {
+      @page {
+        size: A4 landscape;
+        margin: 0;
+      }
+      body {
+        background: none;
+        padding: 0;
+      }
+      .no-print {
+        display: none !important;
+      }
+      .page-a4 {
+        width: 100vw;
+        height: 100vh;
+        box-shadow: none;
+        padding: 8mm 14mm;
+        page-break-after: avoid;
+      }
+    }
+  </style>
+</head>
+<body>
+  <div class="no-print">
+    <button class="btn-print" onclick="window.print()">
+      🖨️ Imprimir Folha A4 do Pallet (${palletId})
+    </button>
+  </div>
+
+  <div class="page-a4">
+    <div class="header-logo">
+      <img src="${logoUrl}" alt="CTDI" onerror="this.style.display='none'">
+    </div>
+
+    <div class="pallet-header">
+      <div class="pallet-title">PALLET #</div>
+      <div class="pallet-code">${palletId}</div>
+      <div class="barcode-container">
+        ${barcodeSvgHtml}
+      </div>
+    </div>
+
+    <div class="content-grid">
+      <div class="card-lote">
+        <div class="data-group">
+          <div class="data-label">Modelo do Equipamento:</div>
+          <div class="data-value-model">${modelo}</div>
+        </div>
+        <div class="data-group">
+          <div class="data-label">Data e Hora:</div>
+          <div class="data-value-date">${dataHora}</div>
+        </div>
+        <div class="data-group">
+          <div class="data-label">Total de Unidades:</div>
+          <div class="data-value-units">${totalUnidades} UNIDADES</div>
+        </div>
+      </div>
+
+      <div class="card-qrcode">
+        <div class="qrcode-header">Relação de Unidades (${totalUnidades})</div>
+        <div id="qrcode-target"></div>
+        <div class="qrcode-footer">${totalUnidades} UNIDADES CODIFICADAS</div>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    window.addEventListener('load', () => {
+      try {
+        new QRCode(document.getElementById("qrcode-target"), {
+          text: ${JSON.stringify(qrContent)},
+          width: 210,
+          height: 210,
+          correctLevel: QRCode.CorrectLevel.M
+        });
+      } catch (err) {
+        console.error("Erro ao gerar QRCode:", err);
+      }
+      setTimeout(() => {
+        window.print();
+      }, 500);
+    });
+  <\/script>
+</body>
+</html>
+  `;
+
+  printWindow.document.open();
+  printWindow.document.write(printHtml);
+  printWindow.document.close();
+}
+
 function setupExpedicaoListeners() {
     // Form Bipar Unidade
     const formBipar = document.getElementById('form-expedicao-bipar');
@@ -1561,6 +1917,7 @@ function setupExpedicaoListeners() {
     const btnNovoPallet = document.getElementById('btn-exp-novo-pallet');
     const btnAbertos = document.getElementById('btn-exp-abertos');
     const btnRefresh = document.getElementById('btn-exp-refresh');
+    const btnImprimir = document.getElementById('btn-exp-imprimir');
     const btnFecharPallet = document.getElementById('btn-exp-fechar-pallet');
     const btnModalUnidadeOk = document.getElementById('btn-modal-unidade-ok');
     const btnFecharModalPallets = document.getElementById('btn-fechar-modal-pallets');
@@ -1606,6 +1963,7 @@ function setupExpedicaoListeners() {
                 if (res.ok) {
                     const data = await res.json();
                     currentExpedicaoPallet = data.pallet;
+                    currentExpedicaoItems = data.items || [];
                     renderPalletData(data.pallet, data.items || []);
                     showExpedicaoStatus(`Novo pallet <strong>${data.pallet.codigo_pallet}</strong> criado com sucesso!`, false);
                     limparCampos();
@@ -1656,12 +2014,37 @@ function setupExpedicaoListeners() {
         btnRefresh.addEventListener('click', loadActivePallet);
     }
 
-    // Fechar Pallet
+    // Imprimir Folha Atual Manualmente
+    if (btnImprimir) {
+        btnImprimir.addEventListener('click', () => {
+            if (!currentExpedicaoPallet) {
+                alert("Nenhum pallet selecionado.");
+                return;
+            }
+            const items = currentExpedicaoItems || [];
+            const modelosUnicos = [...new Set(items.map(i => i.modelo).filter(Boolean))];
+            const modeloTexto = modelosUnicos.length === 1 ? modelosUnicos[0] : (modelosUnicos.length > 1 ? modelosUnicos.join(', ') : 'QUALQUER MODELO');
+            const listaSeriais = items.map(i => i.serial_number || i.gpon_id || i.mac).filter(Boolean);
+
+            imprimirFolhaA4PalletGenerica({
+                palletId: currentExpedicaoPallet.codigo_pallet,
+                modelo: modeloTexto,
+                dataHora: new Date().toLocaleString('pt-BR'),
+                totalUnidades: items.length,
+                listaUnidades: listaSeriais,
+                logoUrl: 'logo.png'
+            });
+        });
+    }
+
+    // Fechar Pallet & Imprimir Automaticamente
     if (btnFecharPallet) {
         btnFecharPallet.addEventListener('click', async () => {
             if (!currentExpedicaoPallet) return;
             const cod = currentExpedicaoPallet.codigo_pallet;
-            const total = currentExpedicaoPallet.total_unidades || 0;
+            const itemsToPrint = [...(currentExpedicaoItems || [])];
+            const total = itemsToPrint.length;
+            
             if (!confirm(`Deseja realmente fechar o Pallet ${cod} com ${total} unidades?`)) return;
 
             try {
@@ -1671,7 +2054,22 @@ function setupExpedicaoListeners() {
                     body: JSON.stringify({ codigo_pallet: cod, usuario: currentUser?.username })
                 });
                 if (res.ok) {
-                    showExpedicaoStatus(`Pallet <strong>${cod}</strong> fechado com sucesso!`, false);
+                    showExpedicaoStatus(`Pallet <strong>${cod}</strong> fechado com sucesso! Abrindo folha de impressão...`, false);
+                    
+                    // Dispara impressão da folha A4 com QR Code
+                    const modelosUnicos = [...new Set(itemsToPrint.map(i => i.modelo).filter(Boolean))];
+                    const modeloTexto = modelosUnicos.length === 1 ? modelosUnicos[0] : (modelosUnicos.length > 1 ? modelosUnicos.join(', ') : 'DIVERSOS');
+                    const listaSeriais = itemsToPrint.map(i => i.serial_number || i.gpon_id || i.mac).filter(Boolean);
+
+                    imprimirFolhaA4PalletGenerica({
+                        palletId: cod,
+                        modelo: modeloTexto,
+                        dataHora: new Date().toLocaleString('pt-BR'),
+                        totalUnidades: total,
+                        listaUnidades: listaSeriais,
+                        logoUrl: 'logo.png'
+                    });
+
                     // Automaticamente carrega ou cria o próximo pallet
                     await loadActivePallet();
                 } else {
@@ -1730,6 +2128,7 @@ function setupExpedicaoListeners() {
                 }
 
                 // Sucesso
+                currentExpedicaoItems = data.items || [];
                 renderPalletData(currentExpedicaoPallet, data.items);
                 showExpedicaoStatus(`✅ Unidade <strong>${data.item.serial_number}</strong> (${data.item.modelo}) adicionada ao Pallet ${currentExpedicaoPallet.codigo_pallet}!`, false);
                 limparCampos();
@@ -1747,6 +2146,7 @@ window.selecionarPalletAberto = async function(codigo) {
         if (res.ok) {
             const data = await res.json();
             currentExpedicaoPallet = data.pallet;
+            currentExpedicaoItems = data.items || [];
             renderPalletData(data.pallet, data.items || []);
             document.getElementById('modal-pallets-abertos').classList.add('hidden');
             showExpedicaoStatus(`Pallet ativo alterado para <strong>${codigo}</strong>.`, false);
