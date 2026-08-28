@@ -1386,7 +1386,7 @@ function setupReportListeners() {
                 "Código Pallet": item.codigo_pallet || '',
                 "Status Pallet": item.pallet_status || '',
                 "Data Criação Pallet": item.data_criacao ? new Date(item.data_criacao).toLocaleString('pt-BR') : '',
-                "Data Fechamento Pallet": item.data_fechamento ? new Date(item.data_fechamento).toLocaleString('pt-BR') : 'Aberto',
+                "Data Fechamento Pallet": (item.pallet_status === 'FECHADO' && item.data_fechamento) ? new Date(item.data_fechamento).toLocaleString('pt-BR') : '',
                 Fabricante: item.fabricante || '',
                 Modelo: item.modelo || '',
                 "Serial Number": item.serial_number || '',
