@@ -2487,8 +2487,8 @@ function setupRetornoPinturaListeners() {
 
                 if (!res.ok || !data.success) {
                     const errorMsg = data.error || 'Erro ao registrar retorno de pintura.';
-                    if (data.code === 'STATUS_INVALIDO') {
-                        showRetornoStatus(`❌ <strong>STATUS INVÁLIDO</strong>: ${errorMsg}`, true);
+                    if (data.code === 'JA_BIPADO') {
+                        showRetornoStatus(`⚠️ <strong>UNIDADE JÁ BIPADA</strong>: ${errorMsg}`, true);
                     } else if (data.code === 'UNIDADE_NAO_ENCONTRADA') {
                         showRetornoStatus(`⚠️ <strong>NÃO ENCONTRADA</strong>: ${errorMsg}`, true);
                     } else {

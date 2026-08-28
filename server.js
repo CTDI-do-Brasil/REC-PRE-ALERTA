@@ -1092,7 +1092,27 @@ app.post('/api/retorno-pintura/bipar', async (req, res) => {
     const unit = recRes.rows[0];
     const identifiers = [unit.serial_number, unit.gpon_id, unit.mac].filter(Boolean);
 
-    // 2. Update status in recebimentos to "Retorno de Pintura"
+    // 2. Check if unit was already scanned into Retorno de Pintura (Prevent duplication)
+    const checkDup = await pool.query(`
+      SELECT * FROM retorno_pintura_itens
+      WHERE (serial_number IS NOT NULL AND serial_number != '' AND UPPER(TRIM(serial_number)) = ANY($1))
+         OR (gpon_id IS NOT NULL AND gpon_id != '' AND UPPER(TRIM(gpon_id)) = ANY($1))
+         OR (mac IS NOT NULL AND mac != '' AND UPPER(TRIM(mac)) = ANY($1))
+      ORDER BY id DESC LIMIT 1
+    `, [identifiers]);
+
+    if (checkDup.rows.length > 0) {
+      const dup = checkDup.rows[0];
+      const dataHoraStr = dup.data_retorno ? new Date(dup.data_retorno).toLocaleString('pt-BR') : '';
+      return res.status(400).json({
+        success: false,
+        code: 'JA_BIPADO',
+        error: `Unidade "${unit.serial_number || cleanCode}" já foi bipada no Retorno de Pintura${dataHoraStr ? ` em ${dataHoraStr}` : ''} por ${dup.usuario || 'Operador'}.`,
+        item: dup
+      });
+    }
+
+    // 3. Update status in recebimentos to "Retorno de Pintura"
     await pool.query(`
       UPDATE recebimentos
       SET status = 'Retorno de Pintura'
