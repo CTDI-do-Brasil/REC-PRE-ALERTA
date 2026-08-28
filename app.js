@@ -189,6 +189,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     setupAdminListeners();
     setupReportListeners();
     setupExpedicaoListeners();
+    setupRetornoPinturaListeners();
     startMidnightLogoutCheck();
     // Check persisted login session on F5/refresh
     const savedUserStr = localStorage.getItem('preAlertaLoggedUser');
@@ -234,6 +235,9 @@ function setupNavigation() {
                     }
                     if (target === 'expedicao-pintura') {
                         loadActivePallet();
+                    }
+                    if (target === 'retorno-pintura') {
+                        loadRetornoPinturaData();
                     }
                 }
                 else tab.classList.remove('active');
@@ -1403,6 +1407,48 @@ function setupReportListeners() {
         }
     });
 
+    const btnExpRetornoPintura = document.getElementById('btn-export-retorno-pintura');
+    if (btnExpRetornoPintura) {
+        btnExpRetornoPintura.addEventListener('click', async () => {
+            const startVal = document.getElementById('report-date-start').value;
+            const endVal = document.getElementById('report-date-end').value;
+            const modeloVal = document.getElementById('report-modelo').value;
+            
+            let url = `${SERVER_URL.replace(/\/$/, '')}/api/retorno-pintura/report?`;
+            if (startVal) url += `&start=${startVal}`;
+            if (endVal) url += `&end=${endVal}`;
+            if (modeloVal) url += `&modelo=${encodeURIComponent(modeloVal)}`;
+
+            try {
+                const res = await fetch(url);
+                if (!res.ok) throw new Error('Failed to fetch report');
+                const rows = await res.json();
+                
+                if (rows.length === 0) { alert("Nenhum dado encontrado para exportar nesse período."); return; }
+                
+                const data = rows.map((item, index) => ({
+                    ID: index + 1,
+                    Fabricante: item.fabricante || '',
+                    Modelo: item.modelo || '',
+                    "Serial Number": item.serial_number || '',
+                    "GPON ID": item.gpon_id || '',
+                    MAC: item.mac || '',
+                    "Usuário Retorno": item.usuario || '',
+                    "Data Retorno": item.data_retorno ? new Date(item.data_retorno).toLocaleString('pt-BR') : '',
+                    "Status": item.status || 'Retorno de Pintura'
+                }));
+
+                const worksheet = XLSX.utils.json_to_sheet(data);
+                const workbook = XLSX.utils.book_new();
+                XLSX.utils.book_append_sheet(workbook, worksheet, "Retorno Pintura");
+                XLSX.writeFile(workbook, "relatorio_retorno_pintura.xlsx");
+            } catch (err) {
+                console.error(err);
+                alert('Erro ao carregar dados do relatório de retorno de pintura.');
+            }
+        });
+    }
+
     document.getElementById('btn-clear-recebidos').addEventListener('click', async () => {
         if (confirm("Tem certeza que deseja apagar TODO o historico de recebimentos? Faca os relatorios antes!")) {
             try {
@@ -2266,4 +2312,200 @@ window.selecionarPalletAberto = async function(codigo) {
         console.error("Erro ao selecionar pallet:", err);
     }
 };
+
+// ============================================================
+// RETORNO PINTURA MODULE
+// ============================================================
+
+let retornoPinturaRecentes = [];
+
+function playAudioFeedback(isError = false) {
+    try {
+        const AudioCtx = window.AudioContext || window.webkitAudioContext;
+        if (!AudioCtx) return;
+        const ctx = new AudioCtx();
+        const osc = ctx.createOscillator();
+        const gain = ctx.createGain();
+        osc.connect(gain);
+        gain.connect(ctx.destination);
+
+        if (!isError) {
+            osc.type = 'sine';
+            osc.frequency.setValueAtTime(880, ctx.currentTime);
+            osc.frequency.exponentialRampToValueAtTime(1320, ctx.currentTime + 0.12);
+            gain.gain.setValueAtTime(0.3, ctx.currentTime);
+            gain.gain.exponentialRampToValueAtTime(0.01, ctx.currentTime + 0.15);
+            osc.start(ctx.currentTime);
+            osc.stop(ctx.currentTime + 0.16);
+        } else {
+            osc.type = 'sawtooth';
+            osc.frequency.setValueAtTime(220, ctx.currentTime);
+            gain.gain.setValueAtTime(0.4, ctx.currentTime);
+            gain.gain.exponentialRampToValueAtTime(0.01, ctx.currentTime + 0.3);
+            osc.start(ctx.currentTime);
+            osc.stop(ctx.currentTime + 0.32);
+        }
+    } catch (e) {
+        // Ignora caso bloqueado pelo navegador
+    }
+}
+
+async function loadRetornoPinturaData() {
+    try {
+        const [statsRes, recentesRes] = await Promise.all([
+            fetch(`${SERVER_URL.replace(/\/$/, '')}/api/retorno-pintura/stats`),
+            fetch(`${SERVER_URL.replace(/\/$/, '')}/api/retorno-pintura/recentes`)
+        ]);
+
+        if (statsRes.ok) {
+            const stats = await statsRes.json();
+            const statHoje = document.getElementById('retorno-stat-hoje');
+            const statTotal = document.getElementById('retorno-stat-total');
+            if (statHoje) statHoje.textContent = stats.total_hoje || 0;
+            if (statTotal) statTotal.textContent = stats.total || 0;
+        }
+
+        if (recentesRes.ok) {
+            retornoPinturaRecentes = await recentesRes.json();
+            renderRetornoRecentes(retornoPinturaRecentes);
+        }
+
+        const inputScan = document.getElementById('retorno-scan-input');
+        if (inputScan) setTimeout(() => inputScan.focus(), 100);
+    } catch (err) {
+        console.error('Erro ao carregar dados do Retorno de Pintura:', err);
+    }
+}
+
+function renderRetornoRecentes(items) {
+    const tbody = document.getElementById('retorno-recentes-tbody');
+    const countEl = document.getElementById('retorno-recentes-count');
+    if (!tbody) return;
+
+    if (!items || items.length === 0) {
+        tbody.innerHTML = `
+            <tr>
+                <td colspan="9" style="text-align: center; padding: 25px; color: var(--text-secondary);">Nenhuma unidade bipada ainda no retorno.</td>
+            </tr>
+        `;
+        if (countEl) countEl.textContent = '0 unidades na lista';
+        return;
+    }
+
+    if (countEl) countEl.textContent = `${items.length} ${items.length === 1 ? 'unidade' : 'unidades'} na lista`;
+
+    tbody.innerHTML = items.map((item, index) => {
+        const dataHoraStr = item.data_retorno ? new Date(item.data_retorno).toLocaleString('pt-BR') : '---';
+        return `
+            <tr style="border-bottom: 1px solid rgba(255,255,255,0.05);">
+                <td style="padding: 10px 14px; color: var(--text-secondary); font-size: 0.8rem;">${index + 1}</td>
+                <td style="padding: 10px 14px; font-weight: 700; color: #fff; font-family: monospace; letter-spacing: 0.5px;">${item.serial_number || '---'}</td>
+                <td style="padding: 10px 14px; color: #94a3b8; font-family: monospace;">${item.gpon_id || '---'}</td>
+                <td style="padding: 10px 14px; color: #94a3b8; font-family: monospace;">${item.mac || '---'}</td>
+                <td style="padding: 10px 14px; color: #cbd5e1; font-weight: 500;">${item.modelo || '---'}</td>
+                <td style="padding: 10px 14px; color: var(--text-secondary);">${item.fabricante || '---'}</td>
+                <td style="padding: 10px 14px; color: var(--text-secondary); font-size: 0.85rem;">${dataHoraStr}</td>
+                <td style="padding: 10px 14px; color: var(--text-secondary);">${item.usuario || 'OPERADOR'}</td>
+                <td style="padding: 10px 14px; text-align: center;">
+                    <span class="badge" style="background: rgba(16, 185, 129, 0.15); color: #34d399; border: 1px solid rgba(16, 185, 129, 0.3); padding: 3px 8px; border-radius: 6px; font-size: 0.75rem; font-weight: 600;">Retorno de Pintura</span>
+                </td>
+            </tr>
+        `;
+    }).join('');
+}
+
+function showRetornoStatus(message, isError = false) {
+    const el = document.getElementById('retorno-status-message');
+    if (!el) return;
+
+    el.innerHTML = message;
+    el.className = `status-message ${isError ? 'status-error' : 'status-success'}`;
+    el.classList.remove('hidden');
+
+    playAudioFeedback(isError);
+}
+
+function setupRetornoPinturaListeners() {
+    const form = document.getElementById('form-retorno-pintura');
+    const inputScan = document.getElementById('retorno-scan-input');
+    const btnLimpar = document.getElementById('btn-retorno-limpar');
+
+    if (btnLimpar && inputScan) {
+        btnLimpar.addEventListener('click', () => {
+            inputScan.value = '';
+            const statusEl = document.getElementById('retorno-status-message');
+            if (statusEl) statusEl.classList.add('hidden');
+            inputScan.focus();
+        });
+    }
+
+    if (form) {
+        form.addEventListener('submit', async (e) => {
+            e.preventDefault();
+
+            const codigo = inputScan ? inputScan.value.trim().toUpperCase() : '';
+            if (!codigo) {
+                showRetornoStatus('⚠️ Por favor, bipe o Serial Number, MAC ou GPON ID da unidade.', true);
+                if (inputScan) inputScan.focus();
+                return;
+            }
+
+            try {
+                const res = await fetch(`${SERVER_URL.replace(/\/$/, '')}/api/retorno-pintura/bipar`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        codigo: codigo,
+                        usuario: currentUser?.username || 'OPERADOR'
+                    })
+                });
+
+                const data = await res.json();
+
+                if (!res.ok || !data.success) {
+                    const errorMsg = data.error || 'Erro ao registrar retorno de pintura.';
+                    if (data.code === 'STATUS_INVALIDO') {
+                        showRetornoStatus(`❌ <strong>STATUS INVÁLIDO</strong>: ${errorMsg}`, true);
+                    } else if (data.code === 'UNIDADE_NAO_ENCONTRADA') {
+                        showRetornoStatus(`⚠️ <strong>NÃO ENCONTRADA</strong>: ${errorMsg}`, true);
+                    } else {
+                        showRetornoStatus(`❌ ${errorMsg}`, true);
+                    }
+
+                    if (inputScan) {
+                        inputScan.select();
+                        inputScan.focus();
+                    }
+                    return;
+                }
+
+                // Sucesso
+                showRetornoStatus(`✅ Unidade <strong>${data.item.serial_number}</strong> (${data.item.modelo}) registrada com sucesso no <strong>Retorno de Pintura</strong>!`, false);
+
+                // Atualiza contadores e lista
+                if (data.stats) {
+                    const statHoje = document.getElementById('retorno-stat-hoje');
+                    const statTotal = document.getElementById('retorno-stat-total');
+                    if (statHoje) statHoje.textContent = data.stats.total_hoje || 0;
+                    if (statTotal) statTotal.textContent = data.stats.total || 0;
+                }
+
+                if (data.recentItems) {
+                    retornoPinturaRecentes = data.recentItems;
+                    renderRetornoRecentes(retornoPinturaRecentes);
+                }
+
+                if (inputScan) {
+                    inputScan.value = '';
+                    inputScan.focus();
+                }
+            } catch (err) {
+                console.error('Erro de comunicação ao registrar retorno de pintura:', err);
+                showRetornoStatus('❌ Erro de comunicação com o servidor. Tente novamente.', true);
+                if (inputScan) inputScan.focus();
+            }
+        });
+    }
+}
+
 

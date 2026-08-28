@@ -30,6 +30,10 @@
                     <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="1" y="3" width="15" height="13"></rect><polygon points="16 8 20 8 23 11 23 16 16 16 16 8"></polygon><circle cx="5.5" cy="18.5" r="2.5"></circle><circle cx="18.5" cy="18.5" r="2.5"></circle></svg>
                     Expedição Pintura
                 </li>
+                <li data-tab="retorno-pintura">
+                    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="9 14 4 9 9 4"></polyline><path d="M20 20v-7a4 4 0 0 0-4-4H4"></path></svg>
+                    Retorno de pintura
+                </li>
                 <li data-tab="pre-alerta">
                     <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
                     Base Pré-Alerta
@@ -250,6 +254,80 @@
                 </div>
             </section>
 
+            <!-- Retorno de Pintura Tab -->
+            <section id="retorno-pintura" class="tab-content">
+                <header class="section-header">
+                    <h1>Retorno de Pintura</h1>
+                    <div class="stats">
+                        <div class="stat-card success">
+                            <span class="stat-title">Retornos Hoje</span>
+                            <span class="stat-value" id="retorno-stat-hoje">0</span>
+                        </div>
+                        <div class="stat-card warning" style="border-bottom: 3px solid #10b981;">
+                            <span class="stat-title">Total Retornado</span>
+                            <span class="stat-value" id="retorno-stat-total" style="color: #34d399;">0</span>
+                        </div>
+                    </div>
+                </header>
+
+                <div class="card glass" style="border-left: 4px solid #10b981; margin-bottom: 24px;">
+                    <div style="margin-bottom: 16px;">
+                        <h3 style="margin-bottom: 6px; display: flex; align-items: center; gap: 8px; font-size: 1.15rem; color: var(--text-primary);">
+                            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#10b981" stroke-width="2"><polyline points="9 14 4 9 9 4"></polyline><path d="M20 20v-7a4 4 0 0 0-4-4H4"></path></svg>
+                            Bipagem de Retorno de Pintura
+                        </h3>
+                        <p style="color: var(--text-secondary); font-size: 0.9rem; margin: 0;">
+                            Bipe no campo abaixo o <strong>Serial Number</strong>, <strong>MAC</strong> ou <strong>GPON ID</strong> da unidade. O sistema registrará o retorno se a unidade estiver com o status <em>"Aguardando retorno de Pintura"</em>.
+                        </p>
+                    </div>
+
+                    <form id="form-retorno-pintura">
+                        <div class="form-group" style="margin-bottom: 16px;">
+                            <label for="retorno-scan-input" style="font-weight: 600; font-size: 0.95rem; display: flex; justify-content: space-between;">
+                                <span>Código da Unidade (Serial / MAC / GPON ID)</span>
+                                <span style="font-size: 0.8rem; color: var(--primary-color); font-weight: normal;">Bipagem Única</span>
+                            </label>
+                            <div class="input-with-action">
+                                <input type="text" id="retorno-scan-input" class="scan-input" autocomplete="off" placeholder="Bipe ou digite o Serial, MAC ou GPON ID aqui..." style="font-size: 1.15rem; font-weight: 600; letter-spacing: 0.5px; height: 50px;">
+                                <button type="submit" id="btn-retorno-bipar" class="btn btn-primary" style="white-space: nowrap; padding: 0 1.5rem; height: 50px; font-size: 1rem; font-weight: 600; background: #10b981; border-color: #10b981;">Registrar Retorno</button>
+                                <button type="button" id="btn-retorno-limpar" class="btn btn-secondary" style="white-space: nowrap; height: 50px;">Limpar</button>
+                            </div>
+                        </div>
+                    </form>
+
+                    <div id="retorno-status-message" class="status-message hidden"></div>
+                </div>
+
+                <div class="recent-list-container">
+                    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px;">
+                        <h3 style="margin: 0; font-size: 1.1rem;">Últimos Retornos Bipados</h3>
+                        <span id="retorno-recentes-count" style="font-size: 0.85rem; color: var(--text-secondary);">0 unidades na lista</span>
+                    </div>
+                    <div class="table-container glass" style="max-height: 480px; overflow-y: auto; border-radius: 8px; border: 1px solid rgba(255,255,255,0.08);">
+                        <table style="width: 100%; border-collapse: collapse; text-align: left;">
+                            <thead style="position: sticky; top: 0; background: #0f172a; z-index: 1;">
+                                <tr style="border-bottom: 1px solid var(--border-color); font-size: 0.85rem; color: var(--text-secondary);">
+                                    <th style="padding: 12px 14px;">#</th>
+                                    <th style="padding: 12px 14px;">Serial Number</th>
+                                    <th style="padding: 12px 14px;">GPON ID</th>
+                                    <th style="padding: 12px 14px;">MAC</th>
+                                    <th style="padding: 12px 14px;">Modelo</th>
+                                    <th style="padding: 12px 14px;">Fabricante</th>
+                                    <th style="padding: 12px 14px;">Data/Hora</th>
+                                    <th style="padding: 12px 14px;">Operador</th>
+                                    <th style="padding: 12px 14px; text-align: center;">Status</th>
+                                </tr>
+                            </thead>
+                            <tbody id="retorno-recentes-tbody" style="font-size: 0.9rem;">
+                                <tr>
+                                    <td colspan="9" style="text-align: center; padding: 25px; color: var(--text-secondary);">Nenhuma unidade bipada ainda no retorno.</td>
+                                </tr>
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            </section>
+
             <!-- Pré-Alerta Tab -->
             <section id="pre-alerta" class="tab-content">
                 <header class="section-header">
@@ -355,6 +433,15 @@
                         <h3>Expedição Pintura</h3>
                         <p>Exportar todos os itens bipados nos pallets de pintura no período selecionado.</p>
                         <button id="btn-export-exp-pintura" class="btn btn-secondary">Exportar Relatório</button>
+                    </div>
+
+                    <div class="card glass report-card">
+                        <div class="report-icon" style="background: rgba(16, 185, 129, 0.1); color: #10b981;">
+                            <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="9 14 4 9 9 4"></polyline><path d="M20 20v-7a4 4 0 0 0-4-4H4"></path></svg>
+                        </div>
+                        <h3>Retorno de Pintura</h3>
+                        <p>Exportar todos os itens que retornaram da pintura no período selecionado.</p>
+                        <button id="btn-export-retorno-pintura" class="btn btn-secondary">Exportar Relatório</button>
                     </div>
                     
                     <div class="card glass report-card mt-4 span-2">

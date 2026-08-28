@@ -155,6 +155,22 @@ async function ensureDBAndMinIO() {
     await client.query(`CREATE INDEX IF NOT EXISTS idx_pallet_itens_serial ON pallet_pintura_itens(serial_number)`);
     await client.query(`CREATE INDEX IF NOT EXISTS idx_pallet_itens_codigo ON pallet_pintura_itens(codigo_pallet)`);
 
+    // Ensure Retorno de Pintura table
+    await client.query(`CREATE TABLE IF NOT EXISTS retorno_pintura_itens (
+      id SERIAL PRIMARY KEY,
+      recebimento_id INTEGER,
+      serial_number TEXT NOT NULL,
+      gpon_id TEXT,
+      mac TEXT,
+      modelo TEXT,
+      fabricante TEXT,
+      data_retorno TIMESTAMP DEFAULT NOW(),
+      usuario TEXT,
+      status TEXT DEFAULT 'Retorno de Pintura'
+    )`);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_retorno_itens_serial ON retorno_pintura_itens(serial_number)`);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_retorno_itens_data ON retorno_pintura_itens(data_retorno)`);
+
     // Ensure status column in recebimentos and pallet_pintura_itens
     await client.query(`ALTER TABLE recebimentos ADD COLUMN IF NOT EXISTS status TEXT DEFAULT 'Recebida'`);
     await client.query(`UPDATE recebimentos SET status = 'Recebida' WHERE status IS NULL`);
@@ -1000,6 +1016,169 @@ app.delete('/api/expedicao-pintura/item/:id', async (req, res) => {
   } catch (err) {
     console.error('Error removing item:', err);
     res.status(500).json({ error: 'Database error removing item.' });
+  }
+});
+
+// ============================================================
+// Retorno de Pintura Routes
+// ============================================================
+
+// Scan/Register unit into Retorno de Pintura
+app.post('/api/retorno-pintura/bipar', async (req, res) => {
+  try {
+    const { codigo, usuario } = req.body;
+    if (!codigo || !codigo.trim()) {
+      return res.status(400).json({ error: 'Informe o Serial, GPON ID ou MAC da unidade.' });
+    }
+    const cleanCode = codigo.trim().toUpperCase();
+
+    // 1. Check if unit exists in recebimentos by Serial, GPON ID or MAC
+    const recRes = await pool.query(`
+      SELECT * FROM recebimentos 
+      WHERE (serial_number IS NOT NULL AND serial_number != '' AND UPPER(TRIM(serial_number)) = $1)
+         OR (gpon_id IS NOT NULL AND gpon_id != '' AND UPPER(TRIM(gpon_id)) = $1)
+         OR (mac IS NOT NULL AND mac != '' AND UPPER(TRIM(mac)) = $1)
+      ORDER BY id DESC LIMIT 1
+    `, [cleanCode]);
+
+    if (recRes.rows.length === 0) {
+      return res.status(404).json({
+        success: false,
+        code: 'UNIDADE_NAO_ENCONTRADA',
+        error: `Unidade "${cleanCode}" não encontrada na base de Recebimento.`
+      });
+    }
+
+    const unit = recRes.rows[0];
+    const currentStatus = (unit.status || '').trim();
+
+    // 2. Strict check: only accept if status is "Aguardando retorno de Pintura"
+    if (currentStatus.toUpperCase() !== 'AGUARDANDO RETORNO DE PINTURA') {
+      return res.status(400).json({
+        success: false,
+        code: 'STATUS_INVALIDO',
+        error: `Unidade não está aguardando retorno de pintura. Status atual: "${currentStatus || 'Recebida'}".`,
+        currentStatus: currentStatus
+      });
+    }
+
+    const identifiers = [unit.serial_number, unit.gpon_id, unit.mac].filter(Boolean);
+
+    // 3. Update status in recebimentos to "Retorno de Pintura"
+    await pool.query(`
+      UPDATE recebimentos
+      SET status = 'Retorno de Pintura'
+      WHERE id = $1 
+         OR (serial_number IS NOT NULL AND serial_number != '' AND UPPER(TRIM(serial_number)) = ANY($2))
+         OR (gpon_id IS NOT NULL AND gpon_id != '' AND UPPER(TRIM(gpon_id)) = ANY($2))
+         OR (mac IS NOT NULL AND mac != '' AND UPPER(TRIM(mac)) = ANY($2))
+    `, [unit.id, identifiers]);
+
+    // 4. Update status in pallet_pintura_itens if it exists
+    if (identifiers.length > 0) {
+      await pool.query(`
+        UPDATE pallet_pintura_itens
+        SET status = 'Retorno de Pintura'
+        WHERE (serial_number IS NOT NULL AND serial_number != '' AND UPPER(TRIM(serial_number)) = ANY($1))
+           OR (gpon_id IS NOT NULL AND gpon_id != '' AND UPPER(TRIM(gpon_id)) = ANY($1))
+           OR (mac IS NOT NULL AND mac != '' AND UPPER(TRIM(mac)) = ANY($1))
+      `, [identifiers]);
+    }
+
+    // 5. Insert into retorno_pintura_itens
+    const insertRes = await pool.query(`
+      INSERT INTO retorno_pintura_itens (recebimento_id, serial_number, gpon_id, mac, modelo, fabricante, data_retorno, usuario, status)
+      VALUES ($1, $2, $3, $4, $5, $6, NOW(), $7, 'Retorno de Pintura')
+      RETURNING *
+    `, [
+      unit.id,
+      unit.serial_number || cleanCode,
+      unit.gpon_id || '',
+      unit.mac || '',
+      unit.modelo || 'NÃO INFORMADO',
+      unit.fabricante || 'NÃO INFORMADO',
+      usuario || 'OPERADOR'
+    ]);
+
+    // 6. Get updated recent items and stats
+    const recentRes = await pool.query('SELECT * FROM retorno_pintura_itens ORDER BY id DESC LIMIT 50');
+    const statsRes = await pool.query(`
+      SELECT 
+        COUNT(*)::int as total,
+        COUNT(CASE WHEN data_retorno >= CURRENT_DATE THEN 1 END)::int as total_hoje
+      FROM retorno_pintura_itens
+    `);
+
+    res.json({
+      success: true,
+      item: insertRes.rows[0],
+      message: `Unidade ${insertRes.rows[0].serial_number} registrada com sucesso no Retorno de Pintura!`,
+      recentItems: recentRes.rows,
+      stats: statsRes.rows[0]
+    });
+  } catch (err) {
+    console.error('Error in retorno-pintura bipar:', err);
+    res.status(500).json({ error: 'Erro no banco de dados ao registrar retorno de pintura.' });
+  }
+});
+
+// Get recent retorno de pintura items
+app.get('/api/retorno-pintura/recentes', async (req, res) => {
+  try {
+    const result = await pool.query('SELECT * FROM retorno_pintura_itens ORDER BY id DESC LIMIT 50');
+    res.json(result.rows);
+  } catch (err) {
+    console.error('Error fetching recent retorno-pintura items:', err);
+    res.status(500).json({ error: 'Database error fetching recent items.' });
+  }
+});
+
+// Get retorno de pintura stats
+app.get('/api/retorno-pintura/stats', async (req, res) => {
+  try {
+    const statsRes = await pool.query(`
+      SELECT 
+        COUNT(*)::int as total,
+        COUNT(CASE WHEN data_retorno >= CURRENT_DATE THEN 1 END)::int as total_hoje
+      FROM retorno_pintura_itens
+    `);
+    res.json(statsRes.rows[0] || { total: 0, total_hoje: 0 });
+  } catch (err) {
+    console.error('Error fetching retorno-pintura stats:', err);
+    res.status(500).json({ error: 'Database error fetching stats.' });
+  }
+});
+
+// Get report data for retorno pintura
+app.get('/api/retorno-pintura/report', async (req, res) => {
+  const { start, end, modelo } = req.query;
+  try {
+    let query = 'SELECT * FROM retorno_pintura_itens WHERE 1=1';
+    const params = [];
+    let paramIndex = 1;
+
+    if (start) {
+      query += ` AND data_retorno >= $${paramIndex}`;
+      params.push(`${start} 00:00:00`);
+      paramIndex++;
+    }
+    if (end) {
+      query += ` AND data_retorno <= $${paramIndex}`;
+      params.push(`${end} 23:59:59`);
+      paramIndex++;
+    }
+    if (modelo) {
+      query += ` AND modelo = $${paramIndex}`;
+      params.push(modelo);
+      paramIndex++;
+    }
+
+    query += ' ORDER BY id DESC';
+    const result = await pool.query(query, params);
+    res.json(result.rows);
+  } catch (err) {
+    console.error('Error fetching retorno pintura report:', err);
+    res.status(500).json({ error: 'Failed to fetch report data.' });
   }
 });
 
