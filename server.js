@@ -838,12 +838,21 @@ app.post('/api/expedicao-pintura/bipar', async (req, res) => {
 
     // 4. Insert into pallet_pintura_itens
     const insertRes = await pool.query(`
-      INSERT INTO pallet_pintura_itens (pallet_id, codigo_pallet, serial_number, gpon_id, mac, modelo, fabricante, data_bipagem, usuario)
-      VALUES ($1, $2, $3, $4, $5, $6, $7, NOW(), $8)
+      INSERT INTO pallet_pintura_itens (pallet_id, codigo_pallet, serial_number, gpon_id, mac, modelo, fabricante, data_bipagem, usuario, status)
+      VALUES ($1, $2, $3, $4, $5, $6, $7, NOW(), $8, 'Em pallet')
       RETURNING *
     `, [pallet.id, codPallet, unitSerial, unitPon, unitMac, unitModelo, unitFabricante, usuario || 'OPERADOR']);
 
-    // 5. Update total_unidades
+    // 5. Update unit status in recebimentos to 'Em pallet'
+    await pool.query(`
+      UPDATE recebimentos
+      SET status = 'Em pallet'
+      WHERE (serial_number IS NOT NULL AND serial_number != '' AND UPPER(TRIM(serial_number)) = ANY($1))
+         OR (gpon_id IS NOT NULL AND gpon_id != '' AND UPPER(TRIM(gpon_id)) = ANY($1))
+         OR (mac IS NOT NULL AND mac != '' AND UPPER(TRIM(mac)) = ANY($1))
+    `, [unitIdentifiers]);
+
+    // 6. Update total_unidades
     await pool.query(`
       UPDATE pallets_pintura 
       SET total_unidades = (SELECT COUNT(*)::int FROM pallet_pintura_itens WHERE UPPER(codigo_pallet) = $1)
@@ -969,12 +978,43 @@ app.post('/api/expedicao-pintura/reabrir-pallet', async (req, res) => {
   try {
     const { codigo_pallet } = req.body;
     const codPallet = codigo_pallet.trim().toUpperCase();
+
+    // 1. Reopen pallet
     await pool.query(`
       UPDATE pallets_pintura 
-      SET status = 'ABERTO' 
+      SET status = 'ABERTO', data_fechamento = NULL 
       WHERE UPPER(codigo_pallet) = $1
     `, [codPallet]);
-    res.json({ success: true, message: `Pallet ${codPallet} reaberto com sucesso.` });
+
+    // 2. Update status of units in recebimentos to 'Em pallet'
+    const updateRecebimentosQuery = `
+      UPDATE recebimentos
+      SET status = 'Em pallet'
+      WHERE id IN (
+        SELECT r.id FROM recebimentos r
+        JOIN pallet_pintura_itens ppi ON (
+          (r.serial_number IS NOT NULL AND r.serial_number != '' AND UPPER(TRIM(r.serial_number)) = UPPER(TRIM(ppi.serial_number)))
+          OR (r.gpon_id IS NOT NULL AND r.gpon_id != '' AND UPPER(TRIM(r.gpon_id)) = UPPER(TRIM(ppi.gpon_id)))
+          OR (r.mac IS NOT NULL AND r.mac != '' AND UPPER(TRIM(r.mac)) = UPPER(TRIM(ppi.mac)))
+        )
+        WHERE UPPER(ppi.codigo_pallet) = $1
+      )
+    `;
+    const recRes = await pool.query(updateRecebimentosQuery, [codPallet]);
+
+    // 3. Update status of items in pallet_pintura_itens
+    await pool.query(`
+      UPDATE pallet_pintura_itens
+      SET status = 'Em pallet'
+      WHERE UPPER(codigo_pallet) = $1
+    `, [codPallet]);
+
+    console.log(`Pallet ${codPallet} reaberto. ${recRes.rowCount} unidades atualizadas para 'Em pallet'.`);
+    res.json({
+      success: true,
+      message: `Pallet ${codPallet} reaberto com sucesso. Status das unidades alterado para 'Em pallet'.`,
+      unidadesAtualizadas: recRes.rowCount
+    });
   } catch (err) {
     console.error('Error reopening pallet:', err);
     res.status(500).json({ error: 'Database error reopening pallet.' });
