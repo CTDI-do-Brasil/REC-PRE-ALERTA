@@ -1090,21 +1090,9 @@ app.post('/api/retorno-pintura/bipar', async (req, res) => {
     }
 
     const unit = recRes.rows[0];
-    const currentStatus = (unit.status || '').trim();
-
-    // 2. Strict check: only accept if status is "Aguardando retorno de Pintura"
-    if (currentStatus.toUpperCase() !== 'AGUARDANDO RETORNO DE PINTURA') {
-      return res.status(400).json({
-        success: false,
-        code: 'STATUS_INVALIDO',
-        error: `Unidade não está aguardando retorno de pintura. Status atual: "${currentStatus || 'Recebida'}".`,
-        currentStatus: currentStatus
-      });
-    }
-
     const identifiers = [unit.serial_number, unit.gpon_id, unit.mac].filter(Boolean);
 
-    // 3. Update status in recebimentos to "Retorno de Pintura"
+    // 2. Update status in recebimentos to "Retorno de Pintura"
     await pool.query(`
       UPDATE recebimentos
       SET status = 'Retorno de Pintura'
@@ -1222,5 +1210,184 @@ app.get('/api/retorno-pintura/report', async (req, res) => {
   }
 });
 
+// ============================================================
+// Endpoint de Consulta Completa e Histórico da Unidade
+// ============================================================
+app.get('/api/consulta-unidade/:query', async (req, res) => {
+  const rawQuery = (req.params.query || '').trim();
+  if (!rawQuery) {
+    return res.status(400).json({ error: 'Termo de consulta não informado.' });
+  }
+
+  const cleanQuery = rawQuery.replace(/[^a-zA-Z0-9]/g, '').toUpperCase();
+  const searchTerms = Array.from(new Set([rawQuery.toUpperCase(), cleanQuery])).filter(Boolean);
+
+  try {
+    // 1. Buscar em recebimentos
+    const recRes = await pool.query(
+      `SELECT * FROM recebimentos 
+       WHERE (serial_number IS NOT NULL AND serial_number != '' AND UPPER(TRIM(serial_number)) = ANY($1))
+          OR (gpon_id IS NOT NULL AND gpon_id != '' AND UPPER(TRIM(gpon_id)) = ANY($1))
+          OR (mac IS NOT NULL AND mac != '' AND UPPER(REPLACE(mac, ':', '')) = ANY($1))
+          OR (mac IS NOT NULL AND mac != '' AND UPPER(TRIM(mac)) = ANY($1))
+       ORDER BY id DESC`,
+      [searchTerms]
+    );
+
+    const recebimento = recRes.rows[0] || null;
+
+    // Coleta todos os identificadores conhecidos
+    const allIdentifiers = new Set(searchTerms);
+    if (recebimento) {
+      if (recebimento.serial_number) allIdentifiers.add(recebimento.serial_number.trim().toUpperCase());
+      if (recebimento.gpon_id) allIdentifiers.add(recebimento.gpon_id.trim().toUpperCase());
+      if (recebimento.mac) {
+        allIdentifiers.add(recebimento.mac.trim().toUpperCase());
+        allIdentifiers.add(recebimento.mac.replace(/[^a-zA-Z0-9]/g, '').toUpperCase());
+      }
+    }
+
+    const idList = Array.from(allIdentifiers).filter(Boolean);
+
+    // 2. Buscar em pre_alertas
+    const preRes = await pool.query(
+      `SELECT * FROM pre_alertas 
+       WHERE UPPER(TRIM(serial)) = ANY($1)
+          OR UPPER(REPLACE(serial, ':', '')) = ANY($1)`,
+      [idList]
+    );
+    const preAlerta = preRes.rows[0] || null;
+
+    // 3. Buscar em pallet_pintura_itens com dados do pallet
+    const palletRes = await pool.query(
+      `SELECT ppi.*, p.status as status_pallet, p.data_criacao as pallet_data_criacao, p.data_fechamento as pallet_data_fechamento, p.usuario_criacao as pallet_usuario_criacao
+       FROM pallet_pintura_itens ppi
+       LEFT JOIN pallets_pintura p ON p.id = ppi.pallet_id
+       WHERE (ppi.serial_number IS NOT NULL AND ppi.serial_number != '' AND UPPER(TRIM(ppi.serial_number)) = ANY($1))
+          OR (ppi.gpon_id IS NOT NULL AND ppi.gpon_id != '' AND UPPER(TRIM(ppi.gpon_id)) = ANY($1))
+          OR (ppi.mac IS NOT NULL AND ppi.mac != '' AND UPPER(REPLACE(ppi.mac, ':', '')) = ANY($1))
+          OR (ppi.mac IS NOT NULL AND ppi.mac != '' AND UPPER(TRIM(ppi.mac)) = ANY($1))
+       ORDER BY ppi.id DESC`,
+      [idList]
+    );
+
+    // 4. Buscar em retorno_pintura_itens
+    const retornoRes = await pool.query(
+      `SELECT * FROM retorno_pintura_itens 
+       WHERE (serial_number IS NOT NULL AND serial_number != '' AND UPPER(TRIM(serial_number)) = ANY($1))
+          OR (gpon_id IS NOT NULL AND gpon_id != '' AND UPPER(TRIM(gpon_id)) = ANY($1))
+          OR (mac IS NOT NULL AND mac != '' AND UPPER(REPLACE(mac, ':', '')) = ANY($1))
+          OR (mac IS NOT NULL AND mac != '' AND UPPER(TRIM(mac)) = ANY($1))
+       ORDER BY id DESC`,
+      [idList]
+    );
+
+    // Se não encontrou em nenhuma tabela
+    if (!recebimento && !preAlerta && palletRes.rows.length === 0 && retornoRes.rows.length === 0) {
+      return res.json({ found: false, message: 'Unidade não encontrada no sistema.' });
+    }
+
+    // Consolidar dados da unidade
+    const unit = {
+      serial_number: recebimento?.serial_number || palletRes.rows[0]?.serial_number || retornoRes.rows[0]?.serial_number || preAlerta?.serial || rawQuery,
+      gpon_id: recebimento?.gpon_id || palletRes.rows[0]?.gpon_id || retornoRes.rows[0]?.gpon_id || null,
+      mac: recebimento?.mac || palletRes.rows[0]?.mac || retornoRes.rows[0]?.mac || null,
+      modelo: recebimento?.modelo || palletRes.rows[0]?.modelo || retornoRes.rows[0]?.modelo || 'Não identificado',
+      fabricante: recebimento?.fabricante || palletRes.rows[0]?.fabricante || retornoRes.rows[0]?.fabricante || preAlerta?.fabricante || 'Não identificado',
+      codigo: recebimento?.codigo || preAlerta?.codigo || '---',
+      descricao: recebimento?.descricao || preAlerta?.descricao || '---',
+      no_pre_alerta: !!(preAlerta || recebimento?.no_pre_alerta),
+      status_atual: 'Desconhecido'
+    };
+
+    // Montar Linha do Tempo / Histórico
+    const history = [];
+
+    // Etapa Pré-Alerta
+    if (preAlerta) {
+      history.push({
+        etapa: 'Pré-Alerta',
+        titulo: 'Presente na Base de Pré-Alerta',
+        descricao: `Código: ${preAlerta.codigo || '---'} | Descrição: ${preAlerta.descricao || '---'} | Fabricante: ${preAlerta.fabricante || '---'}`,
+        data_hora: null,
+        usuario: 'Sistema / Importação',
+        status: 'Cadastrada no Pré-Alerta',
+        tipo: 'pre-alerta',
+        icone: 'database'
+      });
+    }
+
+    // Etapa Recebimento
+    if (recebimento) {
+      history.push({
+        etapa: 'Recebimento',
+        titulo: 'Unidade Recebida no Sistema',
+        descricao: `Modelo: ${recebimento.modelo || '---'} | Serial: ${recebimento.serial_number || '---'} | PON: ${recebimento.gpon_id || '---'} | MAC: ${recebimento.mac || '---'} (${recebimento.no_pre_alerta ? 'No Pré-Alerta' : 'Fora do Pré-Alerta'})`,
+        data_hora: recebimento.data_hora,
+        usuario: recebimento.usuario || 'Não registrado',
+        status: recebimento.status || 'Recebida',
+        tipo: 'recebimento',
+        icone: 'inbox'
+      });
+    }
+
+    // Etapa Pallet / Expedição Pintura
+    palletRes.rows.forEach(palletItem => {
+      history.push({
+        etapa: 'Expedição Pintura',
+        titulo: `Bipada no Pallet ${palletItem.codigo_pallet}`,
+        descricao: `Pallet: ${palletItem.codigo_pallet} (Status do Pallet: ${palletItem.status_pallet || 'ABERTO'}) | Status do Item: ${palletItem.status || 'Em Pallet'}`,
+        data_hora: palletItem.data_bipagem,
+        usuario: palletItem.usuario || 'Não registrado',
+        status: palletItem.status || 'Em Pallet',
+        tipo: 'pallet',
+        icone: 'package',
+        codigo_pallet: palletItem.codigo_pallet
+      });
+    });
+
+    // Etapa Retorno de Pintura
+    retornoRes.rows.forEach(retornoItem => {
+      history.push({
+        etapa: 'Retorno de Pintura',
+        titulo: 'Retornada da Pintura',
+        descricao: `Modelo: ${retornoItem.modelo || '---'} | Serial: ${retornoItem.serial_number || '---'}`,
+        data_hora: retornoItem.data_retorno,
+        usuario: retornoItem.usuario || 'Não registrado',
+        status: retornoItem.status || 'Retorno de Pintura',
+        tipo: 'retorno',
+        icone: 'repeat'
+      });
+    });
+
+    // Definir Status Atual
+    if (retornoRes.rows.length > 0) {
+      unit.status_atual = 'Retorno de Pintura';
+    } else if (palletRes.rows.length > 0 && palletRes.rows[0].status === 'Em Pallet') {
+      unit.status_atual = `Em Pallet (${palletRes.rows[0].codigo_pallet})`;
+    } else if (recebimento) {
+      unit.status_atual = recebimento.status || 'Recebida';
+    } else if (preAlerta) {
+      unit.status_atual = 'No Pré-Alerta (Aguardando Recebimento)';
+    }
+
+    res.json({
+      found: true,
+      unit,
+      history,
+      detalhes: {
+        recebimento,
+        pre_alerta: preAlerta,
+        pallets: palletRes.rows,
+        retornos: retornoRes.rows
+      }
+    });
+  } catch (err) {
+    console.error('Erro ao consultar unidade:', err);
+    res.status(500).json({ error: 'Erro interno ao consultar unidade.' });
+  }
+});
+
 const PORT = process.env.PORT || 4000;
 app.listen(PORT, () => console.log(`Unified server listening on port ${PORT}`));
+

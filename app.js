@@ -127,9 +127,12 @@ function applyAccessLevel(user) {
     const navAdmin = document.getElementById('nav-admin');
     const navPreAlerta = document.querySelector('li[data-tab="pre-alerta"]');
     const navRelatorios = document.querySelector('li[data-tab="relatorios"]');
+    const navConsulta = document.querySelector('li[data-tab="consulta"]');
     const btnEditModelo = document.getElementById('btn-edit-modelo');
     const btnNovoModelo = document.getElementById('btn-novo-modelo');
     
+    if (navConsulta) navConsulta.style.display = '';
+
     if (user.level === 'admin') {
         navAdmin.style.display = '';
         if (navPreAlerta) navPreAlerta.style.display = '';
@@ -143,6 +146,16 @@ function applyAccessLevel(user) {
         if (btnEditModelo) btnEditModelo.style.display = 'none';
         if (btnNovoModelo) btnNovoModelo.style.display = 'none';
     }
+}
+
+function escapeHtml(text) {
+    if (text === null || text === undefined) return '';
+    return String(text)
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#039;');
 }
 
 function showLoginOverlay() {
@@ -190,6 +203,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     setupReportListeners();
     setupExpedicaoListeners();
     setupRetornoPinturaListeners();
+    setupConsultaListeners();
     startMidnightLogoutCheck();
     // Check persisted login session on F5/refresh
     const savedUserStr = localStorage.getItem('preAlertaLoggedUser');
@@ -238,6 +252,15 @@ function setupNavigation() {
                     }
                     if (target === 'retorno-pintura') {
                         loadRetornoPinturaData();
+                    }
+                    if (target === 'consulta') {
+                        const inputConsulta = document.getElementById('consulta-input-termo');
+                        if (inputConsulta) {
+                            setTimeout(() => {
+                                inputConsulta.focus();
+                                inputConsulta.select();
+                            }, 50);
+                        }
                     }
                 }
                 else tab.classList.remove('active');
@@ -2507,5 +2530,242 @@ function setupRetornoPinturaListeners() {
         });
     }
 }
+
+// ============================================================
+// Consulta e Histórico de Unidades
+// ============================================================
+function setupConsultaListeners() {
+    const inputTermo = document.getElementById('consulta-input-termo');
+    const btnConsultar = document.getElementById('btn-consultar-unidade');
+    const btnLimpar = document.getElementById('btn-limpar-consulta');
+
+    if (btnConsultar) {
+        btnConsultar.addEventListener('click', () => {
+            executarConsultaUnidade();
+        });
+    }
+
+    if (inputTermo) {
+        inputTermo.addEventListener('keydown', (e) => {
+            if (e.key === 'Enter') {
+                e.preventDefault();
+                executarConsultaUnidade();
+            }
+        });
+    }
+
+    if (btnLimpar) {
+        btnLimpar.addEventListener('click', () => {
+            limparConsulta();
+        });
+    }
+}
+
+function limparConsulta() {
+    const inputTermo = document.getElementById('consulta-input-termo');
+    const feedback = document.getElementById('consulta-feedback');
+    const container = document.getElementById('consulta-resultado-container');
+
+    if (inputTermo) {
+        inputTermo.value = '';
+        inputTermo.focus();
+    }
+    if (feedback) {
+        feedback.classList.add('hidden');
+        feedback.textContent = '';
+    }
+    if (container) {
+        container.classList.add('hidden');
+    }
+}
+
+async function executarConsultaUnidade() {
+    const inputTermo = document.getElementById('consulta-input-termo');
+    const feedback = document.getElementById('consulta-feedback');
+    const container = document.getElementById('consulta-resultado-container');
+    const btnConsultar = document.getElementById('btn-consultar-unidade');
+
+    if (!inputTermo) return;
+    const query = inputTermo.value.trim();
+
+    if (!query) {
+        if (feedback) {
+            feedback.className = 'status-message status-error';
+            feedback.innerHTML = '⚠️ Por favor, digite ou bipe um <strong>Serial</strong>, <strong>GPON / PON ID</strong> ou <strong>MAC</strong>.';
+            feedback.classList.remove('hidden');
+        }
+        if (container) container.classList.add('hidden');
+        inputTermo.focus();
+        return;
+    }
+
+    // Feedback de carregamento
+    if (feedback) {
+        feedback.className = 'status-message status-loading';
+        feedback.innerHTML = '🔍 Buscando informações e histórico da unidade...';
+        feedback.classList.remove('hidden');
+    }
+    if (container) container.classList.add('hidden');
+    if (btnConsultar) btnConsultar.disabled = true;
+
+    try {
+        const res = await fetch(`${SERVER_URL.replace(/\/$/, '')}/api/consulta-unidade/${encodeURIComponent(query)}`);
+        const data = await res.json();
+
+        if (btnConsultar) btnConsultar.disabled = false;
+
+        if (!res.ok || !data.found) {
+            if (feedback) {
+                feedback.className = 'status-message status-error';
+                feedback.innerHTML = `❌ Nenhuma unidade encontrada para o termo: <strong>${escapeHtml(query)}</strong>. Verifique o código bipado/digitado.`;
+                feedback.classList.remove('hidden');
+            }
+            if (container) container.classList.add('hidden');
+            inputTermo.select();
+            return;
+        }
+
+        // Unidade encontrada com sucesso
+        if (feedback) {
+            feedback.classList.add('hidden');
+        }
+
+        renderConsultaResultado(data);
+        if (container) {
+            container.classList.remove('hidden');
+        }
+
+    } catch (err) {
+        console.error('Erro ao consultar unidade:', err);
+        if (btnConsultar) btnConsultar.disabled = false;
+        if (feedback) {
+            feedback.className = 'status-message status-error';
+            feedback.innerHTML = '❌ Ocorreu um erro de conexão ao consultar a unidade. Tente novamente.';
+            feedback.classList.remove('hidden');
+        }
+        if (container) container.classList.add('hidden');
+    }
+}
+
+function renderConsultaResultado(data) {
+    const { unit, history } = data;
+
+    // Elementos de Texto
+    const txtModelo = document.getElementById('consulta-txt-modelo');
+    const txtSerial = document.getElementById('consulta-txt-serial');
+    const txtGpon = document.getElementById('consulta-txt-gpon');
+    const txtMac = document.getElementById('consulta-txt-mac');
+    const txtFabricante = document.getElementById('consulta-txt-fabricante');
+    const txtCodigo = document.getElementById('consulta-txt-codigo');
+    const txtDescricao = document.getElementById('consulta-txt-descricao');
+    const badgeStatus = document.getElementById('consulta-badge-status');
+    const badgePrealerta = document.getElementById('consulta-badge-prealerta');
+    const txtTotalEventos = document.getElementById('consulta-total-eventos');
+    const timelineEl = document.getElementById('consulta-timeline');
+
+    if (txtModelo) txtModelo.textContent = unit.modelo || 'Não identificado';
+    if (txtSerial) txtSerial.textContent = unit.serial_number || '---';
+    if (txtGpon) txtGpon.textContent = unit.gpon_id || '---';
+    if (txtMac) txtMac.textContent = unit.mac || '---';
+    if (txtFabricante) txtFabricante.textContent = unit.fabricante || '---';
+    if (txtCodigo) txtCodigo.textContent = unit.codigo || '---';
+    if (txtDescricao) txtDescricao.textContent = unit.descricao || '---';
+
+    // Status Atual Badge
+    if (badgeStatus) {
+        badgeStatus.textContent = unit.status_atual || 'Desconhecido';
+        badgeStatus.className = 'consulta-badge';
+        const st = (unit.status_atual || '').toLowerCase();
+        if (st.includes('retorno')) {
+            badgeStatus.classList.add('badge-success-custom');
+        } else if (st.includes('pallet')) {
+            badgeStatus.classList.add('badge-warning-custom');
+        } else if (st.includes('recebida')) {
+            badgeStatus.classList.add('badge-primary');
+        } else {
+            badgeStatus.classList.add('badge-neutral');
+        }
+    }
+
+    // Pré-Alerta Badge
+    if (badgePrealerta) {
+        badgePrealerta.className = 'consulta-badge';
+        if (unit.no_pre_alerta) {
+            badgePrealerta.innerHTML = '✅ No Pré-Alerta';
+            badgePrealerta.classList.add('badge-success-custom');
+        } else {
+            badgePrealerta.innerHTML = '⚠️ Fora do Pré-Alerta';
+            badgePrealerta.classList.add('badge-danger-custom');
+        }
+    }
+
+    // Contador de Eventos
+    const totalEventos = Array.isArray(history) ? history.length : 0;
+    if (txtTotalEventos) {
+        txtTotalEventos.textContent = `${totalEventos} evento${totalEventos === 1 ? '' : 's'}`;
+    }
+
+    // Renderizar Timeline
+    if (timelineEl) {
+        if (!history || history.length === 0) {
+            timelineEl.innerHTML = '<p style="color: var(--text-secondary); font-style: italic;">Nenhum evento registrado para esta unidade.</p>';
+            return;
+        }
+
+        timelineEl.innerHTML = history.map(item => {
+            const dataHoraFmt = item.data_hora ? formatarDataHoraConsulta(item.data_hora) : 'Data não informada';
+            
+            // Ícone correspondente à etapa
+            let iconSvg = '';
+            if (item.tipo === 'pre-alerta') {
+                iconSvg = `<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><ellipse cx="12" cy="5" rx="9" ry="3"></ellipse><path d="M21 12c0 1.66-4 3-9 3s-9-1.34-9-3"></path><path d="M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5"></path></svg>`;
+            } else if (item.tipo === 'recebimento') {
+                iconSvg = `<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20 7h-3a2 2 0 0 1-2-2V2"/><path d="M9 18a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h7l4 4v10a2 2 0 0 1-2 2z"/><path d="M3 15h6v6"/></svg>`;
+            } else if (item.tipo === 'pallet') {
+                iconSvg = `<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="1" y="3" width="15" height="13"></rect><polygon points="16 8 20 8 23 11 23 16 16 16 16 8"></polygon><circle cx="5.5" cy="18.5" r="2.5"></circle><circle cx="18.5" cy="18.5" r="2.5"></circle></svg>`;
+            } else if (item.tipo === 'retorno') {
+                iconSvg = `<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="9 14 4 9 9 4"></polyline><path d="M20 20v-7a4 4 0 0 0-4-4H4"></path></svg>`;
+            } else {
+                iconSvg = `<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"></circle><polyline points="12 6 12 12 16 14"></polyline></svg>`;
+            }
+
+            return `
+                <div class="timeline-step ${item.tipo || ''}">
+                    <div class="timeline-step-icon">
+                        ${iconSvg}
+                    </div>
+                    <div class="timeline-step-content">
+                        <div class="timeline-step-header">
+                            <span class="timeline-step-title">${escapeHtml(item.titulo || item.etapa)}</span>
+                            <span class="timeline-step-date">
+                                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="4" width="18" height="18" rx="2" ry="2"></rect><line x1="16" y1="2" x2="16" y2="6"></line><line x1="8" y1="2" x2="8" y2="6"></line><line x1="3" y1="10" x2="21" y2="10"></line></svg>
+                                ${dataHoraFmt}
+                            </span>
+                        </div>
+                        <div class="timeline-step-desc">
+                            ${escapeHtml(item.descricao || '')}
+                        </div>
+                        <div class="timeline-step-meta">
+                            <span>Operador: <strong>${escapeHtml(item.usuario || 'Sistema')}</strong></span>
+                            <span>Status: <strong>${escapeHtml(item.status || 'Registrado')}</strong></span>
+                        </div>
+                    </div>
+                </div>
+            `;
+        }).join('');
+    }
+}
+
+function formatarDataHoraConsulta(isoString) {
+    if (!isoString) return '---';
+    try {
+        const d = new Date(isoString);
+        if (isNaN(d.getTime())) return isoString;
+        return d.toLocaleDateString('pt-BR') + ' às ' + d.toLocaleTimeString('pt-BR');
+    } catch (e) {
+        return isoString;
+    }
+}
+
 
 

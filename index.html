@@ -42,6 +42,10 @@
                     <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/><polyline points="10 9 9 9 8 9"/></svg>
                     Relatórios
                 </li>
+                <li data-tab="consulta">
+                    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"></circle><line x1="21" y1="21" x2="16.65" y2="16.65"></line></svg>
+                    Consulta
+                </li>
                 <li id="nav-admin" data-tab="admin" style="display: none;">
                     <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"></rect><path d="M7 11V7a5 5 0 0 1 10 0v4"></path></svg>
                     Administração
@@ -277,7 +281,7 @@
                             Bipagem de Retorno de Pintura
                         </h3>
                         <p style="color: var(--text-secondary); font-size: 0.9rem; margin: 0;">
-                            Bipe no campo abaixo o <strong>Serial Number</strong>, <strong>MAC</strong> ou <strong>GPON ID</strong> da unidade. O sistema registrará o retorno se a unidade estiver com o status <em>"Aguardando retorno de Pintura"</em>.
+                            Bipe no campo abaixo o <strong>Serial Number</strong>, <strong>MAC</strong> ou <strong>GPON ID</strong> da unidade para registrar o retorno e atualizar o status para <strong>Retorno de Pintura</strong>.
                         </p>
                     </div>
 
@@ -501,6 +505,95 @@
                         <h3>Relatório de Modelos</h3>
                         <p>Exportar a base de modelos cadastrados e suas regras de validação.</p>
                         <button id="btn-export-modelos" class="btn btn-secondary">Exportar</button>
+                    </div>
+                </div>
+            </section>
+
+            <!-- Consulta Tab -->
+            <section id="consulta" class="tab-content">
+                <header class="section-header">
+                    <h1>Consulta e Histórico da Unidade</h1>
+                </header>
+
+                <!-- Search Input Card -->
+                <div class="card glass">
+                    <div class="form-group">
+                        <label for="consulta-input-termo">Buscar por Serial, GPON / PON ID ou MAC</label>
+                        <div class="input-with-action" style="display: flex; gap: 0.75rem; margin-top: 0.5rem;">
+                            <input type="text" id="consulta-input-termo" class="scan-input" placeholder="Bipe ou digite o Serial, PON ID ou MAC..." autocomplete="off" style="flex: 1; text-transform: uppercase;">
+                            <button id="btn-consultar-unidade" class="btn btn-primary" style="padding: 0 1.5rem; display: flex; align-items: center; gap: 8px;">
+                                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"></circle><line x1="21" y1="21" x2="16.65" y2="16.65"></line></svg>
+                                Consultar
+                            </button>
+                            <button id="btn-limpar-consulta" class="btn btn-secondary" style="padding: 0 1.25rem;">
+                                Limpar
+                            </button>
+                        </div>
+                    </div>
+                    <div id="consulta-feedback" class="status-message hidden" style="margin-top: 1rem;"></div>
+                </div>
+
+                <!-- Resultados da Consulta -->
+                <div id="consulta-resultado-container" class="hidden" style="margin-top: 1.5rem; display: flex; flex-direction: column; gap: 1.5rem;">
+                    <!-- Card Resumo da Unidade -->
+                    <div class="card glass">
+                        <div style="display: flex; justify-content: space-between; align-items: flex-start; flex-wrap: wrap; gap: 1rem; margin-bottom: 1.25rem; border-bottom: 1px solid rgba(255,255,255,0.08); padding-bottom: 1rem;">
+                            <div>
+                                <span style="font-size: 0.8rem; color: var(--text-secondary); text-transform: uppercase; letter-spacing: 0.05em; font-weight: 600;">Status Atual</span>
+                                <div style="display: flex; align-items: center; gap: 10px; margin-top: 6px; flex-wrap: wrap;">
+                                    <span id="consulta-badge-status" class="consulta-badge badge-primary">---</span>
+                                    <span id="consulta-badge-prealerta" class="consulta-badge badge-neutral">---</span>
+                                </div>
+                            </div>
+                            <div style="text-align: right;">
+                                <span style="font-size: 0.8rem; color: var(--text-secondary); text-transform: uppercase; letter-spacing: 0.05em; font-weight: 600;">Modelo do Equipamento</span>
+                                <h3 id="consulta-txt-modelo" style="margin: 6px 0 0 0; font-size: 1.3rem; color: var(--text-primary);">---</h3>
+                            </div>
+                        </div>
+
+                        <!-- Grid de Detalhes da Unidade -->
+                        <div class="unit-details-grid">
+                            <div class="unit-detail-item">
+                                <span class="unit-detail-label">Serial Number</span>
+                                <strong id="consulta-txt-serial" class="unit-detail-value font-mono">---</strong>
+                            </div>
+                            <div class="unit-detail-item">
+                                <span class="unit-detail-label">GPON / PON ID</span>
+                                <strong id="consulta-txt-gpon" class="unit-detail-value font-mono">---</strong>
+                            </div>
+                            <div class="unit-detail-item">
+                                <span class="unit-detail-label">Endereço MAC</span>
+                                <strong id="consulta-txt-mac" class="unit-detail-value font-mono">---</strong>
+                            </div>
+                            <div class="unit-detail-item">
+                                <span class="unit-detail-label">Fabricante</span>
+                                <strong id="consulta-txt-fabricante" class="unit-detail-value">---</strong>
+                            </div>
+                            <div class="unit-detail-item">
+                                <span class="unit-detail-label">Código do Material</span>
+                                <strong id="consulta-txt-codigo" class="unit-detail-value">---</strong>
+                            </div>
+                            <div class="unit-detail-item span-2">
+                                <span class="unit-detail-label">Descrição do Material</span>
+                                <strong id="consulta-txt-descricao" class="unit-detail-value">---</strong>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Card Linha do Tempo / Histórico -->
+                    <div class="card glass">
+                        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1.5rem; flex-wrap: wrap; gap: 0.5rem;">
+                            <h3 style="margin: 0; display: flex; align-items: center; gap: 8px; font-size: 1.15rem;">
+                                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"></circle><polyline points="12 6 12 12 16 14"></polyline></svg>
+                                Histórico e Rastreabilidade da Unidade
+                            </h3>
+                            <span id="consulta-total-eventos" style="font-size: 0.85rem; color: var(--text-secondary); background: rgba(255,255,255,0.08); padding: 4px 12px; border-radius: 12px; border: 1px solid rgba(255,255,255,0.1);">0 eventos</span>
+                        </div>
+
+                        <!-- Timeline Container -->
+                        <div id="consulta-timeline" class="unit-timeline">
+                            <!-- Populated via JS -->
+                        </div>
                     </div>
                 </div>
             </section>
