@@ -1,4 +1,4 @@
-const CURRENT_APP_VERSION = 'v1.5.0';
+const CURRENT_APP_VERSION = 'v1.5.1';
 
 function startVersionPolling() {
     setInterval(async () => {
@@ -108,6 +108,7 @@ let currentSessionDay = new Date().toLocaleDateString();
 
 function performLogout() {
     currentUser = null;
+    sessionStorage.removeItem('preAlertaLoggedUser');
     localStorage.removeItem('preAlertaLoggedUser');
     // Navigate back to first tab
     const navLinks = document.querySelectorAll('.nav-links li');
@@ -205,8 +206,10 @@ document.addEventListener('DOMContentLoaded', async () => {
     setupRetornoPinturaListeners();
     setupConsultaListeners();
     startMidnightLogoutCheck();
-    // Check persisted login session on F5/refresh
-    const savedUserStr = localStorage.getItem('preAlertaLoggedUser');
+    // Clear legacy localStorage session if present
+    localStorage.removeItem('preAlertaLoggedUser');
+    // Check persisted login session on F5/refresh within current tab/window session
+    const savedUserStr = sessionStorage.getItem('preAlertaLoggedUser');
     let restoredSession = false;
     if (savedUserStr) {
         try {
@@ -324,7 +327,7 @@ function setupAuthListeners() {
         if (user) {
             applyAccessLevel(user);
             hideLoginOverlay();
-            localStorage.setItem('preAlertaLoggedUser', JSON.stringify(user));
+            sessionStorage.setItem('preAlertaLoggedUser', JSON.stringify(user));
         } else {
             document.getElementById('login-error').classList.remove('hidden');
         }
