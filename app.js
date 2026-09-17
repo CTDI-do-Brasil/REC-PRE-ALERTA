@@ -1,4 +1,4 @@
-const CURRENT_APP_VERSION = 'v1.5.1';
+const CURRENT_APP_VERSION = 'v1.5.2';
 
 function startVersionPolling() {
     setInterval(async () => {
@@ -205,6 +205,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     setupExpedicaoListeners();
     setupRetornoPinturaListeners();
     setupConsultaListeners();
+    setupDataFieldLocks();
     startMidnightLogoutCheck();
     // Clear legacy localStorage session if present
     localStorage.removeItem('preAlertaLoggedUser');
@@ -474,6 +475,30 @@ document.getElementById('btn-save-modelo').addEventListener('click', async () =>
     if (rSerial) rules.serial = rSerial;
     if (campos === 3 && rPon) rules.pon = rPon;
     if (rMac) rules.mac = rMac;
+    if (!newModel) {
+        alert("Informe o nome do modelo.");
+        return;
+    }
+
+    if (/[^A-Z0-9\s-]/.test(newModel)) {
+        alert("O nome do modelo contém caracteres especiais inválidos. Use apenas letras, números, espaços e hífen.");
+        return;
+    }
+
+    if (rSerial && /[^A-Z0-9,\s]/.test(rSerial)) {
+        alert("Prefixos do SERIAL contêm caracteres especiais inválidos.");
+        return;
+    }
+
+    if (rPon && /[^A-Z0-9,\s]/.test(rPon)) {
+        alert("Prefixos do PON ID contêm caracteres especiais inválidos.");
+        return;
+    }
+
+    if (rMac && /[^A-Z0-9,\s]/.test(rMac)) {
+        alert("Prefixos do MAC contêm caracteres especiais inválidos.");
+        return;
+    }
 
     if (newModel) {
         let savedModels = await dbModelos.getItem('lista') || [...defaultModels];
@@ -849,13 +874,16 @@ async function savePreAlertaData(data) {
         let fabKey = Object.keys(row).find(k => cleanKey(k).includes('FABRI'));
 
         if (serialKey && row[serialKey]) {
-            const serial = String(row[serialKey]).trim().toUpperCase();
-            itemsToImport.push({
-                serial: serial,
-                codigo: codKey ? String(row[codKey]).trim() : '',
-                descricao: descKey ? String(row[descKey]).trim() : '',
-                fabricante: fabKey ? String(row[fabKey]).trim() : ''
-            });
+            const rawSerial = String(row[serialKey]).trim().toUpperCase();
+            const cleanSerial = rawSerial.replace(/[^A-Z0-9]/g, '');
+            if (cleanSerial) {
+                itemsToImport.push({
+                    serial: cleanSerial,
+                    codigo: codKey ? String(row[codKey]).trim().replace(/[^A-Za-z0-9\s-]/g, '').toUpperCase() : '',
+                    descricao: descKey ? String(row[descKey]).trim() : '',
+                    fabricante: fabKey ? String(row[fabKey]).trim() : ''
+                });
+            }
         }
     }
 
@@ -974,6 +1002,99 @@ function setupEventListeners() {
             document.getElementById('serial').focus();
         });
     }
+}
+
+// ============================================================
+// TRAVA CONTRA CARACTERES ESPECIAIS EM CAMPOS DE DADOS
+// ============================================================
+function applyDataFieldLock(inputElement, allowedType = 'alphanumeric') {
+    if (!inputElement) return;
+
+    const sanitize = (val) => {
+        if (!val) return '';
+        if (allowedType === 'alphanumeric') {
+            return val.replace(/[^a-zA-Z0-9]/g, '').toUpperCase();
+        } else if (allowedType === 'model-name') {
+            return val.replace(/[^a-zA-Z0-9\s-]/g, '').toUpperCase();
+        } else if (allowedType === 'rule-prefix') {
+            return val.replace(/[^a-zA-Z0-9,\s]/g, '').toUpperCase();
+        } else if (allowedType === 'username') {
+            return val.replace(/[^a-zA-Z.]/g, '').toUpperCase();
+        }
+        return val;
+    };
+
+    // Bloqueia teclas com caracteres especiais diretamente ao digitar
+    inputElement.addEventListener('keypress', (e) => {
+        if (e.ctrlKey || e.altKey || e.metaKey || e.key.length > 1) return;
+        
+        let isValid = false;
+        if (allowedType === 'alphanumeric') {
+            isValid = /^[a-zA-Z0-9]$/.test(e.key);
+        } else if (allowedType === 'model-name') {
+            isValid = /^[a-zA-Z0-9\s-]$/.test(e.key);
+        } else if (allowedType === 'rule-prefix') {
+            isValid = /^[a-zA-Z0-9,\s]$/.test(e.key);
+        } else if (allowedType === 'username') {
+            isValid = /^[a-zA-Z.]$/.test(e.key);
+        }
+
+        if (!isValid) {
+            e.preventDefault();
+        }
+    });
+
+    // Sanitiza em tempo real (trata barcode scanners, autocompletes, teclados virtuais)
+    inputElement.addEventListener('input', () => {
+        const cleaned = sanitize(inputElement.value);
+        if (inputElement.value !== cleaned) {
+            const start = inputElement.selectionStart;
+            inputElement.value = cleaned;
+            if (start !== null) inputElement.setSelectionRange(start, start);
+        }
+    });
+
+    // Sanitiza colagens (paste)
+    inputElement.addEventListener('paste', (e) => {
+        e.preventDefault();
+        const text = (e.clipboardData || window.clipboardData).getData('text');
+        const cleaned = sanitize(text);
+        const start = inputElement.selectionStart || 0;
+        const end = inputElement.selectionEnd || 0;
+        const currentVal = inputElement.value;
+        inputElement.value = currentVal.substring(0, start) + cleaned + currentVal.substring(end);
+        inputElement.setSelectionRange(start + cleaned.length, start + cleaned.length);
+        inputElement.dispatchEvent(new Event('input', { bubbles: true }));
+    });
+}
+
+function setupDataFieldLocks() {
+    // 1. Recebimento de Unidades
+    applyDataFieldLock(document.getElementById('serial'), 'alphanumeric');
+    applyDataFieldLock(document.getElementById('pon'), 'alphanumeric');
+    applyDataFieldLock(document.getElementById('mac'), 'alphanumeric');
+
+    // 2. Expedição Pintura
+    applyDataFieldLock(document.getElementById('exp-scan-input'), 'alphanumeric');
+
+    // 3. Retorno de Pintura
+    applyDataFieldLock(document.getElementById('retorno-scan-input'), 'alphanumeric');
+
+    // 4. Consulta de Unidades
+    applyDataFieldLock(document.getElementById('consulta-input-termo'), 'alphanumeric');
+
+    // 5. Histórico de Pallets
+    applyDataFieldLock(document.getElementById('input-busca-pallets'), 'alphanumeric');
+
+    // 6. Cadastro / Edição de Modelo
+    applyDataFieldLock(document.getElementById('input-novo-modelo'), 'model-name');
+    applyDataFieldLock(document.getElementById('rule-serial'), 'rule-prefix');
+    applyDataFieldLock(document.getElementById('rule-pon'), 'rule-prefix');
+    applyDataFieldLock(document.getElementById('rule-mac'), 'rule-prefix');
+
+    // 7. Usuários e Login
+    applyDataFieldLock(document.getElementById('input-usuario-username'), 'username');
+    applyDataFieldLock(document.getElementById('login-username'), 'username');
 }
 
 function updateFormFields() {
@@ -1116,6 +1237,25 @@ async function processRecebimento() {
 
         if (!serial || (!isException && !pon) || !mac) {
             showMessage('Preencha todos os campos necessarios para receber a unidade.', 'error');
+            isProcessingRecebimento = false;
+            if (btnReceber) btnReceber.disabled = false;
+            return;
+        }
+
+        if (/[^A-Z0-9]/.test(serial)) {
+            showMessage('ERRO: O SERIAL contém caracteres especiais. Apenas letras e números são permitidos.', 'error');
+            isProcessingRecebimento = false;
+            if (btnReceber) btnReceber.disabled = false;
+            return;
+        }
+        if (!isException && /[^A-Z0-9]/.test(pon)) {
+            showMessage('ERRO: O PON ID contém caracteres especiais. Apenas letras e números são permitidos.', 'error');
+            isProcessingRecebimento = false;
+            if (btnReceber) btnReceber.disabled = false;
+            return;
+        }
+        if (/[^A-Z0-9]/.test(mac)) {
+            showMessage('ERRO: O MAC contém caracteres especiais. Apenas letras e números são permitidos.', 'error');
             isProcessingRecebimento = false;
             if (btnReceber) btnReceber.disabled = false;
             return;
@@ -2279,6 +2419,15 @@ function setupExpedicaoListeners() {
                 return;
             }
 
+            if (/[^A-Z0-9]/.test(valorScan)) {
+                showExpedicaoStatus("❌ Caracteres especiais não são permitidos no código da unidade.", true);
+                if (inputScan) {
+                    inputScan.select();
+                    inputScan.focus();
+                }
+                return;
+            }
+
             try {
                 const res = await fetch(`${SERVER_URL.replace(/\/$/, '')}/api/expedicao-pintura/bipar`, {
                     method: 'POST',
@@ -2476,6 +2625,15 @@ function setupRetornoPinturaListeners() {
                 return;
             }
 
+            if (/[^A-Z0-9]/.test(codigo)) {
+                showRetornoStatus('❌ Caracteres especiais não são permitidos no código da unidade.', true);
+                if (inputScan) {
+                    inputScan.select();
+                    inputScan.focus();
+                }
+                return;
+            }
+
             try {
                 const res = await fetch(`${SERVER_URL.replace(/\/$/, '')}/api/retorno-pintura/bipar`, {
                     method: 'POST',
@@ -2599,6 +2757,17 @@ async function executarConsultaUnidade() {
         }
         if (container) container.classList.add('hidden');
         inputTermo.focus();
+        return;
+    }
+
+    if (/[^A-Za-z0-9]/.test(query)) {
+        if (feedback) {
+            feedback.className = 'status-message status-error';
+            feedback.innerHTML = '❌ Caracteres especiais não são permitidos na consulta. Use apenas letras e números.';
+            feedback.classList.remove('hidden');
+        }
+        if (container) container.classList.add('hidden');
+        inputTermo.select();
         return;
     }
 

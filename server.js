@@ -94,6 +94,11 @@ async function ensureDBAndMinIO() {
       }
     }
 
+    // Create indexes for fast lookup during unit scans
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_recebimentos_serial_number ON recebimentos (serial_number)`);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_recebimentos_gpon_id ON recebimentos (gpon_id)`);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_recebimentos_mac ON recebimentos (mac)`);
+
     await client.query(`CREATE TABLE IF NOT EXISTS usuarios (
       username TEXT PRIMARY KEY,
       password TEXT,
@@ -212,6 +217,17 @@ function presignPut(objectName, expires = 60 * 60) {
   });
 }
 
+// Helper functions for special character restriction (trava contra caracteres especiais)
+function hasSpecialChars(val) {
+  if (!val || typeof val !== 'string') return false;
+  return /[^A-Za-z0-9]/.test(val.trim());
+}
+
+function sanitizeDataCode(val) {
+  if (!val || typeof val !== 'string') return '';
+  return val.trim().replace(/[^A-Za-z0-9]/g, '').toUpperCase();
+}
+
 // REST API Endpoints
 
 // MinIO Presign Upload
@@ -237,7 +253,9 @@ app.post('/api/pre-alerta/import', async (req, res) => {
   try {
     await client.query('BEGIN');
     for (const item of items) {
-      if (!item.serial) continue;
+      const cleanSerial = sanitizeDataCode(item.serial);
+      if (!cleanSerial) continue;
+      const cleanCodigo = item.codigo ? String(item.codigo).trim().replace(/[^A-Za-z0-9\s-]/g, '').toUpperCase() : '';
       await client.query(
         `INSERT INTO pre_alertas(serial, codigo, descricao, fabricante)
          VALUES($1, $2, $3, $4)
@@ -245,7 +263,7 @@ app.post('/api/pre-alerta/import', async (req, res) => {
            codigo = EXCLUDED.codigo,
            descricao = EXCLUDED.descricao,
            fabricante = EXCLUDED.fabricante`,
-        [item.serial.trim().toUpperCase(), item.codigo || '', item.descricao || '', item.fabricante || '']
+        [cleanSerial, cleanCodigo, item.descricao || '', item.fabricante || '']
       );
     }
     await client.query('COMMIT');
@@ -285,7 +303,11 @@ app.get('/api/pre-alerta/count', async (req, res) => {
 app.get('/api/pre-alerta/check', async (req, res) => {
   const { value } = req.query;
   if (!value) return res.status(400).json({ error: 'Missing query parameter "value"' });
-  const cleanVal = value.trim().toUpperCase();
+  const rawVal = String(value).trim();
+  if (hasSpecialChars(rawVal)) {
+    return res.json({ found: false });
+  }
+  const cleanVal = sanitizeDataCode(rawVal);
 
   try {
     const result = await pool.query(
@@ -305,9 +327,17 @@ app.get('/api/pre-alerta/check', async (req, res) => {
 // Validate scan: checks duplicity and pre-alerta match in one database trip
 app.get('/api/recebimentos/validate', async (req, res) => {
   const { serial, pon, mac } = req.query;
-  const s = (serial || '').trim().toUpperCase();
-  const p = (pon || '').trim().toUpperCase();
-  const m = (mac || '').trim().toUpperCase();
+  const rawS = String(serial || '').trim();
+  const rawP = String(pon || '').trim();
+  const rawM = String(mac || '').trim();
+
+  if (hasSpecialChars(rawS) || (rawP && hasSpecialChars(rawP)) || hasSpecialChars(rawM)) {
+    return res.status(400).json({ error: 'Caracteres especiais não são permitidos nos dados da unidade.' });
+  }
+
+  const s = sanitizeDataCode(rawS);
+  const p = sanitizeDataCode(rawP);
+  const m = sanitizeDataCode(rawM);
 
   try {
     // 1. Check duplicity in Postgres
@@ -359,15 +389,28 @@ app.get('/api/recebimentos/validate', async (req, res) => {
 app.post('/api/recebimentos', async (req, res) => {
   const body = req.body;
   if (!body) return res.status(400).json({ error: 'Invalid payload' });
+
+  const rawSerial = String(body.serial || body.serial_number || '').trim();
+  const rawPon = String(body.pon || body.gpon_id || '').trim();
+  const rawMac = String(body.mac || '').trim();
+
+  if (hasSpecialChars(rawSerial) || (rawPon && hasSpecialChars(rawPon)) || hasSpecialChars(rawMac)) {
+    return res.status(400).json({ error: 'Caracteres especiais não são permitidos nos dados da unidade.' });
+  }
+
+  const cleanSerial = sanitizeDataCode(rawSerial);
+  const cleanPon = sanitizeDataCode(rawPon);
+  const cleanMac = sanitizeDataCode(rawMac);
+
   try {
     const query = `INSERT INTO recebimentos(fabricante, modelo, serial_number, gpon_id, mac, usuario, data_hora, no_pre_alerta, matched_value, codigo, descricao, status)
       VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)`;
     const params = [
       body.fabricante || null,
       body.modelo,
-      body.serial,
-      body.pon || null,
-      body.mac,
+      cleanSerial,
+      cleanPon || null,
+      cleanMac,
       body.usuario || null,
       body.dataHora ? new Date(body.dataHora) : new Date(),
       body.noPreAlerta || false,
@@ -575,7 +618,7 @@ const DEFAULT_MODELS_SEED = [
 
 // App Version Check for Auto-Update
 app.get('/api/version', (req, res) => {
-  res.json({ version: 'v1.5.1' });
+  res.json({ version: 'v1.5.2' });
 });
 
 // GET all models from Postgres
@@ -606,6 +649,9 @@ app.post('/api/modelos', async (req, res) => {
   try {
     for (const m of models) {
       const name = typeof m === 'object' ? m.name : m;
+      if (!name || /[^A-Za-z0-9\s-]/.test(name)) {
+        return res.status(400).json({ error: 'Nome do modelo contém caracteres especiais inválidos.' });
+      }
       const obj = typeof m === 'object' ? m : { name: m, fields: 3, rules: {} };
       await pool.query(
         `INSERT INTO modelos(name, data, updated_at) VALUES($1, $2, NOW())
@@ -773,14 +819,20 @@ app.get('/api/expedicao-pintura/pallets-abertos', async (req, res) => {
 // Scan/Add unit to pallet
 app.post('/api/expedicao-pintura/bipar', async (req, res) => {
   try {
-    const { codigo_pallet, serial, pon, mac, usuario } = req.body;
-    if (!codigo_pallet || (!serial && !pon && !mac)) {
+    const { codigo_pallet, serial, scan, pon, mac, usuario } = req.body;
+    const targetScan = String(serial || scan || '').trim();
+    if (!codigo_pallet || (!targetScan && !pon && !mac)) {
       return res.status(400).json({ error: 'Informe ao menos um campo da unidade (Serial, PON ou MAC).' });
     }
-    const cleanSerial = serial ? serial.trim().toUpperCase() : '';
-    const cleanPon = pon ? pon.trim().toUpperCase() : '';
-    const cleanMac = mac ? mac.trim().toUpperCase() : '';
-    const codPallet = codigo_pallet.trim().toUpperCase();
+
+    if (hasSpecialChars(targetScan) || (pon && hasSpecialChars(pon)) || (mac && hasSpecialChars(mac))) {
+      return res.status(400).json({ success: false, error: 'Caracteres especiais não são permitidos no código da unidade.' });
+    }
+
+    const cleanSerial = sanitizeDataCode(targetScan);
+    const cleanPon = sanitizeDataCode(pon);
+    const cleanMac = sanitizeDataCode(mac);
+    const codPallet = sanitizeDataCode(codigo_pallet);
 
     // 1. Check if pallet exists and is ABERTO
     const palletRes = await pool.query('SELECT * FROM pallets_pintura WHERE UPPER(codigo_pallet) = $1', [codPallet]);
@@ -1067,10 +1119,14 @@ app.delete('/api/expedicao-pintura/item/:id', async (req, res) => {
 app.post('/api/retorno-pintura/bipar', async (req, res) => {
   try {
     const { codigo, usuario } = req.body;
-    if (!codigo || !codigo.trim()) {
+    if (!codigo || !String(codigo).trim()) {
       return res.status(400).json({ error: 'Informe o Serial, GPON ID ou MAC da unidade.' });
     }
-    const cleanCode = codigo.trim().toUpperCase();
+    const rawCodigo = String(codigo).trim();
+    if (hasSpecialChars(rawCodigo)) {
+      return res.status(400).json({ success: false, error: 'Caracteres especiais não são permitidos no código da unidade.' });
+    }
+    const cleanCode = sanitizeDataCode(rawCodigo);
 
     // 1. Check if unit exists in recebimentos by Serial, GPON ID or MAC
     const recRes = await pool.query(`
@@ -1239,8 +1295,12 @@ app.get('/api/consulta-unidade/:query', async (req, res) => {
     return res.status(400).json({ error: 'Termo de consulta não informado.' });
   }
 
-  const cleanQuery = rawQuery.replace(/[^a-zA-Z0-9]/g, '').toUpperCase();
-  const searchTerms = Array.from(new Set([rawQuery.toUpperCase(), cleanQuery])).filter(Boolean);
+  if (hasSpecialChars(rawQuery)) {
+    return res.status(400).json({ found: false, error: 'Caracteres especiais não são permitidos na consulta.' });
+  }
+
+  const cleanQuery = sanitizeDataCode(rawQuery);
+  const searchTerms = [cleanQuery];
 
   try {
     // 1. Buscar em recebimentos
