@@ -1,4 +1,4 @@
-const CURRENT_APP_VERSION = 'v1.5.2';
+const CURRENT_APP_VERSION = 'v1.5.3';
 
 function startVersionPolling() {
     setInterval(async () => {
@@ -1005,8 +1005,95 @@ function setupEventListeners() {
 }
 
 // ============================================================
-// TRAVA CONTRA CARACTERES ESPECIAIS EM CAMPOS DE DADOS
+// TRAVA E AVISO NA TELA DE CARACTERES ESPECIAIS EM CAMPOS DE DADOS
 // ============================================================
+let specialCharToastTimeout = null;
+
+function playErrorBeep() {
+    try {
+        const AudioContext = window.AudioContext || window.webkitAudioContext;
+        if (!AudioContext) return;
+        const ctx = new AudioContext();
+        const osc = ctx.createOscillator();
+        const gain = ctx.createGain();
+        osc.type = 'sawtooth';
+        osc.frequency.setValueAtTime(280, ctx.currentTime);
+        osc.frequency.setValueAtTime(180, ctx.currentTime + 0.1);
+        gain.gain.setValueAtTime(0.25, ctx.currentTime);
+        gain.gain.linearRampToValueAtTime(0.01, ctx.currentTime + 0.25);
+        osc.connect(gain);
+        gain.connect(ctx.destination);
+        osc.start();
+        osc.stop(ctx.currentTime + 0.25);
+    } catch (e) {
+        // Ignora silenciosamente se o navegador restringir áudio antes do primeiro clique
+    }
+}
+
+function notifySpecialCharError(inputElement, charInfo = '') {
+    // 1. Toca bip sonoro de alerta de erro
+    playErrorBeep();
+
+    // 2. Destaca visualmente o campo com tremor e borda vermelha
+    if (inputElement) {
+        inputElement.classList.remove('input-error-shake');
+        void inputElement.offsetWidth; // Força reflow para reiniciar animação
+        inputElement.classList.add('input-error-shake');
+        setTimeout(() => {
+            if (inputElement) inputElement.classList.remove('input-error-shake');
+        }, 600);
+    }
+
+    // 3. Exibe aviso flutuante destacado no topo da tela (Toast Notification)
+    let toast = document.getElementById('special-char-toast');
+    if (!toast) {
+        toast = document.createElement('div');
+        toast.id = 'special-char-toast';
+        document.body.appendChild(toast);
+    }
+
+    let msgDetalhe = 'Caracteres especiais não são permitidos!';
+    if (charInfo && typeof charInfo === 'string' && charInfo.length === 1) {
+        msgDetalhe = `O caractere "${escapeHtml(charInfo)}" é proibido!`;
+    }
+
+    toast.innerHTML = `
+        <div style="display: flex; align-items: center; gap: 14px;">
+            <span style="font-size: 1.6rem; line-height: 1;">🚫</span>
+            <div>
+                <strong style="display: block; font-size: 1rem; color: #fff; letter-spacing: 0.5px;">CARACTERE ESPECIAL BLOQUEADO</strong>
+                <span style="font-size: 0.85rem; color: #fecdd3; font-weight: 500;">${msgDetalhe} Digite ou bipe apenas letras e números.</span>
+            </div>
+        </div>
+    `;
+
+    toast.className = 'toast-notification show';
+
+    if (specialCharToastTimeout) clearTimeout(specialCharToastTimeout);
+    specialCharToastTimeout = setTimeout(() => {
+        toast.classList.remove('show');
+    }, 3500);
+
+    // 4. Também atualiza a área de mensagens da aba ativa
+    const activeTab = document.querySelector('.tab-content.active');
+    if (activeTab) {
+        if (activeTab.id === 'recebimento') {
+            showMessage('🚫 ERRO: Caractere especial não permitido! Apenas letras e números são aceitos.', 'error');
+        } else if (activeTab.id === 'expedicao-pintura') {
+            showExpedicaoStatus('🚫 <strong>ERRO</strong>: Caractere especial não permitido! Apenas letras e números são aceitos.', true);
+        } else if (activeTab.id === 'retorno-pintura') {
+            showRetornoStatus('🚫 <strong>ERRO</strong>: Caractere especial não permitido! Apenas letras e números são aceitos.', true);
+        } else if (activeTab.id === 'consulta') {
+            const feedback = document.getElementById('consulta-feedback');
+            if (feedback) {
+                feedback.className = 'status-message status-error';
+                feedback.innerHTML = '🚫 <strong>ERRO</strong>: Caractere especial não permitido! Apenas letras e números são aceitos na consulta.';
+                feedback.classList.remove('hidden');
+            }
+        }
+    }
+}
+
 function applyDataFieldLock(inputElement, allowedType = 'alphanumeric') {
     if (!inputElement) return;
 
@@ -1023,6 +1110,25 @@ function applyDataFieldLock(inputElement, allowedType = 'alphanumeric') {
         }
         return val;
     };
+
+    // Intercepta beforeinput quando suportado (bloqueia antes da inserção)
+    inputElement.addEventListener('beforeinput', (e) => {
+        if (!e.data) return;
+        let hasInvalid = false;
+        if (allowedType === 'alphanumeric') {
+            hasInvalid = /[^a-zA-Z0-9]/.test(e.data);
+        } else if (allowedType === 'model-name') {
+            hasInvalid = /[^a-zA-Z0-9\s-]/.test(e.data);
+        } else if (allowedType === 'rule-prefix') {
+            hasInvalid = /[^a-zA-Z0-9,\s]/.test(e.data);
+        } else if (allowedType === 'username') {
+            hasInvalid = /[^a-zA-Z.]/.test(e.data);
+        }
+        if (hasInvalid) {
+            e.preventDefault();
+            notifySpecialCharError(inputElement, e.data);
+        }
+    });
 
     // Bloqueia teclas com caracteres especiais diretamente ao digitar
     inputElement.addEventListener('keypress', (e) => {
@@ -1041,24 +1147,29 @@ function applyDataFieldLock(inputElement, allowedType = 'alphanumeric') {
 
         if (!isValid) {
             e.preventDefault();
+            notifySpecialCharError(inputElement, e.key);
         }
     });
 
-    // Sanitiza em tempo real (trata barcode scanners, autocompletes, teclados virtuais)
+    // Sanitiza em tempo real e notifica se houve caractere especial (barcode scanners, autocompletes, teclados virtuais)
     inputElement.addEventListener('input', () => {
         const cleaned = sanitize(inputElement.value);
         if (inputElement.value !== cleaned) {
             const start = inputElement.selectionStart;
             inputElement.value = cleaned;
             if (start !== null) inputElement.setSelectionRange(start, start);
+            notifySpecialCharError(inputElement);
         }
     });
 
-    // Sanitiza colagens (paste)
+    // Sanitiza colagens (paste) e avisa
     inputElement.addEventListener('paste', (e) => {
         e.preventDefault();
         const text = (e.clipboardData || window.clipboardData).getData('text');
         const cleaned = sanitize(text);
+        if (text !== cleaned) {
+            notifySpecialCharError(inputElement);
+        }
         const start = inputElement.selectionStart || 0;
         const end = inputElement.selectionEnd || 0;
         const currentVal = inputElement.value;
@@ -1243,19 +1354,25 @@ async function processRecebimento() {
         }
 
         if (/[^A-Z0-9]/.test(serial)) {
-            showMessage('ERRO: O SERIAL contém caracteres especiais. Apenas letras e números são permitidos.', 'error');
+            const el = document.getElementById('serial');
+            notifySpecialCharError(el);
+            showMessage('🚫 ERRO: O SERIAL contém caracteres especiais. Apenas letras e números são permitidos.', 'error');
             isProcessingRecebimento = false;
             if (btnReceber) btnReceber.disabled = false;
             return;
         }
         if (!isException && /[^A-Z0-9]/.test(pon)) {
-            showMessage('ERRO: O PON ID contém caracteres especiais. Apenas letras e números são permitidos.', 'error');
+            const el = document.getElementById('pon');
+            notifySpecialCharError(el);
+            showMessage('🚫 ERRO: O PON ID contém caracteres especiais. Apenas letras e números são permitidos.', 'error');
             isProcessingRecebimento = false;
             if (btnReceber) btnReceber.disabled = false;
             return;
         }
         if (/[^A-Z0-9]/.test(mac)) {
-            showMessage('ERRO: O MAC contém caracteres especiais. Apenas letras e números são permitidos.', 'error');
+            const el = document.getElementById('mac');
+            notifySpecialCharError(el);
+            showMessage('🚫 ERRO: O MAC contém caracteres especiais. Apenas letras e números são permitidos.', 'error');
             isProcessingRecebimento = false;
             if (btnReceber) btnReceber.disabled = false;
             return;
@@ -2420,7 +2537,8 @@ function setupExpedicaoListeners() {
             }
 
             if (/[^A-Z0-9]/.test(valorScan)) {
-                showExpedicaoStatus("❌ Caracteres especiais não são permitidos no código da unidade.", true);
+                notifySpecialCharError(inputScan);
+                showExpedicaoStatus("🚫 <strong>ERRO</strong>: Caracteres especiais não são permitidos no código da unidade.", true);
                 if (inputScan) {
                     inputScan.select();
                     inputScan.focus();
@@ -2626,7 +2744,8 @@ function setupRetornoPinturaListeners() {
             }
 
             if (/[^A-Z0-9]/.test(codigo)) {
-                showRetornoStatus('❌ Caracteres especiais não são permitidos no código da unidade.', true);
+                notifySpecialCharError(inputScan);
+                showRetornoStatus('🚫 <strong>ERRO</strong>: Caracteres especiais não são permitidos no código da unidade.', true);
                 if (inputScan) {
                     inputScan.select();
                     inputScan.focus();
@@ -2761,9 +2880,10 @@ async function executarConsultaUnidade() {
     }
 
     if (/[^A-Za-z0-9]/.test(query)) {
+        notifySpecialCharError(inputTermo);
         if (feedback) {
             feedback.className = 'status-message status-error';
-            feedback.innerHTML = '❌ Caracteres especiais não são permitidos na consulta. Use apenas letras e números.';
+            feedback.innerHTML = '🚫 <strong>ERRO</strong>: Caracteres especiais não são permitidos na consulta. Use apenas letras e números.';
             feedback.classList.remove('hidden');
         }
         if (container) container.classList.add('hidden');

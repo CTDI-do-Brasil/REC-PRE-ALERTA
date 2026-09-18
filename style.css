@@ -768,3 +768,44 @@ input[type="date"]::-webkit-calendar-picker-indicator {
     color: var(--text-primary);
 }
 
+/* ============================================================
+   Toast Notification & Input Error Alert (Trava Caracter Especial)
+   ============================================================ */
+.toast-notification {
+    position: fixed;
+    top: 25px;
+    left: 50%;
+    transform: translateX(-50%) translateY(-120px);
+    z-index: 100000;
+    min-width: 360px;
+    max-width: 90vw;
+    padding: 14px 20px;
+    border-radius: 10px;
+    background: rgba(225, 29, 72, 0.96);
+    backdrop-filter: blur(8px);
+    color: white;
+    box-shadow: 0 12px 32px rgba(0, 0, 0, 0.6), 0 0 20px rgba(244, 63, 94, 0.4);
+    border: 1px solid rgba(255, 255, 255, 0.25);
+    opacity: 0;
+    pointer-events: none;
+    transition: transform 0.35s cubic-bezier(0.175, 0.885, 0.32, 1.275), opacity 0.3s ease;
+}
+
+.toast-notification.show {
+    transform: translateX(-50%) translateY(0);
+    opacity: 1;
+    pointer-events: auto;
+}
+
+.input-error-shake {
+    animation: shake-error 0.4s ease-in-out !important;
+    border-color: #f43f5e !important;
+    box-shadow: 0 0 0 3px rgba(244, 63, 94, 0.4) !important;
+}
+
+@keyframes shake-error {
+    0%, 100% { transform: translateX(0); }
+    20%, 60% { transform: translateX(-6px); }
+    40%, 80% { transform: translateX(6px); }
+}
+
