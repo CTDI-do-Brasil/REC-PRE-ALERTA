@@ -618,7 +618,7 @@ const DEFAULT_MODELS_SEED = [
 
 // App Version Check for Auto-Update
 app.get('/api/version', (req, res) => {
-  res.json({ version: 'v1.5.3' });
+  res.json({ version: 'v1.5.4' });
 });
 
 // GET all models from Postgres
@@ -1467,6 +1467,229 @@ app.get('/api/consulta-unidade/:query', async (req, res) => {
     res.status(500).json({ error: 'Erro interno ao consultar unidade.' });
   }
 });
+
+// ============================================================
+// Endpoint para Edição das Séries da Unidade
+// ============================================================
+async function handleEditarSeries(req, res) {
+  try {
+    const {
+      recebimento_id,
+      old_serial,
+      old_gpon,
+      old_mac,
+      new_serial,
+      new_gpon,
+      new_mac,
+      new_modelo,
+      motivo,
+      usuario
+    } = req.body;
+
+    const rawNewSerial = (new_serial || '').trim();
+    const rawNewGpon = (new_gpon || '').trim();
+    const rawNewMac = (new_mac || '').trim();
+
+    if (!rawNewSerial) {
+      return res.status(400).json({ success: false, error: 'O Serial Number é obrigatório.' });
+    }
+    if (!rawNewMac) {
+      return res.status(400).json({ success: false, error: 'O Endereço MAC é obrigatório.' });
+    }
+
+    if (hasSpecialChars(rawNewSerial) || (rawNewGpon && hasSpecialChars(rawNewGpon)) || hasSpecialChars(rawNewMac)) {
+      return res.status(400).json({ success: false, error: 'Caracteres especiais não são permitidos nas séries.' });
+    }
+
+    const cleanNewSerial = sanitizeDataCode(rawNewSerial);
+    const cleanNewGpon = sanitizeDataCode(rawNewGpon);
+    const cleanNewMac = sanitizeDataCode(rawNewMac);
+    const cleanModelo = (new_modelo || '').trim().toUpperCase();
+
+    const cleanOldSerial = sanitizeDataCode(old_serial || '');
+    const cleanOldGpon = sanitizeDataCode(old_gpon || '');
+    const cleanOldMac = sanitizeDataCode(old_mac || '');
+
+    // Identificadores antigos
+    const oldIdentifiers = [cleanOldSerial, cleanOldGpon, cleanOldMac].filter(Boolean);
+
+    // 1. Verificar duplicidade em recebimentos (outro registro com o novo serial/gpon/mac)
+    let dupQuery = `
+      SELECT id, serial_number, gpon_id, mac 
+      FROM recebimentos
+      WHERE (UPPER(TRIM(serial_number)) = $1 OR UPPER(TRIM(mac)) = $2 ${cleanNewGpon ? 'OR UPPER(TRIM(gpon_id)) = $3' : ''})
+    `;
+    const dupParams = cleanNewGpon ? [cleanNewSerial, cleanNewMac, cleanNewGpon] : [cleanNewSerial, cleanNewMac];
+    if (recebimento_id) {
+      dupQuery += ` AND id != $${dupParams.length + 1}`;
+      dupParams.push(recebimento_id);
+    } else if (oldIdentifiers.length > 0) {
+      dupQuery += ` AND NOT (
+        (serial_number IS NOT NULL AND UPPER(TRIM(serial_number)) = ANY($${dupParams.length + 1})) 
+        OR (mac IS NOT NULL AND UPPER(TRIM(mac)) = ANY($${dupParams.length + 1}))
+      )`;
+      dupParams.push(oldIdentifiers);
+    }
+    dupQuery += ' LIMIT 1';
+
+    const checkDup = await pool.query(dupQuery, dupParams);
+    if (checkDup.rows.length > 0) {
+      const dup = checkDup.rows[0];
+      return res.status(400).json({
+        success: false,
+        error: `Já existe outra unidade registrada com esta série (ID: ${dup.id}, Serial: ${dup.serial_number}, MAC: ${dup.mac}).`
+      });
+    }
+
+    // 2. Verificar correspondência com Pre-Alerta para a nova série
+    const searchTerms = [cleanNewSerial, cleanNewGpon, cleanNewMac].filter(Boolean);
+    const preMatchRes = await pool.query(
+      `SELECT * FROM pre_alertas 
+       WHERE UPPER(TRIM(serial)) = ANY($1) 
+          OR UPPER(REPLACE(serial, ':', '')) = ANY($1) 
+       LIMIT 1`,
+      [searchTerms]
+    );
+    const preMatch = preMatchRes.rows[0] || null;
+    const isNoPreAlerta = !!preMatch;
+    const matchedValue = preMatch ? preMatch.serial : null;
+
+    // 3. Atualizar tabela recebimentos
+    let recUpdated = false;
+    if (recebimento_id) {
+      const updateRecRes = await pool.query(
+        `UPDATE recebimentos 
+         SET serial_number = $1,
+             gpon_id = $2,
+             mac = $3,
+             modelo = COALESCE(NULLIF($4, ''), modelo),
+             no_pre_alerta = $5,
+             matched_value = $6,
+             codigo = COALESCE($7, codigo),
+             descricao = COALESCE($8, descricao),
+             fabricante = COALESCE($9, fabricante)
+         WHERE id = $10
+         RETURNING *`,
+        [
+          cleanNewSerial,
+          cleanNewGpon || null,
+          cleanNewMac,
+          cleanModelo,
+          isNoPreAlerta,
+          matchedValue,
+          preMatch ? preMatch.codigo : null,
+          preMatch ? preMatch.descricao : null,
+          preMatch ? preMatch.fabricante : null,
+          recebimento_id
+        ]
+      );
+      recUpdated = updateRecRes.rowCount > 0;
+    } else if (oldIdentifiers.length > 0) {
+      const updateRecRes = await pool.query(
+        `UPDATE recebimentos 
+         SET serial_number = $1,
+             gpon_id = $2,
+             mac = $3,
+             modelo = COALESCE(NULLIF($4, ''), modelo),
+             no_pre_alerta = $5,
+             matched_value = $6,
+             codigo = COALESCE($7, codigo),
+             descricao = COALESCE($8, descricao),
+             fabricante = COALESCE($9, fabricante)
+         WHERE (serial_number IS NOT NULL AND UPPER(TRIM(serial_number)) = ANY($10))
+            OR (gpon_id IS NOT NULL AND UPPER(TRIM(gpon_id)) = ANY($10))
+            OR (mac IS NOT NULL AND UPPER(TRIM(mac)) = ANY($10))
+         RETURNING *`,
+        [
+          cleanNewSerial,
+          cleanNewGpon || null,
+          cleanNewMac,
+          cleanModelo,
+          isNoPreAlerta,
+          matchedValue,
+          preMatch ? preMatch.codigo : null,
+          preMatch ? preMatch.descricao : null,
+          preMatch ? preMatch.fabricante : null,
+          oldIdentifiers
+        ]
+      );
+      recUpdated = updateRecRes.rowCount > 0;
+    }
+
+    // 4. Atualizar pallet_pintura_itens se houver itens associados
+    if (oldIdentifiers.length > 0) {
+      await pool.query(
+        `UPDATE pallet_pintura_itens
+         SET serial_number = $1,
+             gpon_id = $2,
+             mac = $3,
+             modelo = COALESCE(NULLIF($4, ''), modelo)
+         WHERE (serial_number IS NOT NULL AND UPPER(TRIM(serial_number)) = ANY($5))
+            OR (gpon_id IS NOT NULL AND UPPER(TRIM(gpon_id)) = ANY($5))
+            OR (mac IS NOT NULL AND UPPER(TRIM(mac)) = ANY($5))`,
+        [cleanNewSerial, cleanNewGpon || null, cleanNewMac, cleanModelo, oldIdentifiers]
+      );
+    }
+
+    // 5. Atualizar retorno_pintura_itens se houver
+    if (oldIdentifiers.length > 0 || recebimento_id) {
+      await pool.query(
+        `UPDATE retorno_pintura_itens
+         SET serial_number = $1,
+             gpon_id = $2,
+             mac = $3,
+             modelo = COALESCE(NULLIF($4, ''), modelo)
+         WHERE ($5::int IS NOT NULL AND recebimento_id = $5)
+            OR (serial_number IS NOT NULL AND UPPER(TRIM(serial_number)) = ANY($6))
+            OR (gpon_id IS NOT NULL AND UPPER(TRIM(gpon_id)) = ANY($6))
+            OR (mac IS NOT NULL AND UPPER(TRIM(mac)) = ANY($6))`,
+        [cleanNewSerial, cleanNewGpon || null, cleanNewMac, cleanModelo, recebimento_id || null, oldIdentifiers]
+      );
+    }
+
+    // 6. Atualizar pre_alertas se a unidade foi cadastrada apenas em pre_alertas
+    if (!recUpdated && cleanOldSerial) {
+      await pool.query(
+        `UPDATE pre_alertas
+         SET serial = $1
+         WHERE UPPER(TRIM(serial)) = UPPER($2)`,
+        [cleanNewSerial, cleanOldSerial]
+      );
+    }
+
+    // 7. Segundo banco (PG2447)
+    if (secondPool && cleanModelo === 'PG2447' && cleanNewSerial.startsWith('GPO') && cleanNewMac) {
+      try {
+        await secondPool.query(
+          `UPDATE etiquetas_scan_onu SET cpe_sn = $1 WHERE UPPER(mac) = UPPER($2)`,
+          [cleanNewSerial, cleanNewMac]
+        );
+      } catch (secErr) {
+        console.warn('Erro ao atualizar segundo banco na edição de série:', secErr.message);
+      }
+    }
+
+    console.log(`Séries atualizadas com sucesso: ${cleanOldSerial || '(novo)'} -> ${cleanNewSerial} por ${usuario || 'USUÁRIO'}`);
+
+    res.json({
+      success: true,
+      message: 'Séries da unidade atualizadas com sucesso!',
+      updated: {
+        serial_number: cleanNewSerial,
+        gpon_id: cleanNewGpon,
+        mac: cleanNewMac,
+        modelo: cleanModelo,
+        no_pre_alerta: isNoPreAlerta
+      }
+    });
+  } catch (err) {
+    console.error('Erro ao editar séries da unidade:', err);
+    res.status(500).json({ success: false, error: 'Erro interno no banco de dados ao salvar edição de séries.' });
+  }
+}
+
+app.post('/api/unidades/editar-series', handleEditarSeries);
+app.put('/api/unidades/editar-series', handleEditarSeries);
 
 const PORT = process.env.PORT || 4000;
 app.listen(PORT, () => console.log(`Unified server listening on port ${PORT}`));

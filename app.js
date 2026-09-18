@@ -1,4 +1,4 @@
-const CURRENT_APP_VERSION = 'v1.5.3';
+const CURRENT_APP_VERSION = 'v1.5.4';
 
 function startVersionPolling() {
     setInterval(async () => {
@@ -205,6 +205,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     setupExpedicaoListeners();
     setupRetornoPinturaListeners();
     setupConsultaListeners();
+    setupEditarSeriesModal();
     setupDataFieldLocks();
     startMidnightLogoutCheck();
     // Clear legacy localStorage session if present
@@ -1206,6 +1207,11 @@ function setupDataFieldLocks() {
     // 7. Usuários e Login
     applyDataFieldLock(document.getElementById('input-usuario-username'), 'username');
     applyDataFieldLock(document.getElementById('login-username'), 'username');
+
+    // 8. Edição de Séries
+    applyDataFieldLock(document.getElementById('edit-unit-serial'), 'alphanumeric');
+    applyDataFieldLock(document.getElementById('edit-unit-gpon'), 'alphanumeric');
+    applyDataFieldLock(document.getElementById('edit-unit-mac'), 'alphanumeric');
 }
 
 function updateFormFields() {
@@ -1537,9 +1543,14 @@ async function loadRecentRecebimentos() {
                 <span style="color: var(--text-secondary)">${dateStr}</span>
                 <span style="color: var(--primary-color); font-size: 0.8rem;">${item.usuario || ''}</span>
             </div>
-            <span class="badge ${item.noPreAlerta ? 'badge-success' : 'badge-danger'}">
-                ${item.noPreAlerta ? 'PRE-ALERTA' : 'SEGREGADO'}
-            </span>
+            <div style="display: flex; align-items: center; gap: 8px;">
+                <span class="badge ${item.noPreAlerta ? 'badge-success' : 'badge-danger'}">
+                    ${item.noPreAlerta ? 'PRE-ALERTA' : 'SEGREGADO'}
+                </span>
+                <button type="button" class="btn btn-secondary btn-icon" onclick="handleEditarRecentRecebimento('${escapeHtml(item.serial)}')" title="Editar Séries" style="padding: 4px 8px; font-size: 0.8rem; background: rgba(59, 130, 246, 0.2); border-color: rgba(59, 130, 246, 0.4); color: #93c5fd;">
+                    ✏️
+                </button>
+            </div>
         `;
         listEl.appendChild(li);
     });
@@ -1888,7 +1899,10 @@ function renderPalletData(pallet, items) {
                         <td style="padding: 8px 10px; font-weight: 600; color: var(--text-primary); font-family: monospace;">${item.serial_number || '---'}</td>
                         <td style="padding: 8px 10px; color: var(--primary-color);">${item.modelo || '---'}</td>
                         <td style="padding: 8px 10px; color: var(--text-secondary); font-size: 0.8rem;">${hora}</td>
-                        <td style="padding: 8px 10px; text-align: right;">
+                        <td style="padding: 8px 10px; text-align: right; white-space: nowrap;">
+                            <button onclick="handleEditarItemPallet('${escapeHtml(item.serial_number)}', '${escapeHtml(item.gpon_id || '')}', '${escapeHtml(item.mac || '')}', '${escapeHtml(item.modelo || '')}')" class="btn btn-secondary" style="padding: 2px 8px; font-size: 0.75rem; background: rgba(59, 130, 246, 0.2); color: #93c5fd; border: 1px solid rgba(59, 130, 246, 0.4); margin-right: 4px;" title="Editar Séries">
+                                ✏️
+                            </button>
                             <button onclick="handleRemoverItemPallet(${item.id})" class="btn btn-secondary" style="padding: 2px 8px; font-size: 0.75rem; background: rgba(244, 63, 94, 0.2); color: #f43f5e; border: 1px solid rgba(244, 63, 94, 0.4);" title="Remover unidade do pallet">
                                 &times;
                             </button>
@@ -2859,13 +2873,16 @@ function limparConsulta() {
     }
 }
 
-async function executarConsultaUnidade() {
+async function executarConsultaUnidade(termoOverride = null) {
     const inputTermo = document.getElementById('consulta-input-termo');
     const feedback = document.getElementById('consulta-feedback');
     const container = document.getElementById('consulta-resultado-container');
     const btnConsultar = document.getElementById('btn-consultar-unidade');
 
     if (!inputTermo) return;
+    if (termoOverride) {
+        inputTermo.value = termoOverride;
+    }
     const query = inputTermo.value.trim();
 
     if (!query) {
@@ -2941,6 +2958,16 @@ async function executarConsultaUnidade() {
 
 function renderConsultaResultado(data) {
     const { unit, history } = data;
+
+    // Guarda dados da unidade atual consultada para permitir edição de séries
+    currentConsultedUnitData = {
+        ...unit,
+        recebimento_id: data.detalhes?.recebimento?.id || null,
+        serial_number: unit.serial_number || '',
+        gpon_id: unit.gpon_id || '',
+        mac: unit.mac || '',
+        modelo: unit.modelo || ''
+    };
 
     // Elementos de Texto
     const txtModelo = document.getElementById('consulta-txt-modelo');
@@ -3059,5 +3086,328 @@ function formatarDataHoraConsulta(isoString) {
     }
 }
 
+// ============================================================
+// Edição das Séries da Unidade (Serial, GPON, MAC)
+// ============================================================
+let currentConsultedUnitData = null;
 
+function setupEditarSeriesModal() {
+    const form = document.getElementById('form-editar-series');
+    const btnClose = document.getElementById('btn-close-modal-edit-series');
+    const btnCancel = document.getElementById('btn-cancel-edit-series');
+    const btnConsultaEditar = document.getElementById('btn-consulta-editar-series');
+    const selectModelo = document.getElementById('edit-unit-modelo');
 
+    if (btnClose) {
+        btnClose.addEventListener('click', fecharModalEditarSeries);
+    }
+    if (btnCancel) {
+        btnCancel.addEventListener('click', fecharModalEditarSeries);
+    }
+
+    if (btnConsultaEditar) {
+        btnConsultaEditar.addEventListener('click', () => {
+            if (!currentConsultedUnitData) {
+                alert('Nenhuma unidade consultada no momento.');
+                return;
+            }
+            abrirModalEditarSeries(currentConsultedUnitData);
+        });
+    }
+
+    if (selectModelo) {
+        selectModelo.addEventListener('change', () => {
+            atualizarCamposModalEditar(selectModelo.value);
+        });
+    }
+
+    if (form) {
+        form.addEventListener('submit', async (e) => {
+            e.preventDefault();
+            await salvarEdicaoSeries();
+        });
+    }
+}
+
+function atualizarCamposModalEditar(modelo) {
+    const isException = (window.modelFieldsConfig && window.modelFieldsConfig[modelo] === 2);
+    const labelOpt = document.getElementById('label-edit-gpon-opt');
+    const inputGpon = document.getElementById('edit-unit-gpon');
+    if (labelOpt && inputGpon) {
+        if (isException) {
+            labelOpt.textContent = 'Não aplicável para este modelo';
+            inputGpon.placeholder = '(Não aplicável)';
+        } else {
+            labelOpt.textContent = 'Obrigatório';
+            inputGpon.placeholder = 'Digite o GPON / PON ID';
+        }
+    }
+}
+
+function fecharModalEditarSeries() {
+    const modal = document.getElementById('modal-editar-series');
+    if (modal) modal.classList.add('hidden');
+    const statusMsg = document.getElementById('edit-series-status');
+    if (statusMsg) {
+        statusMsg.classList.add('hidden');
+        statusMsg.textContent = '';
+    }
+}
+
+async function abrirModalEditarSeries(dados) {
+    if (!dados) return;
+    const modal = document.getElementById('modal-editar-series');
+    if (!modal) return;
+
+    // Popula select de modelos
+    const selectModelo = document.getElementById('edit-unit-modelo');
+    if (selectModelo) {
+        selectModelo.innerHTML = '';
+        let modelos = [];
+        try {
+            const keys = await dbModelos.keys();
+            for (const k of keys) {
+                const m = await dbModelos.getItem(k);
+                if (m) modelos.push(m);
+            }
+        } catch (e) {}
+        if (modelos.length === 0 && typeof defaultModels !== 'undefined') {
+            modelos = defaultModels;
+        }
+        modelos.forEach(m => {
+            const opt = document.createElement('option');
+            opt.value = m.name;
+            opt.textContent = m.name;
+            opt.style.color = '#000';
+            selectModelo.appendChild(opt);
+        });
+
+        // Se o modelo da unidade não estiver na lista, adiciona
+        if (dados.modelo && !Array.from(selectModelo.options).some(o => o.value === dados.modelo)) {
+            const opt = document.createElement('option');
+            opt.value = dados.modelo;
+            opt.textContent = dados.modelo;
+            opt.style.color = '#000';
+            selectModelo.appendChild(opt);
+        }
+
+        if (dados.modelo) {
+            selectModelo.value = dados.modelo;
+        }
+    }
+
+    // Popula campos hidden e inputs
+    const inputId = document.getElementById('edit-unit-id');
+    const inputOldSerial = document.getElementById('edit-unit-old-serial');
+    const inputOldGpon = document.getElementById('edit-unit-old-gpon');
+    const inputOldMac = document.getElementById('edit-unit-old-mac');
+
+    const inputSerial = document.getElementById('edit-unit-serial');
+    const inputGpon = document.getElementById('edit-unit-gpon');
+    const inputMac = document.getElementById('edit-unit-mac');
+    const inputMotivo = document.getElementById('edit-unit-motivo');
+
+    const serialVal = dados.serial_number || dados.serial || '';
+    const gponVal = dados.gpon_id || dados.pon || '';
+    const macVal = dados.mac || '';
+
+    if (inputId) inputId.value = dados.recebimento_id || dados.id || '';
+    if (inputOldSerial) inputOldSerial.value = serialVal;
+    if (inputOldGpon) inputOldGpon.value = gponVal;
+    if (inputOldMac) inputOldMac.value = macVal;
+
+    if (inputSerial) inputSerial.value = serialVal;
+    if (inputGpon) inputGpon.value = gponVal;
+    if (inputMac) inputMac.value = macVal;
+    if (inputMotivo) inputMotivo.value = '';
+
+    atualizarCamposModalEditar(selectModelo ? selectModelo.value : dados.modelo);
+
+    const statusMsg = document.getElementById('edit-series-status');
+    if (statusMsg) {
+        statusMsg.classList.add('hidden');
+        statusMsg.textContent = '';
+    }
+
+    modal.classList.remove('hidden');
+    if (inputSerial) {
+        setTimeout(() => {
+            inputSerial.focus();
+            inputSerial.select();
+        }, 100);
+    }
+}
+
+async function salvarEdicaoSeries() {
+    const inputId = document.getElementById('edit-unit-id');
+    const inputOldSerial = document.getElementById('edit-unit-old-serial');
+    const inputOldGpon = document.getElementById('edit-unit-old-gpon');
+    const inputOldMac = document.getElementById('edit-unit-old-mac');
+
+    const selectModelo = document.getElementById('edit-unit-modelo');
+    const inputSerial = document.getElementById('edit-unit-serial');
+    const inputGpon = document.getElementById('edit-unit-gpon');
+    const inputMac = document.getElementById('edit-unit-mac');
+    const inputMotivo = document.getElementById('edit-unit-motivo');
+    const statusMsg = document.getElementById('edit-series-status');
+    const btnSave = document.getElementById('btn-save-edit-series');
+
+    const showModalStatus = (msg, isError) => {
+        if (!statusMsg) return;
+        statusMsg.className = `status-message ${isError ? 'status-error' : 'status-success'}`;
+        statusMsg.innerHTML = msg;
+        statusMsg.classList.remove('hidden');
+    };
+
+    const newSerial = (inputSerial ? inputSerial.value : '').trim().toUpperCase();
+    const newGpon = (inputGpon ? inputGpon.value : '').trim().toUpperCase();
+    const newMac = (inputMac ? inputMac.value : '').trim().toUpperCase();
+    const newModelo = selectModelo ? selectModelo.value : '';
+    const motivo = inputMotivo ? inputMotivo.value.trim() : '';
+
+    const oldSerial = inputOldSerial ? inputOldSerial.value : '';
+    const oldGpon = inputOldGpon ? inputOldGpon.value : '';
+    const oldMac = inputOldMac ? inputOldMac.value : '';
+    const recId = inputId && inputId.value ? parseInt(inputId.value, 10) : null;
+
+    if (!newSerial) {
+        showModalStatus('⚠️ O Serial Number é obrigatório.', true);
+        if (inputSerial) inputSerial.focus();
+        return;
+    }
+    if (!newMac) {
+        showModalStatus('⚠️ O Endereço MAC é obrigatório.', true);
+        if (inputMac) inputMac.focus();
+        return;
+    }
+
+    if (newMac.length !== 12) {
+        showModalStatus('⚠️ O Endereço MAC deve conter exatamente 12 caracteres.', true);
+        if (inputMac) inputMac.focus();
+        return;
+    }
+
+    if (/[^A-Za-z0-9]/.test(newSerial) || (newGpon && /[^A-Za-z0-9]/.test(newGpon)) || /[^A-Za-z0-9]/.test(newMac)) {
+        showModalStatus('🚫 Caracteres especiais não são permitidos nas séries!', true);
+        return;
+    }
+
+    const isException = (window.modelFieldsConfig && window.modelFieldsConfig[newModelo] === 2);
+    if (!isException && !newGpon) {
+        showModalStatus(`⚠️ Para o modelo ${newModelo}, o GPON ID é obrigatório.`, true);
+        if (inputGpon) inputGpon.focus();
+        return;
+    }
+
+    if (btnSave) btnSave.disabled = true;
+    showModalStatus('Salvando alterações no banco de dados...', false);
+
+    try {
+        const payload = {
+            recebimento_id: isNaN(recId) ? null : recId,
+            old_serial: oldSerial,
+            old_gpon: oldGpon,
+            old_mac: oldMac,
+            new_serial: newSerial,
+            new_gpon: isException ? '' : newGpon,
+            new_mac: newMac,
+            new_modelo: newModelo,
+            motivo: motivo,
+            usuario: currentUser ? currentUser.username : 'OPERADOR'
+        };
+
+        const res = await fetch(`${SERVER_URL.replace(/\/$/, '')}/api/unidades/editar-series`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload)
+        });
+
+        const data = await res.json();
+        if (btnSave) btnSave.disabled = false;
+
+        if (!res.ok || !data.success) {
+            showModalStatus(`❌ ${data.error || 'Erro ao salvar alterações no servidor.'}`, true);
+            return;
+        }
+
+        // Atualiza LocalForage dbRecebidos se presente
+        try {
+            const keys = await dbRecebidos.keys();
+            for (const k of keys) {
+                const item = await dbRecebidos.getItem(k);
+                if (item && (item.serial === oldSerial || item.mac === oldMac || (oldGpon && item.pon === oldGpon))) {
+                    item.serial = newSerial;
+                    item.pon = isException ? '' : newGpon;
+                    item.mac = newMac;
+                    item.modelo = newModelo;
+                    if (data.updated && typeof data.updated.no_pre_alerta !== 'undefined') {
+                        item.noPreAlerta = data.updated.no_pre_alerta;
+                    }
+                    await dbRecebidos.setItem(k, item);
+                    break;
+                }
+            }
+        } catch (localErr) {
+            console.warn('Erro ao atualizar cache local:', localErr);
+        }
+
+        showModalStatus('✅ Séries atualizadas com sucesso!', false);
+
+        setTimeout(async () => {
+            fecharModalEditarSeries();
+
+            // Atualiza tela correspondente
+            const activeTab = document.querySelector('.tab-content.active');
+            if (activeTab && activeTab.id === 'consulta') {
+                await executarConsultaUnidade(newSerial);
+            } else if (activeTab && activeTab.id === 'recebimento') {
+                await loadRecentRecebimentos();
+                await updateCounters();
+            } else if (activeTab && activeTab.id === 'expedicao-pintura') {
+                if (typeof currentExpedicaoPallet !== 'undefined' && currentExpedicaoPallet) {
+                    await selecionarPalletAberto(currentExpedicaoPallet.codigo_pallet);
+                } else {
+                    await loadActivePallet();
+                }
+            } else if (activeTab && activeTab.id === 'retorno-pintura') {
+                await loadRetornoPinturaData();
+            }
+        }, 700);
+
+    } catch (err) {
+        console.error('Erro de conexão ao salvar edição de séries:', err);
+        if (btnSave) btnSave.disabled = false;
+        showModalStatus('❌ Erro de conexão com o servidor. Tente novamente.', true);
+    }
+}
+
+// Helpers globais chamados diretamente de botões nas tabelas
+function handleEditarRecentRecebimento(serial) {
+    dbRecebidos.iterate((item) => {
+        if (item.serial === serial) {
+            abrirModalEditarSeries({
+                id: item.id,
+                serial_number: item.serial,
+                gpon_id: item.pon,
+                mac: item.mac,
+                modelo: item.modelo
+            });
+            return item;
+        }
+    }).catch(err => {
+        console.error(err);
+        // Fallback: consulta no servidor
+        abrirModalEditarSeries({
+            serial_number: serial
+        });
+    });
+}
+
+function handleEditarItemPallet(serial, gpon, mac, modelo) {
+    abrirModalEditarSeries({
+        serial_number: serial,
+        gpon_id: gpon,
+        mac: mac,
+        modelo: modelo
+    });
+}

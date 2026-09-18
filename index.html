@@ -55,7 +55,7 @@
                 <div class="sidebar-user-info">
                     <span class="sidebar-user-label">Usuário Logado</span>
                     <strong id="display-user-name" class="sidebar-user-name">---</strong>
-                    <span class="sidebar-version" style="font-size: 0.7rem; color: rgba(255, 255, 255, 0.3); display: block; margin-top: 4px; font-weight: 500;">v1.5.3</span>
+                    <span class="sidebar-version" style="font-size: 0.7rem; color: rgba(255, 255, 255, 0.3); display: block; margin-top: 4px; font-weight: 500;">v1.5.4</span>
                 </div>
                 <button id="btn-logout" class="btn btn-secondary btn-icon" title="Sair">
                     <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"></path><polyline points="16 17 21 12 16 7"></polyline><line x1="21" y1="12" x2="9" y2="12"></line></svg>
@@ -545,9 +545,15 @@
                                     <span id="consulta-badge-prealerta" class="consulta-badge badge-neutral">---</span>
                                 </div>
                             </div>
-                            <div style="text-align: right;">
-                                <span style="font-size: 0.8rem; color: var(--text-secondary); text-transform: uppercase; letter-spacing: 0.05em; font-weight: 600;">Modelo do Equipamento</span>
-                                <h3 id="consulta-txt-modelo" style="margin: 6px 0 0 0; font-size: 1.3rem; color: var(--text-primary);">---</h3>
+                            <div style="display: flex; align-items: center; gap: 14px; flex-wrap: wrap;">
+                                <button type="button" id="btn-consulta-editar-series" class="btn btn-primary" style="font-size: 0.85rem; padding: 8px 16px; display: flex; align-items: center; gap: 6px; background: #3b82f6; border-color: #3b82f6; font-weight: 600;" title="Editar Séries (Serial, PON, MAC) desta unidade">
+                                    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"></path><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"></path></svg>
+                                    Editar Séries
+                                </button>
+                                <div style="text-align: right;">
+                                    <span style="font-size: 0.8rem; color: var(--text-secondary); text-transform: uppercase; letter-spacing: 0.05em; font-weight: 600;">Modelo do Equipamento</span>
+                                    <h3 id="consulta-txt-modelo" style="margin: 4px 0 0 0; font-size: 1.25rem; color: var(--text-primary);">---</h3>
+                                </div>
                             </div>
                         </div>
 
@@ -748,6 +754,73 @@
             <div class="modal-actions" style="margin-top: 1.5rem;">
                 <button id="btn-fechar-modal-pallets" class="btn btn-secondary">Fechar</button>
             </div>
+        </div>
+    </div>
+
+    <!-- Modal Editar Séries da Unidade -->
+    <div id="modal-editar-series" class="modal-overlay hidden">
+        <div class="modal glass-modal" style="max-height: 90vh; overflow-y: auto; width: 550px; max-width: 95%;">
+            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.8rem; border-bottom: 1px solid rgba(255,255,255,0.1); padding-bottom: 0.75rem;">
+                <h2 style="margin: 0; display: flex; align-items: center; gap: 8px; font-size: 1.25rem;">
+                    <span>✏️</span>
+                    <span>Editar Séries da Unidade</span>
+                </h2>
+                <button type="button" id="btn-close-modal-edit-series" class="btn btn-secondary btn-icon" style="border: none; background: transparent; font-size: 1.2rem; cursor: pointer; color: var(--text-secondary);" title="Fechar">✕</button>
+            </div>
+
+            <p style="font-size: 0.85rem; color: var(--text-secondary); margin-bottom: 1.2rem; line-height: 1.4;">
+                Altere abaixo o <strong>Serial Number</strong>, <strong>GPON ID</strong> ou <strong>MAC</strong> da unidade. As alterações serão salvas no banco de dados e sincronizadas no Recebimento, Pallets e Retorno.
+            </p>
+
+            <form id="form-editar-series">
+                <input type="hidden" id="edit-unit-id">
+                <input type="hidden" id="edit-unit-old-serial">
+                <input type="hidden" id="edit-unit-old-gpon">
+                <input type="hidden" id="edit-unit-old-mac">
+
+                <div class="form-group" style="margin-bottom: 1rem; text-align: left;">
+                    <label for="edit-unit-modelo" style="font-weight: 600; font-size: 0.9rem;">Modelo do Equipamento</label>
+                    <select id="edit-unit-modelo" class="form-control" style="width: 100%; margin-top: 0.3rem; background: rgba(0,0,0,0.3); border: 1px solid rgba(255,255,255,0.2); color: white; border-radius: 8px; padding: 10px 12px;">
+                        <!-- Populated via JS -->
+                    </select>
+                </div>
+
+                <div class="form-group" style="margin-bottom: 1rem; text-align: left;">
+                    <label for="edit-unit-serial" style="font-weight: 600; font-size: 0.9rem; display: flex; justify-content: space-between;">
+                        <span>Serial Number *</span>
+                        <span style="font-size: 0.75rem; color: var(--text-secondary);">Obrigatório</span>
+                    </label>
+                    <input type="text" id="edit-unit-serial" class="scan-input" autocomplete="off" required placeholder="Digite o Serial Number" style="width: 100%; padding: 10px 14px; font-size: 1rem; text-transform: uppercase;">
+                </div>
+
+                <div class="form-group" id="group-edit-unit-gpon" style="margin-bottom: 1rem; text-align: left;">
+                    <label for="edit-unit-gpon" style="font-weight: 600; font-size: 0.9rem; display: flex; justify-content: space-between;">
+                        <span>GPON ID / PON ID</span>
+                        <span id="label-edit-gpon-opt" style="font-size: 0.75rem; color: var(--text-secondary);">Opcional para 2 campos</span>
+                    </label>
+                    <input type="text" id="edit-unit-gpon" class="scan-input" autocomplete="off" placeholder="Digite o GPON / PON ID" style="width: 100%; padding: 10px 14px; font-size: 1rem; text-transform: uppercase;">
+                </div>
+
+                <div class="form-group" style="margin-bottom: 1rem; text-align: left;">
+                    <label for="edit-unit-mac" style="font-weight: 600; font-size: 0.9rem; display: flex; justify-content: space-between;">
+                        <span>Endereço MAC *</span>
+                        <span style="font-size: 0.75rem; color: var(--text-secondary);">12 caracteres</span>
+                    </label>
+                    <input type="text" id="edit-unit-mac" class="scan-input" autocomplete="off" required maxlength="12" placeholder="Digite o MAC (12 caracteres)" style="width: 100%; padding: 10px 14px; font-size: 1rem; text-transform: uppercase;">
+                </div>
+
+                <div class="form-group" style="margin-bottom: 1.2rem; text-align: left;">
+                    <label for="edit-unit-motivo" style="font-weight: 600; font-size: 0.9rem;">Motivo da Alteração (Opcional)</label>
+                    <input type="text" id="edit-unit-motivo" class="form-control" placeholder="Ex: Correção de digitação / bipagem errada" style="width: 100%; padding: 10px 14px; font-size: 0.9rem; background: rgba(0,0,0,0.2); border: 1px solid rgba(255,255,255,0.15); border-radius: 8px; color: white;">
+                </div>
+
+                <div id="edit-series-status" class="status-message hidden" style="margin-bottom: 1rem;"></div>
+
+                <div class="modal-actions" style="margin-top: 1.2rem; display: flex; gap: 10px; justify-content: flex-end;">
+                    <button type="button" id="btn-cancel-edit-series" class="btn btn-secondary" style="padding: 10px 18px;">Cancelar</button>
+                    <button type="submit" id="btn-save-edit-series" class="btn btn-primary" style="padding: 10px 22px; background: #3b82f6; border-color: #3b82f6;">Salvar Alterações</button>
+                </div>
+            </form>
         </div>
     </div>
 
