@@ -1,4 +1,4 @@
-const CURRENT_APP_VERSION = 'v1.5.4';
+const CURRENT_APP_VERSION = 'v1.5.5';
 
 function startVersionPolling() {
     setInterval(async () => {
@@ -160,6 +160,8 @@ function escapeHtml(text) {
 }
 
 function showLoginOverlay() {
+    const toast = document.getElementById('special-char-toast');
+    if (toast) toast.classList.remove('show');
     document.getElementById('login-overlay').classList.remove('hidden');
     document.getElementById('login-username').value = '';
     document.getElementById('login-password').value = '';
@@ -1032,6 +1034,15 @@ function playErrorBeep() {
 }
 
 function notifySpecialCharError(inputElement, charInfo = '') {
+    // Este aviso visual (toast), aviso sonoro (bip) e destaque são EXCLUSIVOS para o momento de Recebimento de Unidades
+    const activeTab = document.querySelector('.tab-content.active');
+    const isRecebimentoTab = activeTab && activeTab.id === 'recebimento';
+    const isRecebimentoInput = inputElement && (inputElement.id === 'serial' || inputElement.id === 'pon' || inputElement.id === 'mac');
+
+    if (!isRecebimentoTab || !isRecebimentoInput) {
+        return;
+    }
+
     // 1. Toca bip sonoro de alerta de erro
     playErrorBeep();
 
@@ -1075,24 +1086,8 @@ function notifySpecialCharError(inputElement, charInfo = '') {
         toast.classList.remove('show');
     }, 3500);
 
-    // 4. Também atualiza a área de mensagens da aba ativa
-    const activeTab = document.querySelector('.tab-content.active');
-    if (activeTab) {
-        if (activeTab.id === 'recebimento') {
-            showMessage('🚫 ERRO: Caractere especial não permitido! Apenas letras e números são aceitos.', 'error');
-        } else if (activeTab.id === 'expedicao-pintura') {
-            showExpedicaoStatus('🚫 <strong>ERRO</strong>: Caractere especial não permitido! Apenas letras e números são aceitos.', true);
-        } else if (activeTab.id === 'retorno-pintura') {
-            showRetornoStatus('🚫 <strong>ERRO</strong>: Caractere especial não permitido! Apenas letras e números são aceitos.', true);
-        } else if (activeTab.id === 'consulta') {
-            const feedback = document.getElementById('consulta-feedback');
-            if (feedback) {
-                feedback.className = 'status-message status-error';
-                feedback.innerHTML = '🚫 <strong>ERRO</strong>: Caractere especial não permitido! Apenas letras e números são aceitos na consulta.';
-                feedback.classList.remove('hidden');
-            }
-        }
-    }
+    // 4. Também atualiza a área de mensagens da aba Recebimento
+    showMessage('🚫 ERRO: Caractere especial não permitido! Apenas letras e números são aceitos.', 'error');
 }
 
 function applyDataFieldLock(inputElement, allowedType = 'alphanumeric') {
@@ -1181,7 +1176,7 @@ function applyDataFieldLock(inputElement, allowedType = 'alphanumeric') {
 }
 
 function setupDataFieldLocks() {
-    // 1. Recebimento de Unidades
+    // 1. Recebimento de Unidades (Apenas campos de bipagem da unidade)
     applyDataFieldLock(document.getElementById('serial'), 'alphanumeric');
     applyDataFieldLock(document.getElementById('pon'), 'alphanumeric');
     applyDataFieldLock(document.getElementById('mac'), 'alphanumeric');
@@ -1195,20 +1190,7 @@ function setupDataFieldLocks() {
     // 4. Consulta de Unidades
     applyDataFieldLock(document.getElementById('consulta-input-termo'), 'alphanumeric');
 
-    // 5. Histórico de Pallets
-    applyDataFieldLock(document.getElementById('input-busca-pallets'), 'alphanumeric');
-
-    // 6. Cadastro / Edição de Modelo
-    applyDataFieldLock(document.getElementById('input-novo-modelo'), 'model-name');
-    applyDataFieldLock(document.getElementById('rule-serial'), 'rule-prefix');
-    applyDataFieldLock(document.getElementById('rule-pon'), 'rule-prefix');
-    applyDataFieldLock(document.getElementById('rule-mac'), 'rule-prefix');
-
-    // 7. Usuários e Login
-    applyDataFieldLock(document.getElementById('input-usuario-username'), 'username');
-    applyDataFieldLock(document.getElementById('login-username'), 'username');
-
-    // 8. Edição de Séries
+    // 5. Edição de Séries da Unidade
     applyDataFieldLock(document.getElementById('edit-unit-serial'), 'alphanumeric');
     applyDataFieldLock(document.getElementById('edit-unit-gpon'), 'alphanumeric');
     applyDataFieldLock(document.getElementById('edit-unit-mac'), 'alphanumeric');
@@ -1266,8 +1248,10 @@ function validateModelFields(modelo, serial, pon, mac) {
     } else if (modelo === "BCSKV630") {
         if (serial.length >= 6) {
             const last6Serial = serial.slice(-6);
-            if (!mac.startsWith("149448" + last6Serial))
-                return { valid: false, error: "Para BCSKV630, o MAC deve ser 149448 seguido dos ultimos 6 caracteres do SERIAL." };
+            const prefixes = rules.mac ? rules.mac.split(',').map(p => p.trim()).filter(Boolean) : ["149448"];
+            const matchesAnyPrefix = prefixes.some(p => mac.startsWith(p + last6Serial));
+            if (!matchesAnyPrefix)
+                return { valid: false, error: `Para BCSKV630, o MAC deve ser (${prefixes.join(' ou ')}) seguido dos ultimos 6 caracteres do SERIAL.` };
         }
     } else if (modelo === "NP7287") {
         if (pon.length >= 6) {
@@ -1807,7 +1791,11 @@ function setupReportListeners() {
 
 function getRulesDescription(modelo) {
     if (modelo === "BC-UM221E") return "Ultimos 6 do MAC = Ultimos 6 do SERIAL";
-    if (modelo === "BCSKV630") return "MAC = '149448' + Ultimos 6 do SERIAL";
+    if (modelo === "BCSKV630") {
+        const rules = window.modelRulesConfig && window.modelRulesConfig[modelo];
+        const pref = (rules && rules.mac) ? rules.mac.replace(/,/g, ' ou ') : '149448';
+        return `MAC = (${pref}) + Ultimos 6 do SERIAL`;
+    }
     if (modelo === "NP7287") return "MAC deve terminar com os ultimos caracteres do PON ID";
     if (modelo === "ZXHN F6600P") return "SERIAL e PON ID nao podem ter mesmo prefixo (ZTE3 ou ZTEGD)";
     return "";
