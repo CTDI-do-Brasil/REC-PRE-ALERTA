@@ -412,7 +412,7 @@ app.post('/api/recebimentos', async (req, res) => {
   let destinoTipo = null;
 
   try {
-    if (isF6600P && body.noPreAlerta) {
+    if (isF6600P) {
       if (secondPool && cleanPon) {
         try {
           const checkQuery = `
@@ -423,23 +423,31 @@ app.post('/api/recebimentos', async (req, res) => {
           const checkRes = await secondPool.query(checkQuery, [cleanPon]);
           if (checkRes.rows.length > 0) {
             superUserStatus = 'Sim';
-            destinoMsg = 'Enviar essa unidade para o laboratório';
-            destinoTipo = 'laboratorio';
+            if (body.noPreAlerta) {
+              destinoMsg = 'Enviar essa unidade para o laboratório';
+              destinoTipo = 'laboratorio';
+            }
           } else {
             superUserStatus = 'Não';
-            destinoMsg = 'Separe essa unidade para a engenharia';
-            destinoTipo = 'engenharia';
+            if (body.noPreAlerta) {
+              destinoMsg = 'Separe essa unidade para a engenharia';
+              destinoTipo = 'engenharia';
+            }
           }
         } catch (secDbErr) {
           console.error('Error querying second DB for F6600P gpon_sn:', secDbErr);
           superUserStatus = 'Não';
-          destinoMsg = 'Separe essa unidade para a engenharia';
-          destinoTipo = 'engenharia';
+          if (body.noPreAlerta) {
+            destinoMsg = 'Separe essa unidade para a engenharia';
+            destinoTipo = 'engenharia';
+          }
         }
       } else {
         superUserStatus = 'Não';
-        destinoMsg = 'Separe essa unidade para a engenharia';
-        destinoTipo = 'engenharia';
+        if (body.noPreAlerta) {
+          destinoMsg = 'Separe essa unidade para a engenharia';
+          destinoTipo = 'engenharia';
+        }
       }
     }
 
@@ -586,12 +594,11 @@ app.get('/api/admin/sync-f6600p', async (req, res) => {
   const forceAll = force === 'true' || force === '1';
 
   try {
-    // 1. Get all F6600P units in pre-alerta
+    // 1. Get all F6600P units (inside and outside pre-alerta)
     let selectQuery = `
-      SELECT id, serial_number, gpon_id, super_user
+      SELECT id, serial_number, gpon_id, super_user, no_pre_alerta
       FROM recebimentos
       WHERE UPPER(modelo) LIKE '%F6600P%'
-        AND no_pre_alerta = true
         AND gpon_id IS NOT NULL 
         AND TRIM(gpon_id) != ''
     `;
@@ -649,8 +656,11 @@ app.get('/api/admin/sync-f6600p', async (req, res) => {
           id: r.id,
           serial: r.serial_number,
           gpon: r.gpon_id,
+          no_pre_alerta: r.no_pre_alerta,
           super_user: isSim ? 'Sim' : 'Não',
-          destino: isSim ? 'Enviar essa unidade para o laboratório' : 'Separe essa unidade para a engenharia'
+          destino: r.no_pre_alerta
+            ? (isSim ? 'Enviar essa unidade para o laboratório' : 'Separe essa unidade para a engenharia')
+            : 'Fora do pré-alerta (sem aviso em tela)'
         });
       }
     }
@@ -1711,7 +1721,7 @@ async function handleEditarSeries(req, res) {
 
     let superUserEdit = null;
     const isF6600PEdit = cleanModelo && cleanModelo.toUpperCase().includes('F6600P');
-    if (isF6600PEdit && isNoPreAlerta) {
+    if (isF6600PEdit) {
       if (secondPool && cleanNewGpon) {
         try {
           const chk = await secondPool.query(
