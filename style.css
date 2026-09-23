@@ -376,6 +376,20 @@ input[type="date"]::-webkit-calendar-picker-indicator {
     border: 1px solid var(--danger-color);
 }
 
+.status-laboratorio {
+    background-color: rgba(245, 158, 11, 0.18);
+    color: #fbbf24;
+    border: 2px solid #f59e0b;
+    letter-spacing: 0.5px;
+}
+
+.status-engenharia {
+    background-color: rgba(59, 130, 246, 0.18);
+    color: #60a5fa;
+    border: 2px solid #3b82f6;
+    letter-spacing: 0.5px;
+}
+
 /* Modals */
 .modal-overlay {
     position: fixed;

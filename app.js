@@ -1428,9 +1428,15 @@ async function processRecebimento() {
             unitData.codigo = preAlertaMatch.codigo;
             unitData.descricao = preAlertaMatch.descricao;
             unitData.fabricante = preAlertaMatch.fabricante;
-            await saveRecebimento(unitData);
-            showMessage('RECEBIDO', 'success');
-            setTimeout(hideMessage, 2000);
+            const saveRes = await saveRecebimento(unitData);
+            if (saveRes && saveRes.destinoMsg) {
+                const statusClass = saveRes.destinoTipo || 'laboratorio';
+                showMessage(saveRes.destinoMsg, statusClass);
+                setTimeout(hideMessage, 5000);
+            } else {
+                showMessage('RECEBIDO', 'success');
+                setTimeout(hideMessage, 2000);
+            }
             isProcessingRecebimento = false;
             if (btnReceber) btnReceber.disabled = false;
         } else {
@@ -1465,27 +1471,36 @@ async function confirmSegregar() {
 }
 
 async function saveRecebimento(unitData) {
-    await dbRecebidos.setItem(unitData.id, unitData);
     const isException = (window.modelFieldsConfig[unitData.modelo] === 2);
     document.getElementById('serial').value = '';
     if (!isException) document.getElementById('pon').value = '';
     document.getElementById('mac').value = '';
     document.getElementById('serial').focus();
+
+    // send to backend to persist in Postgres
+    let serverResponse = null;
+    try {
+        const resp = await fetch((SERVER_URL.replace(/\/$/, '') + '/api/recebimentos'), {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(unitData)
+        });
+        if (resp.ok) {
+            serverResponse = await resp.json();
+            if (serverResponse && serverResponse.super_user) {
+                unitData.super_user = serverResponse.super_user;
+                unitData.Super_User = serverResponse.super_user;
+            }
+        }
+    } catch (err) {
+        console.warn('Failed to send recebimento to server:', err);
+    }
+
+    await dbRecebidos.setItem(unitData.id, unitData);
     await updateCounters();
     await loadRecentRecebimentos();
 
-    // send to backend to persist in Postgres (best-effort)
-    (async () => {
-        try {
-            await fetch((SERVER_URL.replace(/\/$/, '') + '/api/recebimentos'), {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify(unitData)
-            });
-        } catch (err) {
-            console.warn('Failed to send recebimento to server:', err);
-        }
-    })();
+    return serverResponse;
 }
 
 async function updateCounters() {
@@ -1520,6 +1535,14 @@ async function loadRecentRecebimentos() {
         const li = document.createElement('li');
         li.className = 'recent-item ' + (item.noPreAlerta ? 'pre-alerta' : 'segregado');
         const dateStr = new Date(item.dataHora).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' });
+        const superUserVal = item.super_user || item.Super_User;
+        let superUserBadge = '';
+        if (superUserVal === 'Sim') {
+            superUserBadge = `<span class="badge" style="background: rgba(245, 158, 11, 0.2); color: #fbbf24; border: 1px solid #f59e0b;">LABORATÓRIO</span>`;
+        } else if (superUserVal === 'Não') {
+            superUserBadge = `<span class="badge" style="background: rgba(59, 130, 246, 0.2); color: #60a5fa; border: 1px solid #3b82f6;">ENGENHARIA</span>`;
+        }
+
         li.innerHTML = `
             <div class="recent-item-info">
                 <strong>${item.serial}</strong>
@@ -1528,6 +1551,7 @@ async function loadRecentRecebimentos() {
                 <span style="color: var(--primary-color); font-size: 0.8rem;">${item.usuario || ''}</span>
             </div>
             <div style="display: flex; align-items: center; gap: 8px;">
+                ${superUserBadge}
                 <span class="badge ${item.noPreAlerta ? 'badge-success' : 'badge-danger'}">
                     ${item.noPreAlerta ? 'PRE-ALERTA' : 'SEGREGADO'}
                 </span>
@@ -1585,6 +1609,7 @@ function setupReportListeners() {
                 "GPON ID": item.gpon_id || '',
                 MAC: item.mac || '',
                 "Serial_Pre_Alerta": item.matched_value || '',
+                "Super_User": item.super_user || '',
                 "Usuário": item.usuario || '',
                 Data_Hora: new Date(item.data_hora).toLocaleString('pt-BR'),
                 "Código": item.codigo || '',
@@ -1627,6 +1652,7 @@ function setupReportListeners() {
                 "GPON ID": item.gpon_id || '',
                 MAC: item.mac || '',
                 "Serial_Pre_Alerta": item.matched_value || '',
+                "Super_User": item.super_user || '',
                 "Usuário": item.usuario || '',
                 Data_Hora: new Date(item.data_hora).toLocaleString('pt-BR'),
                 Status: item.status || 'Recebida'

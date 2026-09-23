@@ -69,7 +69,8 @@ async function ensureDBAndMinIO() {
       no_pre_alerta BOOLEAN,
       matched_value TEXT,
       codigo TEXT,
-      descricao TEXT
+      descricao TEXT,
+      super_user TEXT
     )`);
 
     // Migrate data from recebimentos_old to the new table
@@ -180,6 +181,9 @@ async function ensureDBAndMinIO() {
     await client.query(`ALTER TABLE recebimentos ADD COLUMN IF NOT EXISTS status TEXT DEFAULT 'Recebida'`);
     await client.query(`UPDATE recebimentos SET status = 'Recebida' WHERE status IS NULL`);
     await client.query(`ALTER TABLE pallet_pintura_itens ADD COLUMN IF NOT EXISTS status TEXT DEFAULT 'Em Pallet'`);
+
+    // Ensure super_user column in recebimentos
+    await client.query(`ALTER TABLE recebimentos ADD COLUMN IF NOT EXISTS super_user TEXT`);
 
     console.log('Postgres tables verified/created successfully.');
   } catch (err) {
@@ -402,9 +406,45 @@ app.post('/api/recebimentos', async (req, res) => {
   const cleanPon = sanitizeDataCode(rawPon);
   const cleanMac = sanitizeDataCode(rawMac);
 
+  const isF6600P = body.modelo && body.modelo.trim().toUpperCase().includes('F6600P');
+  let superUserStatus = null;
+  let destinoMsg = null;
+  let destinoTipo = null;
+
   try {
-    const query = `INSERT INTO recebimentos(fabricante, modelo, serial_number, gpon_id, mac, usuario, data_hora, no_pre_alerta, matched_value, codigo, descricao, status)
-      VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)`;
+    if (isF6600P && body.noPreAlerta) {
+      if (secondPool && cleanPon) {
+        try {
+          const checkQuery = `
+            SELECT 1 FROM etiquetas_scan_onu
+            WHERE UPPER(TRIM(gpon_sn)) = UPPER(TRIM($1))
+            LIMIT 1
+          `;
+          const checkRes = await secondPool.query(checkQuery, [cleanPon]);
+          if (checkRes.rows.length > 0) {
+            superUserStatus = 'Sim';
+            destinoMsg = 'Enviar essa unidade para o laboratório';
+            destinoTipo = 'laboratorio';
+          } else {
+            superUserStatus = 'Não';
+            destinoMsg = 'Separe essa unidade para a engenharia';
+            destinoTipo = 'engenharia';
+          }
+        } catch (secDbErr) {
+          console.error('Error querying second DB for F6600P gpon_sn:', secDbErr);
+          superUserStatus = 'Não';
+          destinoMsg = 'Separe essa unidade para a engenharia';
+          destinoTipo = 'engenharia';
+        }
+      } else {
+        superUserStatus = 'Não';
+        destinoMsg = 'Separe essa unidade para a engenharia';
+        destinoTipo = 'engenharia';
+      }
+    }
+
+    const query = `INSERT INTO recebimentos(fabricante, modelo, serial_number, gpon_id, mac, usuario, data_hora, no_pre_alerta, matched_value, codigo, descricao, status, super_user)
+      VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)`;
     const params = [
       body.fabricante || null,
       body.modelo,
@@ -417,7 +457,8 @@ app.post('/api/recebimentos', async (req, res) => {
       body.matchedValue || null,
       body.codigo || null,
       body.descricao || null,
-      'Recebida'
+      'Recebida',
+      superUserStatus
     ];
     await pool.query(query, params);
 
@@ -441,7 +482,13 @@ app.post('/api/recebimentos', async (req, res) => {
       }
     }
 
-    res.json({ ok: true });
+    res.json({
+      ok: true,
+      super_user: superUserStatus,
+      Super_User: superUserStatus,
+      destinoMsg,
+      destinoTipo
+    });
   } catch (err) {
     console.error('Error saving recebimento:', err);
     res.status(500).json({ error: 'DB error' });
@@ -583,7 +630,7 @@ app.get('/api/external/units', async (req, res) => {
 
   try {
     const result = await pool.query(
-      `SELECT id, fabricante, modelo, serial_number, gpon_id, mac, usuario, data_hora, no_pre_alerta, matched_value, codigo, descricao
+      `SELECT id, fabricante, modelo, serial_number, gpon_id, mac, usuario, data_hora, no_pre_alerta, matched_value, codigo, descricao, super_user
        FROM recebimentos 
        WHERE UPPER(serial_number) = $1 
           OR UPPER(gpon_id) = $1 
@@ -1554,6 +1601,24 @@ async function handleEditarSeries(req, res) {
     const isNoPreAlerta = !!preMatch;
     const matchedValue = preMatch ? preMatch.serial : null;
 
+    let superUserEdit = null;
+    const isF6600PEdit = cleanModelo && cleanModelo.toUpperCase().includes('F6600P');
+    if (isF6600PEdit && isNoPreAlerta) {
+      if (secondPool && cleanNewGpon) {
+        try {
+          const chk = await secondPool.query(
+            'SELECT 1 FROM etiquetas_scan_onu WHERE UPPER(TRIM(gpon_sn)) = UPPER(TRIM($1)) LIMIT 1',
+            [cleanNewGpon]
+          );
+          superUserEdit = chk.rows.length > 0 ? 'Sim' : 'Não';
+        } catch (e) {
+          superUserEdit = 'Não';
+        }
+      } else {
+        superUserEdit = 'Não';
+      }
+    }
+
     // 3. Atualizar tabela recebimentos
     let recUpdated = false;
     if (recebimento_id) {
@@ -1567,7 +1632,8 @@ async function handleEditarSeries(req, res) {
              matched_value = $6,
              codigo = COALESCE($7, codigo),
              descricao = COALESCE($8, descricao),
-             fabricante = COALESCE($9, fabricante)
+             fabricante = COALESCE($9, fabricante),
+             super_user = COALESCE($11, super_user)
          WHERE id = $10
          RETURNING *`,
         [
@@ -1580,7 +1646,8 @@ async function handleEditarSeries(req, res) {
           preMatch ? preMatch.codigo : null,
           preMatch ? preMatch.descricao : null,
           preMatch ? preMatch.fabricante : null,
-          recebimento_id
+          recebimento_id,
+          superUserEdit
         ]
       );
       recUpdated = updateRecRes.rowCount > 0;
@@ -1595,7 +1662,8 @@ async function handleEditarSeries(req, res) {
              matched_value = $6,
              codigo = COALESCE($7, codigo),
              descricao = COALESCE($8, descricao),
-             fabricante = COALESCE($9, fabricante)
+             fabricante = COALESCE($9, fabricante),
+             super_user = COALESCE($11, super_user)
          WHERE (serial_number IS NOT NULL AND UPPER(TRIM(serial_number)) = ANY($10))
             OR (gpon_id IS NOT NULL AND UPPER(TRIM(gpon_id)) = ANY($10))
             OR (mac IS NOT NULL AND UPPER(TRIM(mac)) = ANY($10))
@@ -1610,7 +1678,8 @@ async function handleEditarSeries(req, res) {
           preMatch ? preMatch.codigo : null,
           preMatch ? preMatch.descricao : null,
           preMatch ? preMatch.fabricante : null,
-          oldIdentifiers
+          oldIdentifiers,
+          superUserEdit
         ]
       );
       recUpdated = updateRecRes.rowCount > 0;
@@ -1679,7 +1748,8 @@ async function handleEditarSeries(req, res) {
         gpon_id: cleanNewGpon,
         mac: cleanNewMac,
         modelo: cleanModelo,
-        no_pre_alerta: isNoPreAlerta
+        no_pre_alerta: isNoPreAlerta,
+        super_user: superUserEdit
       }
     });
   } catch (err) {
