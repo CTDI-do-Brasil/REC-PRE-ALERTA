@@ -3032,6 +3032,43 @@ function renderConsultaResultado(data) {
         }
     }
 
+    // Status da Senha (Super_User: Sim = "Com senha", Não = "Sem senha")
+    const badgeSenha = document.getElementById('consulta-badge-senha');
+    const txtSenha = document.getElementById('consulta-txt-senha');
+    const containerSenha = document.getElementById('consulta-container-senha');
+
+    const superUser = unit.super_user;
+    if (superUser === 'Sim') {
+        if (badgeSenha) {
+            badgeSenha.innerHTML = '🔑 Com senha';
+            badgeSenha.className = 'consulta-badge badge-senha-com';
+            badgeSenha.classList.remove('hidden');
+        }
+        if (txtSenha) {
+            txtSenha.textContent = 'Com senha';
+            txtSenha.style.color = '#fbbf24';
+        }
+        if (containerSenha) containerSenha.classList.remove('hidden');
+    } else if (superUser === 'Não') {
+        if (badgeSenha) {
+            badgeSenha.innerHTML = '🔓 Sem senha';
+            badgeSenha.className = 'consulta-badge badge-senha-sem';
+            badgeSenha.classList.remove('hidden');
+        }
+        if (txtSenha) {
+            txtSenha.textContent = 'Sem senha';
+            txtSenha.style.color = '#60a5fa';
+        }
+        if (containerSenha) containerSenha.classList.remove('hidden');
+    } else {
+        if (badgeSenha) badgeSenha.classList.add('hidden');
+        if (txtSenha) {
+            txtSenha.textContent = '---';
+            txtSenha.style.color = '';
+        }
+        if (containerSenha) containerSenha.classList.add('hidden');
+    }
+
     // Contador de Eventos
     const totalEventos = Array.isArray(history) ? history.length : 0;
     if (txtTotalEventos) {

@@ -1533,16 +1533,34 @@ app.get('/api/consulta-unidade/:query', async (req, res) => {
     }
 
     // Consolidar dados da unidade
+    const unitModelo = recebimento?.modelo || palletRes.rows[0]?.modelo || retornoRes.rows[0]?.modelo || 'Não identificado';
+    const unitGpon = recebimento?.gpon_id || palletRes.rows[0]?.gpon_id || retornoRes.rows[0]?.gpon_id || null;
+
+    let superUserVal = recebimento?.super_user || null;
+    const isF6600P = (unitModelo || '').toUpperCase().includes('F6600P');
+    if (!superUserVal && isF6600P && secondPool && unitGpon) {
+      try {
+        const chk = await secondPool.query(
+          'SELECT 1 FROM etiquetas_scan_onu WHERE UPPER(TRIM(gpon_sn)) = UPPER(TRIM($1)) LIMIT 1',
+          [unitGpon.trim()]
+        );
+        superUserVal = chk.rows.length > 0 ? 'Sim' : 'Não';
+      } catch (e) {
+        console.warn('Erro ao consultar segundo banco na consulta da unidade:', e.message);
+      }
+    }
+
     const unit = {
       serial_number: recebimento?.serial_number || palletRes.rows[0]?.serial_number || retornoRes.rows[0]?.serial_number || preAlerta?.serial || rawQuery,
-      gpon_id: recebimento?.gpon_id || palletRes.rows[0]?.gpon_id || retornoRes.rows[0]?.gpon_id || null,
+      gpon_id: unitGpon,
       mac: recebimento?.mac || palletRes.rows[0]?.mac || retornoRes.rows[0]?.mac || null,
-      modelo: recebimento?.modelo || palletRes.rows[0]?.modelo || retornoRes.rows[0]?.modelo || 'Não identificado',
+      modelo: unitModelo,
       fabricante: recebimento?.fabricante || palletRes.rows[0]?.fabricante || retornoRes.rows[0]?.fabricante || preAlerta?.fabricante || 'Não identificado',
       codigo: recebimento?.codigo || preAlerta?.codigo || '---',
       descricao: recebimento?.descricao || preAlerta?.descricao || '---',
       no_pre_alerta: !!(preAlerta || recebimento?.no_pre_alerta),
-      status_atual: 'Desconhecido'
+      status_atual: 'Desconhecido',
+      super_user: superUserVal
     };
 
     // Montar Linha do Tempo / Histórico
@@ -1564,10 +1582,11 @@ app.get('/api/consulta-unidade/:query', async (req, res) => {
 
     // Etapa Recebimento
     if (recebimento) {
+      const senhaInfo = superUserVal === 'Sim' ? ' | Senha: Com senha' : superUserVal === 'Não' ? ' | Senha: Sem senha' : '';
       history.push({
         etapa: 'Recebimento',
         titulo: 'Unidade Recebida no Sistema',
-        descricao: `Modelo: ${recebimento.modelo || '---'} | Serial: ${recebimento.serial_number || '---'} | PON: ${recebimento.gpon_id || '---'} | MAC: ${recebimento.mac || '---'} (${recebimento.no_pre_alerta ? 'No Pré-Alerta' : 'Fora do Pré-Alerta'})`,
+        descricao: `Modelo: ${recebimento.modelo || '---'} | Serial: ${recebimento.serial_number || '---'} | PON: ${recebimento.gpon_id || '---'} | MAC: ${recebimento.mac || '---'} (${recebimento.no_pre_alerta ? 'No Pré-Alerta' : 'Fora do Pré-Alerta'}${senhaInfo})`,
         data_hora: recebimento.data_hora,
         usuario: recebimento.usuario || 'Não registrado',
         status: recebimento.status || 'Recebida',
