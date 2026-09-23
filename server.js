@@ -575,6 +575,114 @@ app.get('/api/admin/sync-legacy', async (req, res) => {
   }
 });
 
+// Retroactive sync endpoint for ZTE F6600P
+app.get('/api/admin/sync-f6600p', async (req, res) => {
+  if (!secondPool) {
+    return res.status(400).json({ error: 'Second database connection is not configured.' });
+  }
+
+  const { limit, force } = req.query;
+  const limitNum = limit ? parseInt(limit, 10) : null;
+  const forceAll = force === 'true' || force === '1';
+
+  try {
+    // 1. Get all F6600P units in pre-alerta
+    let selectQuery = `
+      SELECT id, serial_number, gpon_id, super_user
+      FROM recebimentos
+      WHERE UPPER(modelo) LIKE '%F6600P%'
+        AND no_pre_alerta = true
+        AND gpon_id IS NOT NULL 
+        AND TRIM(gpon_id) != ''
+    `;
+    if (!forceAll) {
+      selectQuery += ` AND super_user IS NULL`;
+    }
+    selectQuery += ` ORDER BY id ASC`;
+    if (limitNum) {
+      selectQuery += ` LIMIT ${limitNum}`;
+    }
+
+    const { rows } = await pool.query(selectQuery);
+    if (rows.length === 0) {
+      return res.json({
+        success: true,
+        message: 'Nenhuma unidade F6600P pendente de sincronização.',
+        totalProcessed: 0,
+        simCount: 0,
+        naoCount: 0
+      });
+    }
+
+    // 2. Query second DB in batches of 500 for matching gpon_sn
+    const gponSet = new Set(rows.map(r => r.gpon_id.trim().toUpperCase()));
+    const gponArray = Array.from(gponSet);
+    const matchedGpons = new Set();
+
+    const chunkSize = 500;
+    for (let i = 0; i < gponArray.length; i += chunkSize) {
+      const chunk = gponArray.slice(i, i + chunkSize);
+      const secondCheckQuery = `
+        SELECT UPPER(TRIM(gpon_sn)) AS gpon_sn
+        FROM etiquetas_scan_onu
+        WHERE UPPER(TRIM(gpon_sn)) = ANY($1)
+      `;
+      const chunkRes = await secondPool.query(secondCheckQuery, [chunk]);
+      chunkRes.rows.forEach(r => matchedGpons.add(r.gpon_sn));
+    }
+
+    // 3. Separate IDs into SIM and NAO
+    const simIds = [];
+    const naoIds = [];
+    const sampleResults = [];
+
+    for (const r of rows) {
+      const cleanPon = r.gpon_id.trim().toUpperCase();
+      const isSim = matchedGpons.has(cleanPon);
+      if (isSim) {
+        simIds.push(r.id);
+      } else {
+        naoIds.push(r.id);
+      }
+      if (sampleResults.length < 50) {
+        sampleResults.push({
+          id: r.id,
+          serial: r.serial_number,
+          gpon: r.gpon_id,
+          super_user: isSim ? 'Sim' : 'Não',
+          destino: isSim ? 'Enviar essa unidade para o laboratório' : 'Separe essa unidade para a engenharia'
+        });
+      }
+    }
+
+    // 4. Batch update recebimentos in main database
+    if (simIds.length > 0) {
+      await pool.query(
+        `UPDATE recebimentos SET super_user = 'Sim' WHERE id = ANY($1)`,
+        [simIds]
+      );
+    }
+    if (naoIds.length > 0) {
+      await pool.query(
+        `UPDATE recebimentos SET super_user = 'Não' WHERE id = ANY($1)`,
+        [naoIds]
+      );
+    }
+
+    res.json({
+      success: true,
+      message: 'Sincronização de unidades F6600P concluída com sucesso!',
+      totalProcessed: rows.length,
+      simCount: simIds.length,
+      naoCount: naoIds.length,
+      sampleResults
+    });
+  } catch (err) {
+    console.error('Error during F6600P sync:', err);
+    res.status(500).json({ error: 'F6600P sync database error.', details: err.message });
+  }
+});
+
 // Fetch operator production dashboard stats for a specific date (defaulting to today in YYYY-MM-DD)
 app.get('/api/recebimentos/stats/operadores', async (req, res) => {
   const { date } = req.query;
