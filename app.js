@@ -764,11 +764,10 @@ function setupAdminListeners() {
     if (btnSyncF6600P) {
         btnSyncF6600P.addEventListener('click', async () => {
             const confirmed = confirm(
-                'Deseja iniciar a sincronização e complementação de dados das unidades ZXHN F6600P?\n\n' +
+                'Deseja iniciar a sincronização e validação de senhas das unidades ZXHN F6600P?\n\n' +
                 'Esta operação irá:\n' +
                 '1. Buscar o GPON no banco de etiquetas e preencher Serial e MAC pendentes no banco principal.\n' +
-                '2. Definir o status Super_User ("Sim" / "Não").\n' +
-                '3. Cadastrar na tabela etiquetas_scan_onu do segundo banco as unidades que ainda não constam lá.\n\n' +
+                '2. Definir o status Super_User ("Sim" para encontradas no banco de etiquetas / "Não" para não encontradas).\n\n' +
                 'Pressione OK para continuar.'
             );
             if (!confirmed) return;
@@ -790,7 +789,6 @@ function setupAdminListeners() {
             let naoCountAll = 0;
             let completedSerialsAll = 0;
             let completedMacsAll = 0;
-            let totalInsertedSecondDbAll = 0;
             let totalUpdatedSecondDbAll = 0;
             const batchSize = 1000;
 
@@ -817,7 +815,6 @@ function setupAdminListeners() {
                     naoCountAll += data.naoCount;
                     completedSerialsAll += data.completedSerialsCount;
                     completedMacsAll += data.completedMacsCount;
-                    totalInsertedSecondDbAll += (data.totalInsertedSecondDb || 0);
                     totalUpdatedSecondDbAll += (data.totalUpdatedSecondDb || 0);
 
                     // Se processou menos que o tamanho do lote, acabaram as unidades
@@ -830,12 +827,11 @@ function setupAdminListeners() {
                     `• Total de unidades F6600P processadas: ${totalProcessedAll}\n` +
                     `• Com Senha (Super_User Sim): ${simCountAll}\n` +
                     `• Sem Senha (Super_User Não): ${naoCountAll}\n` +
-                    `• Unidades com SN/MAC atualizados no 2º banco: ${totalUpdatedSecondDbAll}\n` +
-                    `• Novas unidades cadastradas no 2º banco: ${totalInsertedSecondDbAll}`;
+                    `• Unidades com SN/MAC sincronizados no 2º banco: ${totalUpdatedSecondDbAll}`;
 
                 if (statusEl) {
                     statusEl.style.color = '#34d399';
-                    statusEl.innerHTML = `<strong>Concluído com sucesso!</strong> Processadas: ${totalProcessedAll} | Atualizadas no 2º banco: ${totalUpdatedSecondDbAll} | Inseridas: ${totalInsertedSecondDbAll}`;
+                    statusEl.innerHTML = `<strong>Concluído!</strong> Processadas: ${totalProcessedAll} | Sim: ${simCountAll} | Não: ${naoCountAll}`;
                 }
                 alert(msg);
             } catch (err) {

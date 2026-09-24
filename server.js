@@ -455,26 +455,6 @@ app.post('/api/recebimentos', async (req, res) => {
               destinoMsg = 'Separe essa unidade para a engenharia';
               destinoTipo = 'engenharia';
             }
-            // Não encontrada no segundo banco: fazer INSERT em etiquetas_scan_onu
-            try {
-              const insertEtiquetaQuery = `
-                INSERT INTO etiquetas_scan_onu (
-                  gpon_sn, fabricante, modelo, cpe_sn, mac, usuario, data_leitura
-                ) VALUES ($1, $2, $3, $4, $5, $6, NOW())
-                ON CONFLICT (gpon_sn) DO NOTHING
-              `;
-              await secondPool.query(insertEtiquetaQuery, [
-                cleanPon,
-                body.fabricante || 'ZTE',
-                body.modelo || 'ZXHN F6600P',
-                cleanSerial || null,
-                cleanMac || null,
-                body.usuario || 'RECEBIMENTO'
-              ]);
-              console.log(`Unidade F6600P GPON ${cleanPon} inserida com sucesso em etiquetas_scan_onu.`);
-            } catch (insertErr) {
-              console.error('Erro ao inserir unidade F6600P em etiquetas_scan_onu:', insertErr.message);
-            }
           }
         } catch (secDbErr) {
           console.error('Error querying second DB for F6600P gpon_sn:', secDbErr);
@@ -666,37 +646,6 @@ app.get('/api/admin/sync-legacy', async (req, res) => {
 });
 
 // Helper functions for batch operations in F6600P synchronization
-async function insertBatchEtiquetas(items, clientOrPool) {
-  if (!items || items.length === 0) return 0;
-  let totalInserted = 0;
-  const chunkSize = 200;
-  for (let i = 0; i < items.length; i += chunkSize) {
-    const chunk = items.slice(i, i + chunkSize);
-    const valueClauses = [];
-    const params = [];
-    let pIdx = 1;
-    for (const item of chunk) {
-      valueClauses.push(`($${pIdx}, $${pIdx+1}, $${pIdx+2}, $${pIdx+3}, $${pIdx+4}, $${pIdx+5}, NOW())`);
-      params.push(
-        item.gpon_sn,
-        item.fabricante || 'ZTE',
-        item.modelo || 'ZXHN F6600P',
-        item.cpe_sn || null,
-        item.mac || null,
-        item.usuario || 'SYNC_AUTO'
-      );
-      pIdx += 6;
-    }
-    const query = `
-      INSERT INTO etiquetas_scan_onu (gpon_sn, fabricante, modelo, cpe_sn, mac, usuario, data_leitura)
-      VALUES ${valueClauses.join(', ')}
-      ON CONFLICT (gpon_sn) DO NOTHING
-    `;
-    const res = await clientOrPool.query(query, params);
-    totalInserted += (res.rowCount || 0);
-  }
-  return totalInserted;
-}
 
 async function updateBatchRecebimentos(items, clientOrPool) {
   if (!items || items.length === 0) return 0;
@@ -846,7 +795,6 @@ app.get('/api/admin/sync-f6600p', async (req, res) => {
     let completedMacsCount = 0;
     let completedGponsCount = 0;
     const unitsToUpdateMainDb = [];
-    const toInsertSecondDb = [];
     const toUpdateSecondDb = [];
     const sampleResults = [];
 
@@ -911,17 +859,6 @@ app.get('/api/admin/sync-f6600p', async (req, res) => {
         if (r.super_user !== 'Não') {
           needsMainUpdate = true;
         }
-
-        if (cleanPon) {
-          toInsertSecondDb.push({
-            gpon_sn: cleanPon,
-            fabricante: r.fabricante || 'ZTE',
-            modelo: r.modelo || 'ZXHN F6600P',
-            cpe_sn: newSerial || null,
-            mac: newMac || null,
-            usuario: r.usuario || 'SYNC_AUTO'
-          });
-        }
       }
 
       if (needsMainUpdate) {
@@ -950,25 +887,14 @@ app.get('/api/admin/sync-f6600p', async (req, res) => {
     // 4. Batch update recebimentos in main database
     const totalUpdatedMainDb = await updateBatchRecebimentos(unitsToUpdateMainDb, pool);
 
-    // 5. Batch insert missing units into etiquetas_scan_onu in second database
-    const uniqueToInsert = [];
-    const insertedGpons = new Set();
-    for (const item of toInsertSecondDb) {
-      if (!insertedGpons.has(item.gpon_sn)) {
-        insertedGpons.add(item.gpon_sn);
-        uniqueToInsert.push(item);
-      }
-    }
-    const totalInsertedSecondDb = await insertBatchEtiquetas(uniqueToInsert, secondPool);
-
-    // 6. Update missing fields in second DB if needed
+    // 5. Update missing fields in second DB if needed (only for units that exist in second DB)
     const totalUpdatedSecondDb = await updateBatchEtiquetas(toUpdateSecondDb, secondPool);
 
     const lastId = rows.length > 0 ? rows[rows.length - 1].id : lastIdNum;
 
     res.json({
       success: true,
-      message: 'Sincronização e complementação de unidades F6600P concluída com sucesso!',
+      message: 'Sincronização de unidades F6600P concluída com sucesso!',
       totalProcessed: rows.length,
       lastId,
       simCount,
@@ -977,13 +903,109 @@ app.get('/api/admin/sync-f6600p', async (req, res) => {
       completedSerialsCount,
       completedMacsCount,
       completedGponsCount,
-      totalInsertedSecondDb,
       totalUpdatedSecondDb,
       sampleResults
     });
   } catch (err) {
     console.error('Error during F6600P sync:', err);
     res.status(500).json({ error: 'F6600P sync database error.', details: err.message });
+  }
+});
+
+// Endpoint de reversão e restauração do F6600P para o estado original
+app.get('/api/admin/revert-f6600p', async (req, res) => {
+  if (!secondPool) {
+    return res.status(400).json({ error: 'Second database connection is not configured.' });
+  }
+
+  try {
+    // 1. Remove do segundo banco (etiquetas_scan_onu) as unidades inseridas automaticamente hoje
+    const deleteQuery = `
+      DELETE FROM etiquetas_scan_onu
+      WHERE usuario IN ('SYNC_AUTO', 'RECEBIMENTO')
+         OR (data_leitura >= '2026-09-24 00:00:00' AND (senha IS NULL OR senha = '' OR senha = 'N/A'))
+    `;
+    const deleteResult = await secondPool.query(deleteQuery);
+    const totalDeletadosSegundoBanco = deleteResult.rowCount || 0;
+
+    // 2. Busca todos os GPONs legítimos remanescentes em etiquetas_scan_onu
+    const { rows: validEtiquetas } = await secondPool.query(`
+      SELECT UPPER(TRIM(gpon_sn)) AS gpon_sn
+      FROM etiquetas_scan_onu
+      WHERE (usuario IS NULL OR usuario NOT IN ('SYNC_AUTO', 'RECEBIMENTO'))
+    `);
+    const validGponSet = new Set(validEtiquetas.map(e => e.gpon_sn));
+
+    // 3. Busca todas as unidades F6600P no banco principal (recebimentos)
+    const { rows: recebidos } = await pool.query(`
+      SELECT id, serial_number, gpon_id, no_pre_alerta, super_user
+      FROM recebimentos
+      WHERE UPPER(modelo) LIKE '%F6600P%'
+      ORDER BY id ASC
+    `);
+
+    let preAlertaSim = 0;
+    let preAlertaNao = 0;
+    let foraPreAlertaSim = 0;
+    let foraPreAlertaNao = 0;
+
+    const simIds = [];
+    const naoIds = [];
+
+    for (const r of recebidos) {
+      let cleanPon = r.gpon_id ? r.gpon_id.trim().toUpperCase() : '';
+      if (!cleanPon && r.serial_number) {
+        const s = r.serial_number.trim().toUpperCase();
+        if (s.startsWith('ZTE3') || s.startsWith('ZTEG')) {
+          cleanPon = s;
+        }
+      }
+
+      const isSim = cleanPon && validGponSet.has(cleanPon);
+      if (isSim) {
+        simIds.push(r.id);
+        if (r.no_pre_alerta) preAlertaSim++;
+        else foraPreAlertaSim++;
+      } else {
+        naoIds.push(r.id);
+        if (r.no_pre_alerta) preAlertaNao++;
+        else foraPreAlertaNao++;
+      }
+    }
+
+    // 4. Atualiza atomicamente recebimentos no banco principal
+    let totalUpdatedMainDb = 0;
+    if (simIds.length > 0) {
+      const resSim = await pool.query(`UPDATE recebimentos SET super_user = 'Sim' WHERE id = ANY($1)`, [simIds]);
+      totalUpdatedMainDb += (resSim.rowCount || 0);
+    }
+    if (naoIds.length > 0) {
+      const resNao = await pool.query(`UPDATE recebimentos SET super_user = 'Não' WHERE id = ANY($1)`, [naoIds]);
+      totalUpdatedMainDb += (resNao.rowCount || 0);
+    }
+
+    res.json({
+      success: true,
+      message: 'Reversão concluída com sucesso! Estado original restaurado.',
+      totalDeletadosSegundoBanco,
+      totalProcessadosRecebimentos: recebidos.length,
+      pre_alerta: {
+        total: preAlertaSim + preAlertaNao,
+        sim: preAlertaSim,
+        nao: preAlertaNao,
+        percentualSim: `${((preAlertaSim / (preAlertaSim + preAlertaNao)) * 100).toFixed(1)}%`,
+        percentualNao: `${((preAlertaNao / (preAlertaSim + preAlertaNao)) * 100).toFixed(1)}%`
+      },
+      fora_pre_alerta: {
+        total: foraPreAlertaSim + foraPreAlertaNao,
+        sim: foraPreAlertaSim,
+        nao: foraPreAlertaNao
+      },
+      totalAtualizadosRecebimentos: totalUpdatedMainDb
+    });
+  } catch (err) {
+    console.error('Error during revert-f6600p:', err);
+    res.status(500).json({ error: 'Revert error', details: err.message });
   }
 });
 
