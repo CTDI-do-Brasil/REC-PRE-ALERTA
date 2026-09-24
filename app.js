@@ -1068,23 +1068,40 @@ async function lookupAndFillF6600P(gponValue, sourceField = 'pon') {
             const ponInput = document.getElementById('pon');
             const macInput = document.getElementById('mac');
 
-            if (sourceField === 'serial') {
-                if (ponInput) ponInput.value = data.gpon_sn || cleanPon;
-                if (serialInput && data.cpe_sn) serialInput.value = data.cpe_sn;
-                if (macInput && data.mac) macInput.value = data.mac;
-            } else {
-                if (ponInput && data.gpon_sn) ponInput.value = data.gpon_sn;
-                if (serialInput && data.cpe_sn) serialInput.value = data.cpe_sn;
-                if (macInput && data.mac) macInput.value = data.mac;
+            const isValid = (val) => val && typeof val === 'string' && val.trim() !== '' && val.trim().toUpperCase() !== 'N/A';
+
+            let preencheuAlgo = false;
+            const camposPreenchidos = [];
+
+            if (isValid(data.gpon_sn) && ponInput && (!ponInput.value || ponInput.value.trim().toUpperCase() === 'N/A')) {
+                ponInput.value = data.gpon_sn.trim().toUpperCase();
             }
 
-            showMessage('Unidade F6600P localizada! Serial e MAC preenchidos automaticamente.', 'info');
-            setTimeout(() => {
-                const msgEl = document.getElementById('status-message');
-                if (msgEl && msgEl.classList.contains('status-info')) {
-                    hideMessage();
-                }
-            }, 3000);
+            if (isValid(data.cpe_sn) && serialInput && (!serialInput.value || serialInput.value.trim().toUpperCase() === 'N/A')) {
+                serialInput.value = data.cpe_sn.trim().toUpperCase();
+                preencheuAlgo = true;
+                camposPreenchidos.push('Serial');
+            } else if (serialInput && serialInput.value && serialInput.value.trim().toUpperCase() === 'N/A') {
+                serialInput.value = '';
+            }
+
+            if (isValid(data.mac) && macInput && (!macInput.value || macInput.value.trim().toUpperCase() === 'N/A')) {
+                macInput.value = data.mac.trim().toUpperCase();
+                preencheuAlgo = true;
+                camposPreenchidos.push('MAC');
+            } else if (macInput && macInput.value && macInput.value.trim().toUpperCase() === 'N/A') {
+                macInput.value = '';
+            }
+
+            if (preencheuAlgo) {
+                showMessage(`Unidade F6600P localizada! ${camposPreenchidos.join(' e ')} preenchido(s) automaticamente.`, 'info');
+                setTimeout(() => {
+                    const msgEl = document.getElementById('status-message');
+                    if (msgEl && msgEl.classList.contains('status-info')) {
+                        hideMessage();
+                    }
+                }, 3000);
+            }
             return true;
         }
     } catch (err) {
@@ -1536,10 +1553,17 @@ async function processRecebimento() {
             }
         }
 
+        if (serial === 'N/A') serial = '';
+        if (mac === 'N/A') mac = '';
+        if (pon === 'N/A') pon = '';
+
         if (!serial || (!isException && !pon) || !mac) {
-            showMessage('Preencha todos os campos necessarios para receber a unidade.', 'error');
+            showMessage('Preencha todos os campos necessários para receber a unidade.', 'error');
             isProcessingRecebimento = false;
             if (btnReceber) btnReceber.disabled = false;
+            if (!serial) document.getElementById('serial').focus();
+            else if (!pon && !isException) document.getElementById('pon').focus();
+            else if (!mac) document.getElementById('mac').focus();
             return;
         }
 

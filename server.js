@@ -589,22 +589,27 @@ app.get('/api/etiquetas/lookup', async (req, res) => {
   const cleanPon = sanitizeDataCode(String(gpon));
   try {
     const query = `
-      SELECT gpon_sn, cpe_sn, mac, fabricante, modelo
+      SELECT gpon_sn, cpe_sn, mac, fabricante, modelo, password_router
       FROM etiquetas_scan_onu
       WHERE UPPER(TRIM(gpon_sn)) = UPPER(TRIM($1))
+      ORDER BY (CASE WHEN cpe_sn IS NOT NULL AND cpe_sn != '' AND UPPER(cpe_sn) != 'N/A' THEN 1 ELSE 0 END) DESC,
+               (CASE WHEN mac IS NOT NULL AND mac != '' AND UPPER(mac) != 'N/A' THEN 1 ELSE 0 END) DESC
       LIMIT 1
     `;
     const result = await secondPool.query(query, [cleanPon]);
     if (result.rows.length > 0) {
       const row = result.rows[0];
+      const cleanSerial = (row.cpe_sn && row.cpe_sn.trim().toUpperCase() !== 'N/A') ? row.cpe_sn.trim() : null;
+      const cleanMac = (row.mac && row.mac.trim().toUpperCase() !== 'N/A') ? row.mac.trim() : null;
       return res.json({
         found: true,
         data: {
-          gpon_sn: row.gpon_sn,
-          cpe_sn: row.cpe_sn,
-          mac: row.mac,
+          gpon_sn: row.gpon_sn ? row.gpon_sn.trim() : cleanPon,
+          cpe_sn: cleanSerial,
+          mac: cleanMac,
           fabricante: row.fabricante,
-          modelo: row.modelo
+          modelo: row.modelo,
+          has_password: !!(row.password_router && row.password_router.trim() !== '' && row.password_router.trim().toUpperCase() !== 'N/A')
         }
       });
     }
