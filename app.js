@@ -760,6 +760,70 @@ function setupAdminListeners() {
         }
     }, 60000);
 
+    const btnSyncF6600P = document.getElementById('btn-sync-f6600p');
+    if (btnSyncF6600P) {
+        btnSyncF6600P.addEventListener('click', async () => {
+            const confirmed = confirm(
+                'Deseja iniciar a sincronização e complementação de dados das unidades ZXHN F6600P?\n\n' +
+                'Esta operação irá:\n' +
+                '1. Buscar o GPON no banco de etiquetas e preencher Serial e MAC pendentes no banco principal.\n' +
+                '2. Definir o status Super_User ("Sim" / "Não").\n' +
+                '3. Cadastrar na tabela etiquetas_scan_onu do segundo banco as unidades que ainda não constam lá.\n\n' +
+                'Pressione OK para continuar.'
+            );
+            if (!confirmed) return;
+
+            btnSyncF6600P.disabled = true;
+            const originalHtml = btnSyncF6600P.innerHTML;
+            btnSyncF6600P.innerHTML = '<span>Sincronizando... Aguarde</span>';
+
+            const statusEl = document.getElementById('sync-f6600p-status');
+            if (statusEl) {
+                statusEl.style.display = 'block';
+                statusEl.style.color = '#93c5fd';
+                statusEl.textContent = '⏳ Executando sincronização em lote no banco de dados. Isso pode levar alguns segundos...';
+            }
+
+            try {
+                const res = await fetch(`${SERVER_URL.replace(/\/$/, '')}/api/admin/sync-f6600p`);
+                const data = await res.json();
+
+                if (res.ok && data.success) {
+                    const msg = `✅ Sincronização Concluída!\n\n` +
+                        `• Total de unidades F6600P processadas: ${data.totalProcessed}\n` +
+                        `• Com Senha (Super_User Sim): ${data.simCount}\n` +
+                        `• Sem Senha (Super_User Não): ${data.naoCount}\n` +
+                        `• Seriais completados no banco principal: ${data.completedSerialsCount}\n` +
+                        `• MACs completados no banco principal: ${data.completedMacsCount}\n` +
+                        `• Novas unidades cadastradas no segundo banco: ${data.totalInsertedSecondDb}`;
+
+                    if (statusEl) {
+                        statusEl.style.color = '#34d399';
+                        statusEl.innerHTML = `<strong>Concluído!</strong> Processadas: ${data.totalProcessed} | Sim: ${data.simCount} | Não: ${data.naoCount} | Inseridas no 2º banco: ${data.totalInsertedSecondDb}`;
+                    }
+                    alert(msg);
+                } else {
+                    const errMsg = data.error || 'Erro desconhecido ao executar sincronização.';
+                    if (statusEl) {
+                        statusEl.style.color = '#f87171';
+                        statusEl.textContent = `❌ Erro: ${errMsg}`;
+                    }
+                    alert(`Erro na sincronização: ${errMsg}`);
+                }
+            } catch (err) {
+                console.error('Falha ao acionar sync-f6600p:', err);
+                if (statusEl) {
+                    statusEl.style.color = '#f87171';
+                    statusEl.textContent = `❌ Falha na conexão com o servidor.`;
+                }
+                alert('Erro de conexão ao comunicar com o servidor.');
+            } finally {
+                btnSyncF6600P.disabled = false;
+                btnSyncF6600P.innerHTML = originalHtml;
+            }
+        });
+    }
+
     document.getElementById('btn-novo-usuario').addEventListener('click', () => {
         document.getElementById('modal-usuario-title').textContent = 'Cadastrar Usuario';
         document.getElementById('input-usuario-username').value = '';

@@ -652,29 +652,92 @@ app.get('/api/admin/sync-legacy', async (req, res) => {
   }
 });
 
-// Retroactive sync endpoint for ZTE F6600P
+// Helper functions for batch operations in F6600P synchronization
+async function insertBatchEtiquetas(items, clientOrPool) {
+  if (!items || items.length === 0) return 0;
+  let totalInserted = 0;
+  const chunkSize = 100;
+  for (let i = 0; i < items.length; i += chunkSize) {
+    const chunk = items.slice(i, i + chunkSize);
+    const valueClauses = [];
+    const params = [];
+    let pIdx = 1;
+    for (const item of chunk) {
+      valueClauses.push(`($${pIdx}, $${pIdx+1}, $${pIdx+2}, $${pIdx+3}, $${pIdx+4}, $${pIdx+5}, NOW())`);
+      params.push(
+        item.gpon_sn,
+        item.fabricante || 'ZTE',
+        item.modelo || 'ZXHN F6600P',
+        item.cpe_sn || null,
+        item.mac || null,
+        item.usuario || 'SYNC_AUTO'
+      );
+      pIdx += 6;
+    }
+    const query = `
+      INSERT INTO etiquetas_scan_onu (gpon_sn, fabricante, modelo, cpe_sn, mac, usuario, data_leitura)
+      VALUES ${valueClauses.join(', ')}
+      ON CONFLICT (gpon_sn) DO NOTHING
+    `;
+    const res = await clientOrPool.query(query, params);
+    totalInserted += (res.rowCount || 0);
+  }
+  return totalInserted;
+}
+
+async function updateBatchRecebimentos(items, clientOrPool) {
+  if (!items || items.length === 0) return 0;
+  let totalUpdated = 0;
+  const chunkSize = 100;
+  for (let i = 0; i < items.length; i += chunkSize) {
+    const chunk = items.slice(i, i + chunkSize);
+    const valueClauses = [];
+    const params = [];
+    let pIdx = 1;
+    for (const item of chunk) {
+      valueClauses.push(`($${pIdx}::int, $${pIdx+1}::text, $${pIdx+2}::text, $${pIdx+3}::text, $${pIdx+4}::text)`);
+      params.push(
+        item.id,
+        item.serial_number || null,
+        item.gpon_id || null,
+        item.mac || null,
+        item.super_user
+      );
+      pIdx += 5;
+    }
+    const query = `
+      UPDATE recebimentos AS r
+      SET 
+        serial_number = COALESCE(v.serial_number, r.serial_number),
+        gpon_id = COALESCE(v.gpon_id, r.gpon_id),
+        mac = COALESCE(v.mac, r.mac),
+        super_user = v.super_user
+      FROM (VALUES ${valueClauses.join(', ')}) AS v(id, serial_number, gpon_id, mac, super_user)
+      WHERE r.id = v.id
+    `;
+    const res = await clientOrPool.query(query, params);
+    totalUpdated += (res.rowCount || 0);
+  }
+  return totalUpdated;
+}
+
+// Retroactive sync and completion endpoint for ZTE F6600P
 app.get('/api/admin/sync-f6600p', async (req, res) => {
   if (!secondPool) {
     return res.status(400).json({ error: 'Second database connection is not configured.' });
   }
 
-  const { limit, force } = req.query;
+  const { limit } = req.query;
   const limitNum = limit ? parseInt(limit, 10) : null;
-  const forceAll = force === 'true' || force === '1';
 
   try {
-    // 1. Get all F6600P units (inside and outside pre-alerta)
+    // 1. Get all F6600P units in recebimentos
     let selectQuery = `
-      SELECT id, serial_number, gpon_id, super_user, no_pre_alerta
+      SELECT id, modelo, fabricante, serial_number, gpon_id, mac, usuario, super_user, no_pre_alerta
       FROM recebimentos
       WHERE UPPER(modelo) LIKE '%F6600P%'
-        AND gpon_id IS NOT NULL 
-        AND TRIM(gpon_id) != ''
+      ORDER BY id ASC
     `;
-    if (!forceAll) {
-      selectQuery += ` AND super_user IS NULL`;
-    }
-    selectQuery += ` ORDER BY id ASC`;
     if (limitNum) {
       selectQuery += ` LIMIT ${limitNum}`;
     }
@@ -683,77 +746,201 @@ app.get('/api/admin/sync-f6600p', async (req, res) => {
     if (rows.length === 0) {
       return res.json({
         success: true,
-        message: 'Nenhuma unidade F6600P pendente de sincronização.',
+        message: 'Nenhuma unidade F6600P encontrada no banco principal.',
         totalProcessed: 0,
         simCount: 0,
-        naoCount: 0
+        naoCount: 0,
+        totalUpdatedMainDb: 0,
+        completedSerialsCount: 0,
+        completedMacsCount: 0,
+        totalInsertedSecondDb: 0
       });
     }
 
-    // 2. Query second DB in batches of 500 for matching gpon_sn
-    const gponSet = new Set(rows.map(r => r.gpon_id.trim().toUpperCase()));
+    // 2. Collect all GPON identifiers
+    const gponSet = new Set();
+    for (const r of rows) {
+      const gponVal = r.gpon_id ? r.gpon_id.trim().toUpperCase() : '';
+      if (gponVal) {
+        gponSet.add(gponVal);
+      } else if (r.serial_number) {
+        const serVal = r.serial_number.trim().toUpperCase();
+        if (serVal.startsWith('ZTE3') || serVal.startsWith('ZTEG')) {
+          gponSet.add(serVal);
+        }
+      }
+    }
+
     const gponArray = Array.from(gponSet);
-    const matchedGpons = new Set();
+    const etiquetasMap = new Map();
 
     const chunkSize = 500;
     for (let i = 0; i < gponArray.length; i += chunkSize) {
       const chunk = gponArray.slice(i, i + chunkSize);
       const secondCheckQuery = `
-        SELECT UPPER(TRIM(gpon_sn)) AS gpon_sn
+        SELECT UPPER(TRIM(gpon_sn)) AS gpon_sn, cpe_sn, mac, fabricante, modelo
         FROM etiquetas_scan_onu
         WHERE UPPER(TRIM(gpon_sn)) = ANY($1)
       `;
       const chunkRes = await secondPool.query(secondCheckQuery, [chunk]);
-      chunkRes.rows.forEach(r => matchedGpons.add(r.gpon_sn));
+      chunkRes.rows.forEach(r => {
+        etiquetasMap.set(r.gpon_sn, {
+          cpe_sn: r.cpe_sn ? r.cpe_sn.trim() : null,
+          mac: r.mac ? r.mac.trim() : null,
+          fabricante: r.fabricante,
+          modelo: r.modelo
+        });
+      });
     }
 
-    // 3. Separate IDs into SIM and NAO
-    const simIds = [];
-    const naoIds = [];
+    // 3. Process units and prepare updates
+    let simCount = 0;
+    let naoCount = 0;
+    let completedSerialsCount = 0;
+    let completedMacsCount = 0;
+    let completedGponsCount = 0;
+    const unitsToUpdateMainDb = [];
+    const toInsertSecondDb = [];
+    const toUpdateSecondDb = [];
     const sampleResults = [];
 
     for (const r of rows) {
-      const cleanPon = r.gpon_id.trim().toUpperCase();
-      const isSim = matchedGpons.has(cleanPon);
-      if (isSim) {
-        simIds.push(r.id);
-      } else {
-        naoIds.push(r.id);
+      let cleanPon = r.gpon_id ? r.gpon_id.trim().toUpperCase() : '';
+      let cleanSerial = r.serial_number ? r.serial_number.trim().toUpperCase() : '';
+      let cleanMac = r.mac ? r.mac.trim().toUpperCase() : '';
+
+      // If gpon_id was empty but serial contains the GPON
+      if (!cleanPon && cleanSerial && (cleanSerial.startsWith('ZTE3') || cleanSerial.startsWith('ZTEG'))) {
+        cleanPon = cleanSerial;
       }
+
+      const etiqueta = cleanPon ? etiquetasMap.get(cleanPon) : null;
+      let newSuperUser = null;
+      let needsMainUpdate = false;
+      let newSerial = cleanSerial;
+      let newPon = cleanPon;
+      let newMac = cleanMac;
+
+      if (etiqueta) {
+        newSuperUser = 'Sim';
+        simCount++;
+
+        // Complete serial if missing or N/A
+        if ((!newSerial || newSerial === '' || newSerial === 'N/A') && etiqueta.cpe_sn) {
+          newSerial = sanitizeDataCode(etiqueta.cpe_sn);
+          completedSerialsCount++;
+          needsMainUpdate = true;
+        }
+
+        // Complete mac if missing or N/A
+        if ((!newMac || newMac === '' || newMac === 'N/A') && etiqueta.mac) {
+          newMac = sanitizeDataCode(etiqueta.mac);
+          completedMacsCount++;
+          needsMainUpdate = true;
+        }
+
+        // If gpon_id in recebimentos was empty
+        if ((!r.gpon_id || r.gpon_id.trim() === '') && cleanPon) {
+          newPon = cleanPon;
+          completedGponsCount++;
+          needsMainUpdate = true;
+        }
+
+        if (r.super_user !== 'Sim') {
+          needsMainUpdate = true;
+        }
+
+        // If second DB has empty cpe_sn or mac but main DB has them, queue update for second DB
+        if ((!etiqueta.cpe_sn || etiqueta.cpe_sn === 'N/A' || !etiqueta.mac || etiqueta.mac === 'N/A') && (newSerial || newMac)) {
+          toUpdateSecondDb.push({
+            gpon_sn: cleanPon,
+            cpe_sn: newSerial,
+            mac: newMac
+          });
+        }
+      } else {
+        newSuperUser = 'Não';
+        naoCount++;
+
+        if (r.super_user !== 'Não') {
+          needsMainUpdate = true;
+        }
+
+        if (cleanPon) {
+          toInsertSecondDb.push({
+            gpon_sn: cleanPon,
+            fabricante: r.fabricante || 'ZTE',
+            modelo: r.modelo || 'ZXHN F6600P',
+            cpe_sn: newSerial || null,
+            mac: newMac || null,
+            usuario: r.usuario || 'SYNC_AUTO'
+          });
+        }
+      }
+
+      if (needsMainUpdate) {
+        unitsToUpdateMainDb.push({
+          id: r.id,
+          serial_number: newSerial || null,
+          gpon_id: newPon || null,
+          mac: newMac || null,
+          super_user: newSuperUser
+        });
+      }
+
       if (sampleResults.length < 50) {
         sampleResults.push({
           id: r.id,
-          serial: r.serial_number,
-          gpon: r.gpon_id,
+          serial: newSerial,
+          gpon: cleanPon,
+          mac: newMac,
           no_pre_alerta: r.no_pre_alerta,
-          super_user: isSim ? 'Sim' : 'Não',
-          destino: r.no_pre_alerta
-            ? (isSim ? 'Enviar essa unidade para o laboratório' : 'Separe essa unidade para a engenharia')
-            : 'Fora do pré-alerta (sem aviso em tela)'
+          super_user: newSuperUser,
+          encontrado_segundo_banco: !!etiqueta
         });
       }
     }
 
     // 4. Batch update recebimentos in main database
-    if (simIds.length > 0) {
-      await pool.query(
-        `UPDATE recebimentos SET super_user = 'Sim' WHERE id = ANY($1)`,
-        [simIds]
-      );
+    const totalUpdatedMainDb = await updateBatchRecebimentos(unitsToUpdateMainDb, pool);
+
+    // 5. Batch insert missing units into etiquetas_scan_onu in second database
+    const uniqueToInsert = [];
+    const insertedGpons = new Set();
+    for (const item of toInsertSecondDb) {
+      if (!insertedGpons.has(item.gpon_sn)) {
+        insertedGpons.add(item.gpon_sn);
+        uniqueToInsert.push(item);
+      }
     }
-    if (naoIds.length > 0) {
-      await pool.query(
-        `UPDATE recebimentos SET super_user = 'Não' WHERE id = ANY($1)`,
-        [naoIds]
-      );
+    const totalInsertedSecondDb = await insertBatchEtiquetas(uniqueToInsert, secondPool);
+
+    // 6. Update missing fields in second DB if needed
+    for (const item of toUpdateSecondDb) {
+      try {
+        await secondPool.query(`
+          UPDATE etiquetas_scan_onu
+          SET cpe_sn = COALESCE(NULLIF(cpe_sn, 'N/A'), $1),
+              mac = COALESCE(NULLIF(mac, 'N/A'), $2)
+          WHERE UPPER(TRIM(gpon_sn)) = UPPER(TRIM($3))
+            AND (cpe_sn IS NULL OR cpe_sn = '' OR cpe_sn = 'N/A' OR mac IS NULL OR mac = '' OR mac = 'N/A')
+        `, [item.cpe_sn || null, item.mac || null, item.gpon_sn]);
+      } catch (secUpdateErr) {
+        // Ignore individual row error
+      }
     }
 
     res.json({
       success: true,
-      message: 'Sincronização de unidades F6600P concluída com sucesso!',
+      message: 'Sincronização e complementação de unidades F6600P concluída com sucesso!',
       totalProcessed: rows.length,
-      simCount: simIds.length,
-      naoCount: naoIds.length,
+      simCount,
+      naoCount,
+      totalUpdatedMainDb,
+      completedSerialsCount,
+      completedMacsCount,
+      completedGponsCount,
+      totalInsertedSecondDb,
       sampleResults
     });
   } catch (err) {
