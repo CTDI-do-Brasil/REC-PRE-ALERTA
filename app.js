@@ -781,42 +781,67 @@ function setupAdminListeners() {
             if (statusEl) {
                 statusEl.style.display = 'block';
                 statusEl.style.color = '#93c5fd';
-                statusEl.textContent = '⏳ Executando sincronização em lote no banco de dados. Isso pode levar alguns segundos...';
+                statusEl.textContent = '⏳ Iniciando sincronização em lote...';
             }
 
+            let totalProcessedAll = 0;
+            let simCountAll = 0;
+            let naoCountAll = 0;
+            let completedSerialsAll = 0;
+            let completedMacsAll = 0;
+            let totalInsertedSecondDbAll = 0;
+            const batchSize = 1000;
+
             try {
-                const res = await fetch(`${SERVER_URL.replace(/\/$/, '')}/api/admin/sync-f6600p`);
-                const data = await res.json();
-
-                if (res.ok && data.success) {
-                    const msg = `✅ Sincronização Concluída!\n\n` +
-                        `• Total de unidades F6600P processadas: ${data.totalProcessed}\n` +
-                        `• Com Senha (Super_User Sim): ${data.simCount}\n` +
-                        `• Sem Senha (Super_User Não): ${data.naoCount}\n` +
-                        `• Seriais completados no banco principal: ${data.completedSerialsCount}\n` +
-                        `• MACs completados no banco principal: ${data.completedMacsCount}\n` +
-                        `• Novas unidades cadastradas no segundo banco: ${data.totalInsertedSecondDb}`;
-
+                while (true) {
                     if (statusEl) {
-                        statusEl.style.color = '#34d399';
-                        statusEl.innerHTML = `<strong>Concluído!</strong> Processadas: ${data.totalProcessed} | Sim: ${data.simCount} | Não: ${data.naoCount} | Inseridas no 2º banco: ${data.totalInsertedSecondDb}`;
+                        statusEl.textContent = `⏳ Sincronizando... (${totalProcessedAll} unidades já processadas)`;
                     }
-                    alert(msg);
-                } else {
-                    const errMsg = data.error || 'Erro desconhecido ao executar sincronização.';
-                    if (statusEl) {
-                        statusEl.style.color = '#f87171';
-                        statusEl.textContent = `❌ Erro: ${errMsg}`;
+
+                    const res = await fetch(`${SERVER_URL.replace(/\/$/, '')}/api/admin/sync-f6600p?limit=${batchSize}`);
+                    const data = await res.json();
+
+                    if (!res.ok || !data.success) {
+                        throw new Error(data.error || 'Erro ao executar lote de sincronização.');
                     }
-                    alert(`Erro na sincronização: ${errMsg}`);
+
+                    if (data.totalProcessed === 0) {
+                        break; // Nenhuma unidade pendente
+                    }
+
+                    totalProcessedAll += data.totalProcessed;
+                    simCountAll += data.simCount;
+                    naoCountAll += data.naoCount;
+                    completedSerialsAll += data.completedSerialsCount;
+                    completedMacsAll += data.completedMacsCount;
+                    totalInsertedSecondDbAll += (data.totalInsertedSecondDb || 0);
+
+                    // Se processou menos que o tamanho do lote, acabaram as pendências
+                    if (data.totalProcessed < batchSize) {
+                        break;
+                    }
                 }
+
+                const msg = `✅ Sincronização Concluída!\n\n` +
+                    `• Total de unidades F6600P processadas: ${totalProcessedAll}\n` +
+                    `• Com Senha (Super_User Sim): ${simCountAll}\n` +
+                    `• Sem Senha (Super_User Não): ${naoCountAll}\n` +
+                    `• Seriais completados no banco principal: ${completedSerialsAll}\n` +
+                    `• MACs completados no banco principal: ${completedMacsAll}\n` +
+                    `• Novas unidades cadastradas no segundo banco: ${totalInsertedSecondDbAll}`;
+
+                if (statusEl) {
+                    statusEl.style.color = '#34d399';
+                    statusEl.innerHTML = `<strong>Concluído com sucesso!</strong> Processadas: ${totalProcessedAll} | Sim: ${simCountAll} | Não: ${naoCountAll} | Inseridas no 2º banco: ${totalInsertedSecondDbAll}`;
+                }
+                alert(msg);
             } catch (err) {
                 console.error('Falha ao acionar sync-f6600p:', err);
                 if (statusEl) {
                     statusEl.style.color = '#f87171';
-                    statusEl.textContent = `❌ Falha na conexão com o servidor.`;
+                    statusEl.textContent = `❌ Falha: ${err.message}`;
                 }
-                alert('Erro de conexão ao comunicar com o servidor.');
+                alert(`Erro na sincronização: ${err.message}`);
             } finally {
                 btnSyncF6600P.disabled = false;
                 btnSyncF6600P.innerHTML = originalHtml;

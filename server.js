@@ -756,17 +756,27 @@ app.get('/api/admin/sync-f6600p', async (req, res) => {
     return res.status(400).json({ error: 'Second database connection is not configured.' });
   }
 
-  const { limit } = req.query;
+  const { limit, force } = req.query;
   const limitNum = limit ? parseInt(limit, 10) : null;
+  const forceAll = force === 'true' || force === '1';
 
   try {
-    // 1. Get all F6600P units in recebimentos
+    // 1. Get F6600P units in recebimentos
     let selectQuery = `
       SELECT id, modelo, fabricante, serial_number, gpon_id, mac, usuario, super_user, no_pre_alerta
       FROM recebimentos
       WHERE UPPER(modelo) LIKE '%F6600P%'
-      ORDER BY id ASC
     `;
+    if (!forceAll) {
+      selectQuery += `
+        AND (
+          super_user IS NULL 
+          OR serial_number IS NULL OR TRIM(serial_number) = '' OR UPPER(TRIM(serial_number)) = 'N/A'
+          OR mac IS NULL OR TRIM(mac) = '' OR UPPER(TRIM(mac)) = 'N/A'
+        )
+      `;
+    }
+    selectQuery += ` ORDER BY id ASC`;
     if (limitNum) {
       selectQuery += ` LIMIT ${limitNum}`;
     }
@@ -775,7 +785,7 @@ app.get('/api/admin/sync-f6600p', async (req, res) => {
     if (rows.length === 0) {
       return res.json({
         success: true,
-        message: 'Nenhuma unidade F6600P encontrada no banco principal.',
+        message: 'Nenhuma unidade F6600P pendente de sincronização. Todas as unidades já estão atualizadas!',
         totalProcessed: 0,
         simCount: 0,
         naoCount: 0,
