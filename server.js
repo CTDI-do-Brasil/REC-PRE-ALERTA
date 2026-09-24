@@ -419,6 +419,7 @@ app.post('/api/recebimentos', async (req, res) => {
             SELECT gpon_sn, cpe_sn, mac, fabricante, modelo
             FROM etiquetas_scan_onu
             WHERE UPPER(TRIM(gpon_sn)) = UPPER(TRIM($1))
+              AND (data_leitura < '2026-09-24 00:00:00' OR (web_key IS NOT NULL AND TRIM(web_key) != '' AND TRIM(web_key) != 'N/A'))
             LIMIT 1
           `;
           const checkRes = await secondPool.query(checkQuery, [cleanPon]);
@@ -776,6 +777,7 @@ app.get('/api/admin/sync-f6600p', async (req, res) => {
         SELECT UPPER(TRIM(gpon_sn)) AS gpon_sn, cpe_sn, mac, fabricante, modelo
         FROM etiquetas_scan_onu
         WHERE UPPER(TRIM(gpon_sn)) = ANY($1)
+          AND (data_leitura < '2026-09-24 00:00:00' OR (web_key IS NOT NULL AND TRIM(web_key) != '' AND TRIM(web_key) != 'N/A'))
       `;
       const chunkRes = await secondPool.query(secondCheckQuery, [chunk]);
       chunkRes.rows.forEach(r => {
@@ -925,25 +927,19 @@ app.get('/api/admin/revert-f6600p', async (req, res) => {
     `);
     const availableCols = new Set(colsRes.rows.map(c => c.column_name.toLowerCase()));
 
-    // 1. Remove do segundo banco (etiquetas_scan_onu) as unidades inseridas automaticamente hoje
-    let totalDeletadosSegundoBanco = 0;
-    if (availableCols.has('usuario')) {
-      const deleteResult = await secondPool.query(`
-        DELETE FROM etiquetas_scan_onu
-        WHERE UPPER(TRIM(usuario)) IN ('SYNC_AUTO', 'RECEBIMENTO')
-      `);
-      totalDeletadosSegundoBanco = deleteResult.rowCount || 0;
-    }
+    // 1. Remove do segundo banco (etiquetas_scan_onu) as unidades inseridas automaticamente hoje sem web_key
+    const deleteResult = await secondPool.query(`
+      DELETE FROM etiquetas_scan_onu
+      WHERE data_leitura >= '2026-09-24 00:00:00'
+        AND (web_key IS NULL OR TRIM(web_key) = '' OR TRIM(web_key) = 'N/A')
+    `);
+    const totalDeletadosSegundoBanco = deleteResult.rowCount || 0;
 
     // 2. Busca todos os GPONs legítimos remanescentes em etiquetas_scan_onu
-    let filterClause = "";
-    if (availableCols.has('usuario')) {
-      filterClause = "WHERE usuario IS NULL OR UPPER(TRIM(usuario)) NOT IN ('SYNC_AUTO', 'RECEBIMENTO')";
-    }
     const { rows: validEtiquetas } = await secondPool.query(`
       SELECT UPPER(TRIM(gpon_sn)) AS gpon_sn
       FROM etiquetas_scan_onu
-      ${filterClause}
+      WHERE (data_leitura < '2026-09-24 00:00:00' OR (web_key IS NOT NULL AND TRIM(web_key) != '' AND TRIM(web_key) != 'N/A'))
     `);
     const validGponSet = new Set(validEtiquetas.map(e => e.gpon_sn));
 
