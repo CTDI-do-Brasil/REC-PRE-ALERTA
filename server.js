@@ -416,16 +416,30 @@ app.post('/api/recebimentos', async (req, res) => {
       if (secondPool && cleanPon) {
         try {
           const checkQuery = `
-            SELECT gpon_sn, cpe_sn, mac, fabricante, modelo
+            SELECT gpon_sn, cpe_sn, mac, fabricante, modelo, password_router
             FROM etiquetas_scan_onu
             WHERE UPPER(TRIM(gpon_sn)) = UPPER(TRIM($1))
-              AND (data_leitura < '2026-09-24 00:00:00' OR (web_key IS NOT NULL AND TRIM(web_key) != '' AND TRIM(web_key) != 'N/A'))
             LIMIT 1
           `;
           const checkRes = await secondPool.query(checkQuery, [cleanPon]);
           if (checkRes.rows.length > 0) {
-            superUserStatus = 'Sim';
             const etiqueta = checkRes.rows[0];
+            const hasPassword = etiqueta.password_router && etiqueta.password_router.trim() !== '' && etiqueta.password_router.trim().toUpperCase() !== 'N/A';
+
+            if (hasPassword) {
+              superUserStatus = 'Sim';
+              if (body.noPreAlerta) {
+                destinoMsg = 'Enviar essa unidade para o laboratório';
+                destinoTipo = 'laboratorio';
+              }
+            } else {
+              superUserStatus = 'Não';
+              if (body.noPreAlerta) {
+                destinoMsg = 'Separe essa unidade para a engenharia';
+                destinoTipo = 'engenharia';
+              }
+            }
+
             // Se o serial ou mac não foram informados ou vieram vazios, completa com os dados do segundo banco
             if (!cleanSerial && etiqueta.cpe_sn) {
               cleanSerial = sanitizeDataCode(etiqueta.cpe_sn);
@@ -445,10 +459,6 @@ app.post('/api/recebimentos', async (req, res) => {
               }
             } catch (updSecErr) {
               console.error('Erro ao atualizar cpe_sn/mac em etiquetas_scan_onu no recebimento:', updSecErr.message);
-            }
-            if (body.noPreAlerta) {
-              destinoMsg = 'Enviar essa unidade para o laboratório';
-              destinoTipo = 'laboratorio';
             }
           } else {
             superUserStatus = 'Não';
@@ -774,10 +784,9 @@ app.get('/api/admin/sync-f6600p', async (req, res) => {
     for (let i = 0; i < gponArray.length; i += chunkSize) {
       const chunk = gponArray.slice(i, i + chunkSize);
       const secondCheckQuery = `
-        SELECT UPPER(TRIM(gpon_sn)) AS gpon_sn, cpe_sn, mac, fabricante, modelo
+        SELECT UPPER(TRIM(gpon_sn)) AS gpon_sn, cpe_sn, mac, fabricante, modelo, password_router
         FROM etiquetas_scan_onu
         WHERE UPPER(TRIM(gpon_sn)) = ANY($1)
-          AND (data_leitura < '2026-09-24 00:00:00' OR (web_key IS NOT NULL AND TRIM(web_key) != '' AND TRIM(web_key) != 'N/A'))
       `;
       const chunkRes = await secondPool.query(secondCheckQuery, [chunk]);
       chunkRes.rows.forEach(r => {
@@ -785,7 +794,8 @@ app.get('/api/admin/sync-f6600p', async (req, res) => {
           cpe_sn: r.cpe_sn ? r.cpe_sn.trim() : null,
           mac: r.mac ? r.mac.trim() : null,
           fabricante: r.fabricante,
-          modelo: r.modelo
+          modelo: r.modelo,
+          password_router: r.password_router ? r.password_router.trim() : null
         });
       });
     }
@@ -811,16 +821,21 @@ app.get('/api/admin/sync-f6600p', async (req, res) => {
       }
 
       const etiqueta = cleanPon ? etiquetasMap.get(cleanPon) : null;
-      let newSuperUser = null;
+      const hasPassword = etiqueta && etiqueta.password_router && etiqueta.password_router !== '' && etiqueta.password_router.toUpperCase() !== 'N/A';
+      const newSuperUser = hasPassword ? 'Sim' : 'Não';
+
+      if (hasPassword) {
+        simCount++;
+      } else {
+        naoCount++;
+      }
+
       let needsMainUpdate = false;
       let newSerial = cleanSerial;
       let newPon = cleanPon;
       let newMac = cleanMac;
 
       if (etiqueta) {
-        newSuperUser = 'Sim';
-        simCount++;
-
         // Complete serial if missing or N/A
         if ((!newSerial || newSerial === '' || newSerial === 'N/A') && etiqueta.cpe_sn) {
           newSerial = sanitizeDataCode(etiqueta.cpe_sn);
@@ -842,10 +857,6 @@ app.get('/api/admin/sync-f6600p', async (req, res) => {
           needsMainUpdate = true;
         }
 
-        if (r.super_user !== 'Sim') {
-          needsMainUpdate = true;
-        }
-
         // Atualiza cpe_sn e mac no segundo banco com o que foi bipado no recebimento
         if (newSerial || newMac) {
           toUpdateSecondDb.push({
@@ -854,13 +865,10 @@ app.get('/api/admin/sync-f6600p', async (req, res) => {
             mac: newMac || null
           });
         }
-      } else {
-        newSuperUser = 'Não';
-        naoCount++;
+      }
 
-        if (r.super_user !== 'Não') {
-          needsMainUpdate = true;
-        }
+      if (r.super_user !== newSuperUser) {
+        needsMainUpdate = true;
       }
 
       if (needsMainUpdate) {
@@ -2437,10 +2445,14 @@ async function handleEditarSeries(req, res) {
     if (isF6600PEdit) {
       if (secondPool && cleanNewGpon) {
         try {
-          const chk = await secondPool.query(
-            'SELECT 1 FROM etiquetas_scan_onu WHERE UPPER(TRIM(gpon_sn)) = UPPER(TRIM($1)) LIMIT 1',
-            [cleanNewGpon]
-          );
+          const chk = await secondPool.query(`
+            SELECT 1 FROM etiquetas_scan_onu 
+            WHERE UPPER(TRIM(gpon_sn)) = UPPER(TRIM($1))
+              AND password_router IS NOT NULL 
+              AND TRIM(password_router) != '' 
+              AND TRIM(UPPER(password_router)) != 'N/A'
+            LIMIT 1
+          `, [cleanNewGpon]);
           superUserEdit = chk.rows.length > 0 ? 'Sim' : 'Não';
         } catch (e) {
           superUserEdit = 'Não';
