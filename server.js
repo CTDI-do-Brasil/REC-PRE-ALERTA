@@ -1024,68 +1024,148 @@ app.get('/api/admin/debug-f6600p', async (req, res) => {
   }
 
   try {
-    // 1. Total de etiquetas no 2o banco
-    const totalEtiquetasRes = await secondPool.query(`SELECT COUNT(*) FROM etiquetas_scan_onu`);
-    const totalEtiquetas = parseInt(totalEtiquetasRes.rows[0].count, 10);
-
-    // 2. Agrupamento por usuário no 2o banco
-    const porUsuarioRes = await secondPool.query(`
-      SELECT COALESCE(usuario, 'NULL') AS usuario, COUNT(*) AS qtd
-      FROM etiquetas_scan_onu
-      GROUP BY COALESCE(usuario, 'NULL')
-      ORDER BY qtd DESC
-      LIMIT 20
-    `);
-
-    // 3. Agrupamento por data de leitura no 2o banco
-    const porDataRes = await secondPool.query(`
-      SELECT DATE(data_leitura) AS data, COUNT(*) AS qtd
-      FROM etiquetas_scan_onu
-      GROUP BY DATE(data_leitura)
-      ORDER BY data DESC
-      LIMIT 20
-    `);
-
-    // 4. Checagem de colunas de senha no 2o banco
-    const senhasRes = await secondPool.query(`
-      SELECT 
-        COUNT(CASE WHEN password_router IS NOT NULL AND TRIM(password_router) != '' THEN 1 END) AS com_password_router,
-        COUNT(CASE WHEN web_key IS NOT NULL AND TRIM(web_key) != '' THEN 1 END) AS com_web_key,
-        COUNT(CASE WHEN wifi_key IS NOT NULL AND TRIM(wifi_key) != '' THEN 1 END) AS com_wifi_key,
-        COUNT(CASE WHEN cpe_sn IS NOT NULL AND TRIM(cpe_sn) != '' AND TRIM(cpe_sn) != 'N/A' THEN 1 END) AS com_cpe_sn,
-        COUNT(CASE WHEN mac IS NOT NULL AND TRIM(mac) != '' AND TRIM(mac) != 'N/A' THEN 1 END) AS com_mac
-      FROM etiquetas_scan_onu
-    `);
-
-    // 5. Amostra de 5 linhas do 2o banco
-    const amostraSegundoBanco = await secondPool.query(`
-      SELECT gpon_sn, cpe_sn, mac, fabricante, modelo, usuario, password_router, web_key, wifi_key, data_leitura
-      FROM etiquetas_scan_onu
-      LIMIT 5
-    `);
-
-    // 6. Dados de recebimentos
-    const recebimentosStats = await pool.query(`
-      SELECT 
-        COUNT(*) AS total_f6600p,
-        COUNT(CASE WHEN no_pre_alerta = true THEN 1 END) AS no_pre_alerta_true,
-        COUNT(CASE WHEN no_pre_alerta = false THEN 1 END) AS no_pre_alerta_false,
-        COUNT(CASE WHEN gpon_id IS NOT NULL AND TRIM(gpon_id) != '' THEN 1 END) AS com_gpon_id,
-        COUNT(CASE WHEN serial_number IS NOT NULL AND TRIM(serial_number) != '' THEN 1 END) AS com_serial_number,
-        COUNT(CASE WHEN super_user = 'Sim' THEN 1 END) AS super_user_sim,
-        COUNT(CASE WHEN super_user = 'Não' THEN 1 END) AS super_user_nao
+    // 1. Unidades F6600P no recebimentos
+    const recebidosRes = await pool.query(`
+      SELECT id, serial_number, gpon_id, mac, no_pre_alerta, super_user, data_hora
       FROM recebimentos
       WHERE UPPER(modelo) LIKE '%F6600P%'
+      ORDER BY id ASC
     `);
+    const recebidos = recebidosRes.rows;
+
+    const gponsPre = [];
+    const gponsFora = [];
+    const gponToRecMap = new Map();
+
+    for (const r of recebidos) {
+      let gpon = r.gpon_id ? r.gpon_id.trim().toUpperCase() : '';
+      if (!gpon && r.serial_number) {
+        const s = r.serial_number.trim().toUpperCase();
+        if (s.startsWith('ZTE3') || s.startsWith('ZTEG')) gpon = s;
+      }
+      if (gpon) {
+        gponToRecMap.set(gpon, r);
+        if (r.no_pre_alerta) gponsPre.push(gpon);
+        else gponsFora.push(gpon);
+      }
+    }
+
+    // 2. Busca todas as correspondências no segundo banco em lotes de 500
+    const allGpons = Array.from(gponToRecMap.keys());
+    const chunkSize = 500;
+    const etiquetasEncontradas = [];
+
+    for (let i = 0; i < allGpons.length; i += chunkSize) {
+      const chunk = allGpons.slice(i, i + chunkSize);
+      const chkRes = await secondPool.query(`
+        SELECT 
+          UPPER(TRIM(gpon_sn)) AS gpon_sn,
+          cpe_sn,
+          mac,
+          fabricante,
+          modelo,
+          usuario,
+          password_router,
+          web_key,
+          wifi_key,
+          data_leitura
+        FROM etiquetas_scan_onu
+        WHERE UPPER(TRIM(gpon_sn)) = ANY($1)
+      `, [chunk]);
+      etiquetasEncontradas.push(...chkRes.rows);
+    }
+
+    const etiquetaMap = new Map();
+    etiquetasEncontradas.forEach(e => etiquetaMap.set(e.gpon_sn, e));
+
+    // 3. Análise detalhada dos dados das unidades NO PRÉ-ALERTA
+    let preTotal = gponsPre.length;
+    let preEncontrados = 0;
+    let preNaoEncontrados = 0;
+
+    let preComWebKeyReal = 0;
+    let preComPasswordRouterReal = 0;
+    let preComWifiKeyReal = 0;
+    let preComCpeSnReal = 0;
+    let preComMacReal = 0;
+
+    const prePorDataLeitura = {};
+    const prePorUsuario = {};
+    const prePorModelo = {};
+
+    const amostraPreComValores = [];
+    const amostraPreSemValores = [];
+
+    for (const gpon of gponsPre) {
+      const e = etiquetaMap.get(gpon);
+      if (e) {
+        preEncontrados++;
+        const dt = e.data_leitura ? new Date(e.data_leitura).toISOString().split('T')[0] : 'SEM_DATA';
+        prePorDataLeitura[dt] = (prePorDataLeitura[dt] || 0) + 1;
+
+        const usr = e.usuario || 'NULL';
+        prePorUsuario[usr] = (prePorUsuario[usr] || 0) + 1;
+
+        const mod = e.modelo || 'NULL';
+        prePorModelo[mod] = (prePorModelo[mod] || 0) + 1;
+
+        const hasWebKey = e.web_key && e.web_key.trim() !== '' && e.web_key.trim().toUpperCase() !== 'N/A';
+        const hasPwd = e.password_router && e.password_router.trim() !== '' && e.password_router.trim().toUpperCase() !== 'N/A';
+        const hasWifi = e.wifi_key && e.wifi_key.trim() !== '' && e.wifi_key.trim().toUpperCase() !== 'N/A';
+        const hasCpe = e.cpe_sn && e.cpe_sn.trim() !== '' && e.cpe_sn.trim().toUpperCase() !== 'N/A';
+        const hasMac = e.mac && e.mac.trim() !== '' && e.mac.trim().toUpperCase() !== 'N/A';
+
+        if (hasWebKey) preComWebKeyReal++;
+        if (hasPwd) preComPasswordRouterReal++;
+        if (hasWifi) preComWifiKeyReal++;
+        if (hasCpe) preComCpeSnReal++;
+        if (hasMac) preComMacReal++;
+
+        if (hasWebKey || hasPwd || hasWifi) {
+          if (amostraPreComValores.length < 5) {
+            amostraPreComValores.push({ gpon, web_key: e.web_key, password_router: e.password_router, wifi_key: e.wifi_key, cpe_sn: e.cpe_sn, mac: e.mac, data: e.data_leitura, usuario: e.usuario });
+          }
+        } else {
+          if (amostraPreSemValores.length < 5) {
+            amostraPreSemValores.push({ gpon, web_key: e.web_key, password_router: e.password_router, wifi_key: e.wifi_key, cpe_sn: e.cpe_sn, mac: e.mac, data: e.data_leitura, usuario: e.usuario });
+          }
+        }
+      } else {
+        preNaoEncontrados++;
+      }
+    }
+
+    // 4. Análise de recebimentos por data de bipagem
+    const recPorDataBipagem = {};
+    for (const r of recebidos) {
+      const dt = r.data_hora ? new Date(r.data_hora).toISOString().split('T')[0] : 'SEM_DATA';
+      recPorDataBipagem[dt] = (recPorDataBipagem[dt] || 0) + 1;
+    }
 
     res.json({
       success: true,
-      totalEtiquetasSegundoBanco: totalEtiquetas,
-      etiquetas_por_usuario: porUsuarioRes.rows,
-      etiquetas_por_data: porDataRes.rows,
-      etiquetas_senhas_e_campos: senhasRes.rows[0],
-      amostra_segundo_banco: amostraSegundoBanco.rows,
-      recebimentos_stats: recebimentosStats.rows[0]
+      recebimentos_por_data_bipagem: recPorDataBipagem,
+      pre_alerta_f6600p: {
+        total: preTotal,
+        encontradosNoSegundoBanco: preEncontrados,
+        naoEncontradosNoSegundoBanco: preNaoEncontrados,
+        etiquetas_por_data_leitura: prePorDataLeitura,
+        etiquetas_por_usuario: prePorUsuario,
+        etiquetas_por_modelo: prePorModelo,
+        campos_reais: {
+          com_web_key_real: preComWebKeyReal,
+          com_password_router_real: preComPasswordRouterReal,
+          com_wifi_key_real: preComWifiKeyReal,
+          com_cpe_sn_real: preComCpeSnReal,
+          com_mac_real: preComMacReal
+        },
+        amostra_com_senhas: amostraPreComValores,
+        amostra_sem_senhas: amostraPreSemValores
+      },
+      fora_pre_alerta_f6600p: {
+        total: gponsFora.length,
+        encontradosNoSegundoBanco: gponsFora.filter(g => etiquetaMap.has(g)).length
+      }
     });
   } catch (err) {
     console.error('Debug error:', err);
