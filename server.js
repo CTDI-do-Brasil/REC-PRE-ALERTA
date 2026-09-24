@@ -1009,7 +1009,7 @@ app.get('/api/admin/audit-f6600p', async (req, res) => {
     for (let i = 0; i < gponArray.length; i += chunkSize) {
       const chunk = gponArray.slice(i, i + chunkSize);
       const chunkRes = await secondPool.query(`
-        SELECT UPPER(TRIM(gpon_sn)) AS gpon_sn, cpe_sn, mac, fabricante, modelo
+        SELECT UPPER(TRIM(gpon_sn)) AS gpon_sn, cpe_sn, mac, fabricante, modelo, usuario, senha, data_leitura
         FROM etiquetas_scan_onu
         WHERE UPPER(TRIM(gpon_sn)) = ANY($1)
       `, [chunk]);
@@ -1018,7 +1018,10 @@ app.get('/api/admin/audit-f6600p', async (req, res) => {
           cpe_sn: r.cpe_sn ? r.cpe_sn.trim() : null,
           mac: r.mac ? r.mac.trim() : null,
           fabricante: r.fabricante,
-          modelo: r.modelo
+          modelo: r.modelo,
+          usuario: r.usuario,
+          senha: r.senha,
+          data_leitura: r.data_leitura
         });
       });
     }
@@ -1026,6 +1029,11 @@ app.get('/api/admin/audit-f6600p', async (req, res) => {
     let totalRecebidos = recebidos.length;
     let encontradosSegundoBanco = 0;
     let naoEncontrados = 0;
+    let comSenhaPreenchida = 0;
+    let semSenhaPreenchida = 0;
+    let criadasHoje = 0;
+    let criadasAntesDeHoje = 0;
+    const porUsuario = {};
     let serialBate = 0;
     let serialDiferente = 0;
     let serialVazioRecebimento = 0;
@@ -1036,6 +1044,8 @@ app.get('/api/admin/audit-f6600p', async (req, res) => {
     let macVazioSegundoBanco = 0;
 
     const amostraCorrespondencias = [];
+
+    const hoje = new Date('2026-09-24T00:00:00Z');
 
     for (const r of recebidos) {
       const cleanPon = r.gpon_id ? r.gpon_id.trim().toUpperCase() : '';
@@ -1051,6 +1061,21 @@ app.get('/api/admin/audit-f6600p', async (req, res) => {
         const eSerial = etiqueta.cpe_sn ? etiqueta.cpe_sn.trim().toUpperCase() : '';
         const eMac = etiqueta.mac ? etiqueta.mac.trim().toUpperCase() : '';
 
+        if (etiqueta.senha && etiqueta.senha.trim() !== '') {
+          comSenhaPreenchida++;
+        } else {
+          semSenhaPreenchida++;
+        }
+
+        const u = etiqueta.usuario || 'DESCONHECIDO';
+        porUsuario[u] = (porUsuario[u] || 0) + 1;
+
+        if (etiqueta.data_leitura && new Date(etiqueta.data_leitura) >= hoje) {
+          criadasHoje++;
+        } else {
+          criadasAntesDeHoje++;
+        }
+
         if (!eSerial || eSerial === 'N/A') serialVazioSegundoBanco++;
         if (!eMac || eMac === 'N/A') macVazioSegundoBanco++;
 
@@ -1064,7 +1089,7 @@ app.get('/api/admin/audit-f6600p', async (req, res) => {
           amostraCorrespondencias.push({
             gpon: cleanPon,
             recebimentos: { serial: rSerial, mac: rMac, super_user: r.super_user },
-            segundo_banco_etiquetas: { cpe_sn: eSerial, mac: eMac }
+            segundo_banco_etiquetas: { cpe_sn: eSerial, mac: eMac, usuario: etiqueta.usuario, senha: etiqueta.senha, data_leitura: etiqueta.data_leitura }
           });
         }
       } else {
@@ -1072,11 +1097,18 @@ app.get('/api/admin/audit-f6600p', async (req, res) => {
       }
     }
 
-    res.json({
+    return res.json({
       success: true,
       totalRecebidos,
       encontradosSegundoBanco,
       naoEncontrados,
+      diagnostico_segundo_banco: {
+        comSenhaPreenchida,
+        semSenhaPreenchida,
+        criadasHoje,
+        criadasAntesDeHoje,
+        porUsuario
+      },
       seriais: {
         iguaisEmAmbos: serialBate,
         diferentes: serialDiferente,
