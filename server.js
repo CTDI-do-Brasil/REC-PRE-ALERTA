@@ -656,7 +656,7 @@ app.get('/api/admin/sync-legacy', async (req, res) => {
 async function insertBatchEtiquetas(items, clientOrPool) {
   if (!items || items.length === 0) return 0;
   let totalInserted = 0;
-  const chunkSize = 100;
+  const chunkSize = 200;
   for (let i = 0; i < items.length; i += chunkSize) {
     const chunk = items.slice(i, i + chunkSize);
     const valueClauses = [];
@@ -688,7 +688,7 @@ async function insertBatchEtiquetas(items, clientOrPool) {
 async function updateBatchRecebimentos(items, clientOrPool) {
   if (!items || items.length === 0) return 0;
   let totalUpdated = 0;
-  const chunkSize = 100;
+  const chunkSize = 200;
   for (let i = 0; i < items.length; i += chunkSize) {
     const chunk = items.slice(i, i + chunkSize);
     const valueClauses = [];
@@ -714,6 +714,35 @@ async function updateBatchRecebimentos(items, clientOrPool) {
         super_user = v.super_user
       FROM (VALUES ${valueClauses.join(', ')}) AS v(id, serial_number, gpon_id, mac, super_user)
       WHERE r.id = v.id
+    `;
+    const res = await clientOrPool.query(query, params);
+    totalUpdated += (res.rowCount || 0);
+  }
+  return totalUpdated;
+}
+
+async function updateBatchEtiquetas(items, clientOrPool) {
+  if (!items || items.length === 0) return 0;
+  let totalUpdated = 0;
+  const chunkSize = 200;
+  for (let i = 0; i < items.length; i += chunkSize) {
+    const chunk = items.slice(i, i + chunkSize);
+    const valueClauses = [];
+    const params = [];
+    let pIdx = 1;
+    for (const item of chunk) {
+      valueClauses.push(`($${pIdx}::varchar, $${pIdx+1}::varchar, $${pIdx+2}::varchar)`);
+      params.push(item.gpon_sn, item.cpe_sn || null, item.mac || null);
+      pIdx += 3;
+    }
+    const query = `
+      UPDATE etiquetas_scan_onu AS e
+      SET 
+        cpe_sn = COALESCE(NULLIF(e.cpe_sn, 'N/A'), v.cpe_sn, e.cpe_sn),
+        mac = COALESCE(NULLIF(e.mac, 'N/A'), v.mac, e.mac)
+      FROM (VALUES ${valueClauses.join(', ')}) AS v(gpon_sn, cpe_sn, mac)
+      WHERE UPPER(TRIM(e.gpon_sn)) = UPPER(TRIM(v.gpon_sn))
+        AND (e.cpe_sn IS NULL OR e.cpe_sn = '' OR e.cpe_sn = 'N/A' OR e.mac IS NULL OR e.mac = '' OR e.mac = 'N/A')
     `;
     const res = await clientOrPool.query(query, params);
     totalUpdated += (res.rowCount || 0);
@@ -916,19 +945,7 @@ app.get('/api/admin/sync-f6600p', async (req, res) => {
     const totalInsertedSecondDb = await insertBatchEtiquetas(uniqueToInsert, secondPool);
 
     // 6. Update missing fields in second DB if needed
-    for (const item of toUpdateSecondDb) {
-      try {
-        await secondPool.query(`
-          UPDATE etiquetas_scan_onu
-          SET cpe_sn = COALESCE(NULLIF(cpe_sn, 'N/A'), $1),
-              mac = COALESCE(NULLIF(mac, 'N/A'), $2)
-          WHERE UPPER(TRIM(gpon_sn)) = UPPER(TRIM($3))
-            AND (cpe_sn IS NULL OR cpe_sn = '' OR cpe_sn = 'N/A' OR mac IS NULL OR mac = '' OR mac = 'N/A')
-        `, [item.cpe_sn || null, item.mac || null, item.gpon_sn]);
-      } catch (secUpdateErr) {
-        // Ignore individual row error
-      }
-    }
+    const totalUpdatedSecondDb = await updateBatchEtiquetas(toUpdateSecondDb, secondPool);
 
     res.json({
       success: true,
