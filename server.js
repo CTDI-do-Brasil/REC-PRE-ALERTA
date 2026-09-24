@@ -1021,6 +1021,82 @@ app.get('/api/admin/revert-f6600p', async (req, res) => {
   }
 });
 
+// Detailed debug diagnostic for F6600P
+app.get('/api/admin/debug-f6600p', async (req, res) => {
+  if (!secondPool) {
+    return res.status(400).json({ error: 'Second database connection is not configured.' });
+  }
+
+  try {
+    // 1. Total de etiquetas no 2o banco
+    const totalEtiquetasRes = await secondPool.query(`SELECT COUNT(*) FROM etiquetas_scan_onu`);
+    const totalEtiquetas = parseInt(totalEtiquetasRes.rows[0].count, 10);
+
+    // 2. Agrupamento por usuário no 2o banco
+    const porUsuarioRes = await secondPool.query(`
+      SELECT COALESCE(usuario, 'NULL') AS usuario, COUNT(*) AS qtd
+      FROM etiquetas_scan_onu
+      GROUP BY COALESCE(usuario, 'NULL')
+      ORDER BY qtd DESC
+      LIMIT 20
+    `);
+
+    // 3. Agrupamento por data de leitura no 2o banco
+    const porDataRes = await secondPool.query(`
+      SELECT DATE(data_leitura) AS data, COUNT(*) AS qtd
+      FROM etiquetas_scan_onu
+      GROUP BY DATE(data_leitura)
+      ORDER BY data DESC
+      LIMIT 20
+    `);
+
+    // 4. Checagem de colunas de senha no 2o banco
+    const senhasRes = await secondPool.query(`
+      SELECT 
+        COUNT(CASE WHEN password_router IS NOT NULL AND TRIM(password_router) != '' THEN 1 END) AS com_password_router,
+        COUNT(CASE WHEN web_key IS NOT NULL AND TRIM(web_key) != '' THEN 1 END) AS com_web_key,
+        COUNT(CASE WHEN wifi_key IS NOT NULL AND TRIM(wifi_key) != '' THEN 1 END) AS com_wifi_key,
+        COUNT(CASE WHEN cpe_sn IS NOT NULL AND TRIM(cpe_sn) != '' AND TRIM(cpe_sn) != 'N/A' THEN 1 END) AS com_cpe_sn,
+        COUNT(CASE WHEN mac IS NOT NULL AND TRIM(mac) != '' AND TRIM(mac) != 'N/A' THEN 1 END) AS com_mac
+      FROM etiquetas_scan_onu
+    `);
+
+    // 5. Amostra de 5 linhas do 2o banco
+    const amostraSegundoBanco = await secondPool.query(`
+      SELECT gpon_sn, cpe_sn, mac, fabricante, modelo, usuario, password_router, web_key, wifi_key, data_leitura
+      FROM etiquetas_scan_onu
+      LIMIT 5
+    `);
+
+    // 6. Dados de recebimentos
+    const recebimentosStats = await pool.query(`
+      SELECT 
+        COUNT(*) AS total_f6600p,
+        COUNT(CASE WHEN no_pre_alerta = true THEN 1 END) AS no_pre_alerta_true,
+        COUNT(CASE WHEN no_pre_alerta = false THEN 1 END) AS no_pre_alerta_false,
+        COUNT(CASE WHEN gpon_id IS NOT NULL AND TRIM(gpon_id) != '' THEN 1 END) AS com_gpon_id,
+        COUNT(CASE WHEN serial_number IS NOT NULL AND TRIM(serial_number) != '' THEN 1 END) AS com_serial_number,
+        COUNT(CASE WHEN super_user = 'Sim' THEN 1 END) AS super_user_sim,
+        COUNT(CASE WHEN super_user = 'Não' THEN 1 END) AS super_user_nao
+      FROM recebimentos
+      WHERE UPPER(modelo) LIKE '%F6600P%'
+    `);
+
+    res.json({
+      success: true,
+      totalEtiquetasSegundoBanco: totalEtiquetas,
+      etiquetas_por_usuario: porUsuarioRes.rows,
+      etiquetas_por_data: porDataRes.rows,
+      etiquetas_senhas_e_campos: senhasRes.rows[0],
+      amostra_segundo_banco: amostraSegundoBanco.rows,
+      recebimentos_stats: recebimentosStats.rows[0]
+    });
+  } catch (err) {
+    console.error('Debug error:', err);
+    res.status(500).json({ error: 'Debug error', details: err.message });
+  }
+});
+
 // Detailed audit endpoint for F6600P comparing recebimentos and etiquetas_scan_onu
 app.get('/api/admin/audit-f6600p', async (req, res) => {
   if (!secondPool) {
