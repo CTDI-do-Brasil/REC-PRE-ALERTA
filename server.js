@@ -975,6 +975,116 @@ app.get('/api/admin/sync-f6600p', async (req, res) => {
   }
 });
 
+// Detailed audit endpoint for F6600P comparing recebimentos and etiquetas_scan_onu
+app.get('/api/admin/audit-f6600p', async (req, res) => {
+  if (!secondPool) {
+    return res.status(400).json({ error: 'Second database connection is not configured.' });
+  }
+
+  try {
+    const { rows: recebidos } = await pool.query(`
+      SELECT id, serial_number, gpon_id, mac, modelo, super_user
+      FROM recebimentos
+      WHERE UPPER(modelo) LIKE '%F6600P%'
+      ORDER BY id ASC
+    `);
+
+    const gponSet = new Set(recebidos.map(r => (r.gpon_id ? r.gpon_id.trim().toUpperCase() : '')).filter(Boolean));
+    const gponArray = Array.from(gponSet);
+    const etiquetasMap = new Map();
+
+    const chunkSize = 500;
+    for (let i = 0; i < gponArray.length; i += chunkSize) {
+      const chunk = gponArray.slice(i, i + chunkSize);
+      const chunkRes = await secondPool.query(`
+        SELECT UPPER(TRIM(gpon_sn)) AS gpon_sn, cpe_sn, mac, fabricante, modelo
+        FROM etiquetas_scan_onu
+        WHERE UPPER(TRIM(gpon_sn)) = ANY($1)
+      `, [chunk]);
+      chunkRes.rows.forEach(r => {
+        etiquetasMap.set(r.gpon_sn, {
+          cpe_sn: r.cpe_sn ? r.cpe_sn.trim() : null,
+          mac: r.mac ? r.mac.trim() : null,
+          fabricante: r.fabricante,
+          modelo: r.modelo
+        });
+      });
+    }
+
+    let totalRecebidos = recebidos.length;
+    let encontradosSegundoBanco = 0;
+    let naoEncontrados = 0;
+    let serialBate = 0;
+    let serialDiferente = 0;
+    let serialVazioRecebimento = 0;
+    let serialVazioSegundoBanco = 0;
+    let macBate = 0;
+    let macDiferente = 0;
+    let macVazioRecebimento = 0;
+    let macVazioSegundoBanco = 0;
+
+    const amostraCorrespondencias = [];
+
+    for (const r of recebidos) {
+      const cleanPon = r.gpon_id ? r.gpon_id.trim().toUpperCase() : '';
+      const rSerial = r.serial_number ? r.serial_number.trim().toUpperCase() : '';
+      const rMac = r.mac ? r.mac.trim().toUpperCase() : '';
+
+      if (!rSerial) serialVazioRecebimento++;
+      if (!rMac) macVazioRecebimento++;
+
+      const etiqueta = cleanPon ? etiquetasMap.get(cleanPon) : null;
+      if (etiqueta) {
+        encontradosSegundoBanco++;
+        const eSerial = etiqueta.cpe_sn ? etiqueta.cpe_sn.trim().toUpperCase() : '';
+        const eMac = etiqueta.mac ? etiqueta.mac.trim().toUpperCase() : '';
+
+        if (!eSerial || eSerial === 'N/A') serialVazioSegundoBanco++;
+        if (!eMac || eMac === 'N/A') macVazioSegundoBanco++;
+
+        if (rSerial && eSerial && rSerial === eSerial) serialBate++;
+        else if (rSerial && eSerial && rSerial !== eSerial) serialDiferente++;
+
+        if (rMac && eMac && rMac === eMac) macBate++;
+        else if (rMac && eMac && rMac !== eMac) macDiferente++;
+
+        if (amostraCorrespondencias.length < 10) {
+          amostraCorrespondencias.push({
+            gpon: cleanPon,
+            recebimentos: { serial: rSerial, mac: rMac, super_user: r.super_user },
+            segundo_banco_etiquetas: { cpe_sn: eSerial, mac: eMac }
+          });
+        }
+      } else {
+        naoEncontrados++;
+      }
+    }
+
+    res.json({
+      success: true,
+      totalRecebidos,
+      encontradosSegundoBanco,
+      naoEncontrados,
+      seriais: {
+        iguaisEmAmbos: serialBate,
+        diferentes: serialDiferente,
+        vazioEmRecebimentos: serialVazioRecebimento,
+        vazioEmSegundoBanco: serialVazioSegundoBanco
+      },
+      macs: {
+        iguaisEmAmbos: macBate,
+        diferentes: macDiferente,
+        vazioEmRecebimentos: macVazioRecebimento,
+        vazioEmSegundoBanco: macVazioSegundoBanco
+      },
+      amostra: amostraCorrespondencias
+    });
+  } catch (err) {
+    console.error('Error auditing F6600P:', err);
+    res.status(500).json({ error: 'Audit error', details: err.message });
+  }
+});
+
 // Fetch operator production dashboard stats for a specific date (defaulting to today in YYYY-MM-DD)
 app.get('/api/recebimentos/stats/operadores', async (req, res) => {
   const { date } = req.query;
