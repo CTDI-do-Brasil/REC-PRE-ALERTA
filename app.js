@@ -956,6 +956,58 @@ document.getElementById('btn-clear-base').addEventListener('click', async () => 
 });
 
 // ============================================================
+// AUTOCOMPLETE F6600P VIA SEGUNDO BANCO (etiquetas_scan_onu)
+// ============================================================
+let isLookupF6600PRunning = false;
+
+async function lookupAndFillF6600P(gponValue, sourceField = 'pon') {
+    if (!gponValue || isLookupF6600PRunning) return false;
+    const modeloEl = document.getElementById('modelo');
+    const modelo = modeloEl ? modeloEl.value : '';
+    if (!modelo || !modelo.toUpperCase().includes('F6600P')) return false;
+
+    const cleanPon = gponValue.trim().toUpperCase();
+    if (cleanPon.length < 6) return false;
+
+    try {
+        isLookupF6600PRunning = true;
+        const res = await fetch(`${SERVER_URL.replace(/\/$/, '')}/api/etiquetas/lookup?gpon=${encodeURIComponent(cleanPon)}`);
+        if (!res.ok) return false;
+        const result = await res.json();
+        if (result && result.found && result.data) {
+            const data = result.data;
+            const serialInput = document.getElementById('serial');
+            const ponInput = document.getElementById('pon');
+            const macInput = document.getElementById('mac');
+
+            if (sourceField === 'serial') {
+                if (ponInput) ponInput.value = data.gpon_sn || cleanPon;
+                if (serialInput && data.cpe_sn) serialInput.value = data.cpe_sn;
+                if (macInput && data.mac) macInput.value = data.mac;
+            } else {
+                if (ponInput && data.gpon_sn) ponInput.value = data.gpon_sn;
+                if (serialInput && data.cpe_sn) serialInput.value = data.cpe_sn;
+                if (macInput && data.mac) macInput.value = data.mac;
+            }
+
+            showMessage('Unidade F6600P localizada! Serial e MAC preenchidos automaticamente.', 'info');
+            setTimeout(() => {
+                const msgEl = document.getElementById('status-message');
+                if (msgEl && msgEl.classList.contains('status-info')) {
+                    hideMessage();
+                }
+            }, 3000);
+            return true;
+        }
+    } catch (err) {
+        console.error('Erro na consulta de etiquetas F6600P:', err);
+    } finally {
+        isLookupF6600PRunning = false;
+    }
+    return false;
+}
+
+// ============================================================
 // Receive Logic
 // ============================================================
 function setupEventListeners() {
@@ -972,11 +1024,20 @@ function setupEventListeners() {
     inputs.forEach((id) => {
         const el = document.getElementById(id);
         if (el) {
-            el.addEventListener('keydown', (e) => {
+            el.addEventListener('keydown', async (e) => {
                 if (e.key === 'Enter' || e.keyCode === 13 || e.key === 'Tab' || e.keyCode === 9) {
                     e.preventDefault();
                     const modelo = document.getElementById('modelo').value;
                     const isException = (window.modelFieldsConfig[modelo] === 2);
+
+                    if (modelo && modelo.toUpperCase().includes('F6600P')) {
+                        if (id === 'pon' && el.value.trim()) {
+                            await lookupAndFillF6600P(el.value, 'pon');
+                        } else if (id === 'serial' && el.value.trim() && !document.getElementById('pon').value.trim()) {
+                            await lookupAndFillF6600P(el.value, 'serial');
+                        }
+                    }
+
                     setTimeout(() => {
                         if (id === 'serial') {
                             if (isException) document.getElementById('mac').focus();
@@ -991,6 +1052,40 @@ function setupEventListeners() {
             });
         }
     });
+
+    let f6600pDebounceTimeout = null;
+    const ponInput = document.getElementById('pon');
+    if (ponInput) {
+        ponInput.addEventListener('input', (e) => {
+            const modelo = document.getElementById('modelo').value;
+            if (modelo && modelo.toUpperCase().includes('F6600P')) {
+                clearTimeout(f6600pDebounceTimeout);
+                const val = e.target.value;
+                if (val && val.trim().length >= 8) {
+                    f6600pDebounceTimeout = setTimeout(() => {
+                        lookupAndFillF6600P(val, 'pon');
+                    }, 350);
+                }
+            }
+        });
+        ponInput.addEventListener('blur', (e) => {
+            const modelo = document.getElementById('modelo').value;
+            if (modelo && modelo.toUpperCase().includes('F6600P') && e.target.value.trim()) {
+                lookupAndFillF6600P(e.target.value, 'pon');
+            }
+        });
+    }
+
+    const serialInput = document.getElementById('serial');
+    if (serialInput) {
+        serialInput.addEventListener('blur', (e) => {
+            const modelo = document.getElementById('modelo').value;
+            const ponVal = document.getElementById('pon').value.trim();
+            if (modelo && modelo.toUpperCase().includes('F6600P') && !ponVal && e.target.value.trim().length >= 8) {
+                lookupAndFillF6600P(e.target.value, 'serial');
+            }
+        });
+    }
 
     document.getElementById('btn-modal-ok').addEventListener('click', confirmSegregar);
     document.getElementById('modelo').addEventListener('change', updateFormFields);
@@ -1332,9 +1427,26 @@ async function processRecebimento() {
         const modelo = document.getElementById('modelo').value;
         const isException = (window.modelFieldsConfig[modelo] === 2);
 
-        const serial = document.getElementById('serial').value.trim().toUpperCase();
-        const pon = isException ? '' : document.getElementById('pon').value.trim().toUpperCase();
-        const mac = document.getElementById('mac').value.trim().toUpperCase();
+        let serial = document.getElementById('serial').value.trim().toUpperCase();
+        let pon = isException ? '' : document.getElementById('pon').value.trim().toUpperCase();
+        let mac = document.getElementById('mac').value.trim().toUpperCase();
+
+        if (modelo && modelo.toUpperCase().includes('F6600P')) {
+            if (pon && (!serial || !mac)) {
+                const filled = await lookupAndFillF6600P(pon, 'pon');
+                if (filled) {
+                    serial = document.getElementById('serial').value.trim().toUpperCase();
+                    mac = document.getElementById('mac').value.trim().toUpperCase();
+                }
+            } else if (!pon && serial && !mac) {
+                const filled = await lookupAndFillF6600P(serial, 'serial');
+                if (filled) {
+                    serial = document.getElementById('serial').value.trim().toUpperCase();
+                    pon = document.getElementById('pon').value.trim().toUpperCase();
+                    mac = document.getElementById('mac').value.trim().toUpperCase();
+                }
+            }
+        }
 
         if (!serial || (!isException && !pon) || !mac) {
             showMessage('Preencha todos os campos necessarios para receber a unidade.', 'error');

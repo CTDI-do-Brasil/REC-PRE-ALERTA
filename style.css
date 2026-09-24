@@ -390,6 +390,13 @@ input[type="date"]::-webkit-calendar-picker-indicator {
     letter-spacing: 0.5px;
 }
 
+.status-info {
+    background-color: rgba(59, 130, 246, 0.18);
+    color: #93c5fd;
+    border: 1px solid #3b82f6;
+    letter-spacing: 0.5px;
+}
+
 /* Modals */
 .modal-overlay {
     position: fixed;

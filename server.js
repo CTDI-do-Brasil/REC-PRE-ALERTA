@@ -402,9 +402,9 @@ app.post('/api/recebimentos', async (req, res) => {
     return res.status(400).json({ error: 'Caracteres especiais não são permitidos nos dados da unidade.' });
   }
 
-  const cleanSerial = sanitizeDataCode(rawSerial);
+  let cleanSerial = sanitizeDataCode(rawSerial);
   const cleanPon = sanitizeDataCode(rawPon);
-  const cleanMac = sanitizeDataCode(rawMac);
+  let cleanMac = sanitizeDataCode(rawMac);
 
   const isF6600P = body.modelo && body.modelo.trim().toUpperCase().includes('F6600P');
   let superUserStatus = null;
@@ -416,13 +416,22 @@ app.post('/api/recebimentos', async (req, res) => {
       if (secondPool && cleanPon) {
         try {
           const checkQuery = `
-            SELECT 1 FROM etiquetas_scan_onu
+            SELECT gpon_sn, cpe_sn, mac, fabricante, modelo
+            FROM etiquetas_scan_onu
             WHERE UPPER(TRIM(gpon_sn)) = UPPER(TRIM($1))
             LIMIT 1
           `;
           const checkRes = await secondPool.query(checkQuery, [cleanPon]);
           if (checkRes.rows.length > 0) {
             superUserStatus = 'Sim';
+            const etiqueta = checkRes.rows[0];
+            // Se o serial ou mac não foram informados ou vieram vazios, completa com os dados do segundo banco
+            if (!cleanSerial && etiqueta.cpe_sn) {
+              cleanSerial = sanitizeDataCode(etiqueta.cpe_sn);
+            }
+            if (!cleanMac && etiqueta.mac) {
+              cleanMac = sanitizeDataCode(etiqueta.mac);
+            }
             if (body.noPreAlerta) {
               destinoMsg = 'Enviar essa unidade para o laboratório';
               destinoTipo = 'laboratorio';
@@ -432,6 +441,26 @@ app.post('/api/recebimentos', async (req, res) => {
             if (body.noPreAlerta) {
               destinoMsg = 'Separe essa unidade para a engenharia';
               destinoTipo = 'engenharia';
+            }
+            // Não encontrada no segundo banco: fazer INSERT em etiquetas_scan_onu
+            try {
+              const insertEtiquetaQuery = `
+                INSERT INTO etiquetas_scan_onu (
+                  gpon_sn, fabricante, modelo, cpe_sn, mac, usuario, data_leitura
+                ) VALUES ($1, $2, $3, $4, $5, $6, NOW())
+                ON CONFLICT (gpon_sn) DO NOTHING
+              `;
+              await secondPool.query(insertEtiquetaQuery, [
+                cleanPon,
+                body.fabricante || 'ZTE',
+                body.modelo || 'ZXHN F6600P',
+                cleanSerial || null,
+                cleanMac || null,
+                body.usuario || 'RECEBIMENTO'
+              ]);
+              console.log(`Unidade F6600P GPON ${cleanPon} inserida com sucesso em etiquetas_scan_onu.`);
+            } catch (insertErr) {
+              console.error('Erro ao inserir unidade F6600P em etiquetas_scan_onu:', insertErr.message);
             }
           }
         } catch (secDbErr) {
@@ -539,6 +568,46 @@ app.get('/api/recebimentos/report', async (req, res) => {
   } catch (err) {
     console.error('Error fetching report data:', err);
     res.status(500).json({ error: 'Failed to fetch report data.' });
+  }
+});
+
+// Lookup unit by GPON in second DB (etiquetas_scan_onu) for autocomplete
+app.get('/api/etiquetas/lookup', async (req, res) => {
+  if (!secondPool) {
+    return res.status(400).json({ error: 'Second database connection is not configured.' });
+  }
+
+  const { gpon } = req.query;
+  if (!gpon) {
+    return res.status(400).json({ error: 'Missing gpon parameter.' });
+  }
+
+  const cleanPon = sanitizeDataCode(String(gpon));
+  try {
+    const query = `
+      SELECT gpon_sn, cpe_sn, mac, fabricante, modelo
+      FROM etiquetas_scan_onu
+      WHERE UPPER(TRIM(gpon_sn)) = UPPER(TRIM($1))
+      LIMIT 1
+    `;
+    const result = await secondPool.query(query, [cleanPon]);
+    if (result.rows.length > 0) {
+      const row = result.rows[0];
+      return res.json({
+        found: true,
+        data: {
+          gpon_sn: row.gpon_sn,
+          cpe_sn: row.cpe_sn,
+          mac: row.mac,
+          fabricante: row.fabricante,
+          modelo: row.modelo
+        }
+      });
+    }
+    res.json({ found: false });
+  } catch (err) {
+    console.error('Error looking up etiquetas_scan_onu:', err);
+    res.status(500).json({ error: 'Database query error.' });
   }
 });
 
