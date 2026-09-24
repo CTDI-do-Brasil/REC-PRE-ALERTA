@@ -756,9 +756,9 @@ app.get('/api/admin/sync-f6600p', async (req, res) => {
     return res.status(400).json({ error: 'Second database connection is not configured.' });
   }
 
-  const { limit, force } = req.query;
+  const { limit, last_id } = req.query;
   const limitNum = limit ? parseInt(limit, 10) : null;
-  const forceAll = force === 'true' || force === '1';
+  const lastIdNum = last_id ? parseInt(last_id, 10) : 0;
 
   try {
     // 1. Get F6600P units in recebimentos
@@ -766,27 +766,22 @@ app.get('/api/admin/sync-f6600p', async (req, res) => {
       SELECT id, modelo, fabricante, serial_number, gpon_id, mac, usuario, super_user, no_pre_alerta
       FROM recebimentos
       WHERE UPPER(modelo) LIKE '%F6600P%'
+        AND id > $1
+      ORDER BY id ASC
     `;
-    if (!forceAll) {
-      selectQuery += `
-        AND (
-          super_user IS NULL 
-          OR serial_number IS NULL OR TRIM(serial_number) = '' OR UPPER(TRIM(serial_number)) = 'N/A'
-          OR mac IS NULL OR TRIM(mac) = '' OR UPPER(TRIM(mac)) = 'N/A'
-        )
-      `;
-    }
-    selectQuery += ` ORDER BY id ASC`;
+    const queryParams = [lastIdNum];
     if (limitNum) {
-      selectQuery += ` LIMIT ${limitNum}`;
+      selectQuery += ` LIMIT $2`;
+      queryParams.push(limitNum);
     }
 
-    const { rows } = await pool.query(selectQuery);
+    const { rows } = await pool.query(selectQuery, queryParams);
     if (rows.length === 0) {
       return res.json({
         success: true,
-        message: 'Nenhuma unidade F6600P pendente de sincronização. Todas as unidades já estão atualizadas!',
+        message: 'Nenhuma unidade F6600P restante para sincronizar.',
         totalProcessed: 0,
+        lastId: lastIdNum,
         simCount: 0,
         naoCount: 0,
         totalUpdatedMainDb: 0,
@@ -957,10 +952,13 @@ app.get('/api/admin/sync-f6600p', async (req, res) => {
     // 6. Update missing fields in second DB if needed
     const totalUpdatedSecondDb = await updateBatchEtiquetas(toUpdateSecondDb, secondPool);
 
+    const lastId = rows.length > 0 ? rows[rows.length - 1].id : lastIdNum;
+
     res.json({
       success: true,
       message: 'Sincronização e complementação de unidades F6600P concluída com sucesso!',
       totalProcessed: rows.length,
+      lastId,
       simCount,
       naoCount,
       totalUpdatedMainDb,
@@ -968,6 +966,7 @@ app.get('/api/admin/sync-f6600p', async (req, res) => {
       completedMacsCount,
       completedGponsCount,
       totalInsertedSecondDb,
+      totalUpdatedSecondDb,
       sampleResults
     });
   } catch (err) {

@@ -784,6 +784,7 @@ function setupAdminListeners() {
                 statusEl.textContent = '⏳ Iniciando sincronização em lote...';
             }
 
+            let lastId = 0;
             let totalProcessedAll = 0;
             let simCountAll = 0;
             let naoCountAll = 0;
@@ -798,17 +799,18 @@ function setupAdminListeners() {
                         statusEl.textContent = `⏳ Sincronizando... (${totalProcessedAll} unidades já processadas)`;
                     }
 
-                    const res = await fetch(`${SERVER_URL.replace(/\/$/, '')}/api/admin/sync-f6600p?limit=${batchSize}`);
+                    const res = await fetch(`${SERVER_URL.replace(/\/$/, '')}/api/admin/sync-f6600p?limit=${batchSize}&last_id=${lastId}`);
                     const data = await res.json();
 
                     if (!res.ok || !data.success) {
                         throw new Error(data.error || 'Erro ao executar lote de sincronização.');
                     }
 
-                    if (data.totalProcessed === 0) {
-                        break; // Nenhuma unidade pendente
+                    if (!data.totalProcessed || data.totalProcessed === 0) {
+                        break; // Nenhuma unidade restante
                     }
 
+                    lastId = data.lastId;
                     totalProcessedAll += data.totalProcessed;
                     simCountAll += data.simCount;
                     naoCountAll += data.naoCount;
@@ -816,7 +818,7 @@ function setupAdminListeners() {
                     completedMacsAll += data.completedMacsCount;
                     totalInsertedSecondDbAll += (data.totalInsertedSecondDb || 0);
 
-                    // Se processou menos que o tamanho do lote, acabaram as pendências
+                    // Se processou menos que o tamanho do lote, acabaram as unidades
                     if (data.totalProcessed < batchSize) {
                         break;
                     }
