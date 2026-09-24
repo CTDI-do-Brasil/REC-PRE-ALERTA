@@ -791,6 +791,7 @@ function setupAdminListeners() {
             let completedSerialsAll = 0;
             let completedMacsAll = 0;
             let totalInsertedSecondDbAll = 0;
+            let totalUpdatedSecondDbAll = 0;
             const batchSize = 1000;
 
             try {
@@ -817,6 +818,7 @@ function setupAdminListeners() {
                     completedSerialsAll += data.completedSerialsCount;
                     completedMacsAll += data.completedMacsCount;
                     totalInsertedSecondDbAll += (data.totalInsertedSecondDb || 0);
+                    totalUpdatedSecondDbAll += (data.totalUpdatedSecondDb || 0);
 
                     // Se processou menos que o tamanho do lote, acabaram as unidades
                     if (data.totalProcessed < batchSize) {
@@ -828,13 +830,12 @@ function setupAdminListeners() {
                     `• Total de unidades F6600P processadas: ${totalProcessedAll}\n` +
                     `• Com Senha (Super_User Sim): ${simCountAll}\n` +
                     `• Sem Senha (Super_User Não): ${naoCountAll}\n` +
-                    `• Seriais completados no banco principal: ${completedSerialsAll}\n` +
-                    `• MACs completados no banco principal: ${completedMacsAll}\n` +
-                    `• Novas unidades cadastradas no segundo banco: ${totalInsertedSecondDbAll}`;
+                    `• Unidades com SN/MAC atualizados no 2º banco: ${totalUpdatedSecondDbAll}\n` +
+                    `• Novas unidades cadastradas no 2º banco: ${totalInsertedSecondDbAll}`;
 
                 if (statusEl) {
                     statusEl.style.color = '#34d399';
-                    statusEl.innerHTML = `<strong>Concluído com sucesso!</strong> Processadas: ${totalProcessedAll} | Sim: ${simCountAll} | Não: ${naoCountAll} | Inseridas no 2º banco: ${totalInsertedSecondDbAll}`;
+                    statusEl.innerHTML = `<strong>Concluído com sucesso!</strong> Processadas: ${totalProcessedAll} | Atualizadas no 2º banco: ${totalUpdatedSecondDbAll} | Inseridas: ${totalInsertedSecondDbAll}`;
                 }
                 alert(msg);
             } catch (err) {

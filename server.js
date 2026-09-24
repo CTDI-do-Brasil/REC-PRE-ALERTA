@@ -432,6 +432,19 @@ app.post('/api/recebimentos', async (req, res) => {
             if (!cleanMac && etiqueta.mac) {
               cleanMac = sanitizeDataCode(etiqueta.mac);
             }
+            // Atualiza cpe_sn e mac no segundo banco com o que foi bipado no recebimento
+            try {
+              if (cleanSerial || cleanMac) {
+                await secondPool.query(`
+                  UPDATE etiquetas_scan_onu
+                  SET cpe_sn = COALESCE($1, cpe_sn),
+                      mac = COALESCE($2, mac)
+                  WHERE UPPER(TRIM(gpon_sn)) = UPPER(TRIM($3))
+                `, [cleanSerial || null, cleanMac || null, cleanPon]);
+              }
+            } catch (updSecErr) {
+              console.error('Erro ao atualizar cpe_sn/mac em etiquetas_scan_onu no recebimento:', updSecErr.message);
+            }
             if (body.noPreAlerta) {
               destinoMsg = 'Enviar essa unidade para o laboratório';
               destinoTipo = 'laboratorio';
@@ -738,11 +751,10 @@ async function updateBatchEtiquetas(items, clientOrPool) {
     const query = `
       UPDATE etiquetas_scan_onu AS e
       SET 
-        cpe_sn = COALESCE(NULLIF(e.cpe_sn, 'N/A'), v.cpe_sn, e.cpe_sn),
-        mac = COALESCE(NULLIF(e.mac, 'N/A'), v.mac, e.mac)
+        cpe_sn = COALESCE(v.cpe_sn, e.cpe_sn),
+        mac = COALESCE(v.mac, e.mac)
       FROM (VALUES ${valueClauses.join(', ')}) AS v(gpon_sn, cpe_sn, mac)
       WHERE UPPER(TRIM(e.gpon_sn)) = UPPER(TRIM(v.gpon_sn))
-        AND (e.cpe_sn IS NULL OR e.cpe_sn = '' OR e.cpe_sn = 'N/A' OR e.mac IS NULL OR e.mac = '' OR e.mac = 'N/A')
     `;
     const res = await clientOrPool.query(query, params);
     totalUpdated += (res.rowCount || 0);
@@ -884,12 +896,12 @@ app.get('/api/admin/sync-f6600p', async (req, res) => {
           needsMainUpdate = true;
         }
 
-        // If second DB has empty cpe_sn or mac but main DB has them, queue update for second DB
-        if ((!etiqueta.cpe_sn || etiqueta.cpe_sn === 'N/A' || !etiqueta.mac || etiqueta.mac === 'N/A') && (newSerial || newMac)) {
+        // Atualiza cpe_sn e mac no segundo banco com o que foi bipado no recebimento
+        if (newSerial || newMac) {
           toUpdateSecondDb.push({
             gpon_sn: cleanPon,
-            cpe_sn: newSerial,
-            mac: newMac
+            cpe_sn: newSerial || null,
+            mac: newMac || null
           });
         }
       } else {
