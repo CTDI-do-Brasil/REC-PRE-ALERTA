@@ -914,106 +914,210 @@ app.get('/api/admin/sync-f6600p', async (req, res) => {
   }
 });
 
-// Endpoint de reversão e restauração do F6600P para o estado original
+// Endpoint de análise, simulação e reversão do F6600P
 app.get('/api/admin/revert-f6600p', async (req, res) => {
   if (!secondPool) {
     return res.status(400).json({ error: 'Second database connection is not configured.' });
   }
 
+  const { apply, scenario } = req.query;
+  const isApply = apply === 'true' || apply === '1';
+
   try {
-    // 0. Detecta colunas reais existentes na tabela etiquetas_scan_onu
-    const colsRes = await secondPool.query(`
-      SELECT column_name FROM information_schema.columns WHERE table_name = 'etiquetas_scan_onu'
-    `);
-    const availableCols = new Set(colsRes.rows.map(c => c.column_name.toLowerCase()));
-
-    // 1. Remove do segundo banco (etiquetas_scan_onu) as unidades inseridas automaticamente hoje sem web_key
-    const deleteResult = await secondPool.query(`
-      DELETE FROM etiquetas_scan_onu
-      WHERE data_leitura >= '2026-09-24 00:00:00'
-        AND (web_key IS NULL OR TRIM(web_key) = '' OR TRIM(web_key) = 'N/A')
-    `);
-    const totalDeletadosSegundoBanco = deleteResult.rowCount || 0;
-
-    // 2. Busca todos os GPONs legítimos remanescentes em etiquetas_scan_onu
-    const { rows: validEtiquetas } = await secondPool.query(`
-      SELECT UPPER(TRIM(gpon_sn)) AS gpon_sn
-      FROM etiquetas_scan_onu
-      WHERE (data_leitura < '2026-09-24 00:00:00' OR (web_key IS NOT NULL AND TRIM(web_key) != '' AND TRIM(web_key) != 'N/A'))
-    `);
-    const validGponSet = new Set(validEtiquetas.map(e => e.gpon_sn));
-
-    // 3. Busca todas as unidades F6600P no banco principal (recebimentos)
+    // 1. Busca todas as unidades F6600P no banco principal (recebimentos)
     const { rows: recebidos } = await pool.query(`
-      SELECT id, serial_number, gpon_id, no_pre_alerta, super_user
+      SELECT id, serial_number, gpon_id, mac, no_pre_alerta, super_user, data_hora
       FROM recebimentos
       WHERE UPPER(modelo) LIKE '%F6600P%'
       ORDER BY id ASC
     `);
 
-    let preAlertaSim = 0;
-    let preAlertaNao = 0;
-    let foraPreAlertaSim = 0;
-    let foraPreAlertaNao = 0;
-
-    const simIds = [];
-    const naoIds = [];
-
+    // Coleta todos os GPONs
+    const gponMap = new Map();
     for (const r of recebidos) {
-      let cleanPon = r.gpon_id ? r.gpon_id.trim().toUpperCase() : '';
-      if (!cleanPon && r.serial_number) {
+      let gpon = r.gpon_id ? r.gpon_id.trim().toUpperCase() : '';
+      if (!gpon && r.serial_number) {
         const s = r.serial_number.trim().toUpperCase();
-        if (s.startsWith('ZTE3') || s.startsWith('ZTEG')) {
-          cleanPon = s;
+        if (s.startsWith('ZTE3') || s.startsWith('ZTEG')) gpon = s;
+      }
+      if (gpon) gponMap.set(gpon, r);
+    }
+    const allGpons = Array.from(gponMap.keys());
+
+    // 2. Busca todos os registros correspondentes no 2o banco (etiquetas_scan_onu)
+    const chunkSize = 500;
+    const etiquetas = [];
+    for (let i = 0; i < allGpons.length; i += chunkSize) {
+      const chunk = allGpons.slice(i, i + chunkSize);
+      const chunkRes = await secondPool.query(`
+        SELECT 
+          UPPER(TRIM(gpon_sn)) AS gpon_sn,
+          cpe_sn,
+          mac,
+          fabricante,
+          modelo,
+          usuario,
+          password_router,
+          web_key,
+          wifi_key,
+          data_leitura
+        FROM etiquetas_scan_onu
+        WHERE UPPER(TRIM(gpon_sn)) = ANY($1)
+      `, [chunk]);
+      etiquetas.push(...chunkRes.rows);
+    }
+
+    const etiquetasMap = new Map();
+    etiquetas.forEach(e => etiquetasMap.set(e.gpon_sn, e));
+
+    // 3. Simula os diferentes cenários para as unidades NO PRÉ-ALERTA (onde havia 1.972 Sim e 1.636 Não)
+    const preUnits = recebidos.filter(r => r.no_pre_alerta === true);
+
+    function testCriteria(fn) {
+      let sim = 0;
+      let nao = 0;
+      const simIds = [];
+      const naoIds = [];
+      for (const r of preUnits) {
+        let gpon = r.gpon_id ? r.gpon_id.trim().toUpperCase() : '';
+        if (!gpon && r.serial_number) {
+          const s = r.serial_number.trim().toUpperCase();
+          if (s.startsWith('ZTE3') || s.startsWith('ZTEG')) gpon = s;
+        }
+        const e = gpon ? etiquetasMap.get(gpon) : null;
+        if (e && fn(e, r)) {
+          sim++;
+          simIds.push(r.id);
+        } else {
+          nao++;
+          naoIds.push(r.id);
         }
       }
-
-      const isSim = cleanPon && validGponSet.has(cleanPon);
-      if (isSim) {
-        simIds.push(r.id);
-        if (r.no_pre_alerta) preAlertaSim++;
-        else foraPreAlertaSim++;
-      } else {
-        naoIds.push(r.id);
-        if (r.no_pre_alerta) preAlertaNao++;
-        else foraPreAlertaNao++;
-      }
+      return {
+        total: preUnits.length,
+        sim,
+        nao,
+        percentualSim: `${((sim / preUnits.length) * 100).toFixed(1)}%`,
+        percentualNao: `${((nao / preUnits.length) * 100).toFixed(1)}%`,
+        simIds,
+        naoIds
+      };
     }
 
-    // 4. Atualiza atomicamente recebimentos no banco principal
+    // Cenário 1: Presença em etiquetas antes do dia 23/09 (ex: data_leitura < '2026-09-23T00:00:00.000Z')
+    const cenario_data_antiga = testCriteria(e => {
+      if (!e.data_leitura) return false;
+      const dt = new Date(e.data_leitura);
+      return dt < new Date('2026-09-23T00:00:00.000Z');
+    });
+
+    // Cenário 2: Presença em etiquetas antes das 12:00 do dia 23/09 (antes da carga de 173 mil)
+    const cenario_data_23_manha = testCriteria(e => {
+      if (!e.data_leitura) return false;
+      const dt = new Date(e.data_leitura);
+      return dt < new Date('2026-09-23T12:00:00.000Z');
+    });
+
+    // Cenário 3: Tem senha real no password_router (diferente de NULL, vazio e diferente de 'N/A')
+    const cenario_senha_real = testCriteria(e => {
+      const pwd = e.password_router ? e.password_router.trim() : '';
+      return pwd !== '' && pwd.toUpperCase() !== 'N/A';
+    });
+
+    // Cenário 4: Tem web_key ou wifi_key real
+    const cenario_web_ou_wifi = testCriteria(e => {
+      const w = e.web_key ? e.web_key.trim() : '';
+      const wf = e.wifi_key ? e.wifi_key.trim() : '';
+      return (w !== '' && w.toUpperCase() !== 'N/A') || (wf !== '' && wf.toUpperCase() !== 'N/A');
+    });
+
+    // Cenário 5: Tem cpe_sn e mac preenchidos e não N/A originalmente
+    const cenario_sn_e_mac_validos = testCriteria(e => {
+      const s = e.cpe_sn ? e.cpe_sn.trim() : '';
+      const m = e.mac ? e.mac.trim() : '';
+      return s !== '' && s.toUpperCase() !== 'N/A' && m !== '' && m.toUpperCase() !== 'N/A';
+    });
+
+    // Cenário Atual: Qualquer existência no 2o banco (que deu 100%)
+    const cenario_qualquer_existencia = testCriteria(e => !!e);
+
+    // Se apply=true, aplica o cenário escolhido (ou o que mais se aproxima de 1.972 / 1.636)
+    let appliedScenario = null;
     let totalUpdatedMainDb = 0;
-    if (simIds.length > 0) {
-      const resSim = await pool.query(`UPDATE recebimentos SET super_user = 'Sim' WHERE id = ANY($1)`, [simIds]);
-      totalUpdatedMainDb += (resSim.rowCount || 0);
-    }
-    if (naoIds.length > 0) {
-      const resNao = await pool.query(`UPDATE recebimentos SET super_user = 'Não' WHERE id = ANY($1)`, [naoIds]);
-      totalUpdatedMainDb += (resNao.rowCount || 0);
+
+    if (isApply) {
+      let chosen = null;
+      if (scenario === 'data_antiga') {
+        chosen = cenario_data_antiga;
+        appliedScenario = 'data_antiga (antes de 23/09)';
+      } else if (scenario === 'data_23_manha') {
+        chosen = cenario_data_23_manha;
+        appliedScenario = 'data_23_manha (antes de 23/09 12h)';
+      } else if (scenario === 'senha_real') {
+        chosen = cenario_senha_real;
+        appliedScenario = 'senha_real (password_router != N/A)';
+      } else {
+        // Encontra automaticamente qual cenário deu o número mais próximo de 1.972
+        const scenarios = [
+          { name: 'data_antiga', data: cenario_data_antiga },
+          { name: 'data_23_manha', data: cenario_data_23_manha },
+          { name: 'senha_real', data: cenario_senha_real },
+          { name: 'web_ou_wifi', data: cenario_web_ou_wifi },
+          { name: 'sn_e_mac_validos', data: cenario_sn_e_mac_validos }
+        ];
+        scenarios.sort((a, b) => Math.abs(a.data.sim - 1972) - Math.abs(b.data.sim - 1972));
+        chosen = scenarios[0].data;
+        appliedScenario = scenarios[0].name;
+      }
+
+      if (chosen.simIds.length > 0) {
+        const resSim = await pool.query(`UPDATE recebimentos SET super_user = 'Sim' WHERE id = ANY($1)`, [chosen.simIds]);
+        totalUpdatedMainDb += (resSim.rowCount || 0);
+      }
+      if (chosen.naoIds.length > 0) {
+        const resNao = await pool.query(`UPDATE recebimentos SET super_user = 'Não' WHERE id = ANY($1)`, [chosen.naoIds]);
+        totalUpdatedMainDb += (resNao.rowCount || 0);
+      }
     }
 
     res.json({
       success: true,
-      message: 'Reversão concluída com sucesso! Estado original restaurado.',
-      colunas_tabela_segundo_banco: Array.from(availableCols),
-      totalDeletadosSegundoBanco,
-      totalProcessadosRecebimentos: recebidos.length,
-      pre_alerta: {
-        total: preAlertaSim + preAlertaNao,
-        sim: preAlertaSim,
-        nao: preAlertaNao,
-        percentualSim: `${((preAlertaSim / (preAlertaSim + preAlertaNao)) * 100).toFixed(1)}%`,
-        percentualNao: `${((preAlertaNao / (preAlertaSim + preAlertaNao)) * 100).toFixed(1)}%`
+      meta_esperada: {
+        total: '~3618',
+        sim_esperado: 1972,
+        nao_esperado: 1636,
+        percentualSimEsperado: '54.6%',
+        percentualNaoEsperado: '45.4%'
       },
-      fora_pre_alerta: {
-        total: foraPreAlertaSim + foraPreAlertaNao,
-        sim: foraPreAlertaSim,
-        nao: foraPreAlertaNao
+      simulacao_cenarios_pre_alerta: {
+        cenario_1_data_antes_23_set: {
+          descricao: 'Registros com data de leitura antes de 23/09',
+          resultado: { total: cenario_data_antiga.total, sim: cenario_data_antiga.sim, nao: cenario_data_antiga.nao, percentualSim: cenario_data_antiga.percentualSim, percentualNao: cenario_data_antiga.percentualNao }
+        },
+        cenario_2_data_antes_23_set_12h: {
+          descricao: 'Registros com data de leitura antes de 23/09 12:00 (antes da carga da tarde)',
+          resultado: { total: cenario_data_23_manha.total, sim: cenario_data_23_manha.sim, nao: cenario_data_23_manha.nao, percentualSim: cenario_data_23_manha.percentualSim, percentualNao: cenario_data_23_manha.percentualNao }
+        },
+        cenario_3_senha_router_real: {
+          descricao: 'password_router preenchido com senha real (diferente de N/A ou vazio)',
+          resultado: { total: cenario_senha_real.total, sim: cenario_senha_real.sim, nao: cenario_senha_real.nao, percentualSim: cenario_senha_real.percentualSim, percentualNao: cenario_senha_real.percentualNao }
+        },
+        cenario_4_web_ou_wifi_real: {
+          descricao: 'web_key ou wifi_key preenchido com senha real (diferente de N/A ou vazio)',
+          resultado: { total: cenario_web_ou_wifi.total, sim: cenario_web_ou_wifi.sim, nao: cenario_web_ou_wifi.nao, percentualSim: cenario_web_ou_wifi.percentualSim, percentualNao: cenario_web_ou_wifi.percentualNao }
+        },
+        cenario_5_qualquer_existencia_segundo_banco: {
+          descricao: 'Qualquer registro existente no 2o banco (cenário que deu 100%)',
+          resultado: { total: cenario_qualquer_existencia.total, sim: cenario_qualquer_existencia.sim, nao: cenario_qualquer_existencia.nao, percentualSim: cenario_qualquer_existencia.percentualSim, percentualNao: cenario_qualquer_existencia.percentualNao }
+        }
       },
-      totalAtualizadosRecebimentos: totalUpdatedMainDb
+      status_execucao: isApply
+        ? `APLICADO com sucesso! Cenário: ${appliedScenario}. Total atualizados: ${totalUpdatedMainDb}`
+        : 'MODO SIMULAÇÃO (nenhum dado foi alterado no banco principal). Para aplicar a reversão do cenário ideal, chame com ?apply=true'
     });
   } catch (err) {
-    console.error('Error during revert-f6600p:', err);
-    res.status(500).json({ error: 'Revert error', details: err.message });
+    console.error('Error during revert-f6600p simulation:', err);
+    res.status(500).json({ error: 'Revert simulation error', details: err.message });
   }
 });
 
