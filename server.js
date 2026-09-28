@@ -2270,15 +2270,100 @@ app.get('/api/consulta-unidade/:query', async (req, res) => {
       super_user: superUserVal
     };
 
+    // Identificar qual identificador deu entrada no Pré-Alerta (SN, GPON ID ou MAC)
+    const valPre = (preAlerta?.serial || recebimento?.matched_value || '').trim();
+    const valPreUpper = valPre.toUpperCase();
+    const valPreClean = valPreUpper.replace(/[^A-Z0-9]/g, '');
+
+    const sVal = (unit.serial_number || '').trim();
+    const sClean = sVal.toUpperCase().replace(/[^A-Z0-9]/g, '');
+
+    const gVal = (unit.gpon_id || '').trim();
+    const gClean = gVal.toUpperCase().replace(/[^A-Z0-9]/g, '');
+
+    const mVal = (unit.mac || '').trim();
+    const mClean = mVal.toUpperCase().replace(/[^A-Z0-9]/g, '');
+
+    let preAlertaOrigem = null;
+
+    if (unit.no_pre_alerta) {
+      if (valPreClean) {
+        if (sClean && (valPreClean === sClean || valPreUpper === sVal.toUpperCase())) {
+          preAlertaOrigem = {
+            tipo: 'Serial Number',
+            sigla: 'SN',
+            campo: 'serial',
+            valor: sVal || valPre
+          };
+        } else if (gClean && (valPreClean === gClean || valPreClean === gVal.toUpperCase().replace(/[^A-Z0-9]/g, ''))) {
+          preAlertaOrigem = {
+            tipo: 'GPON ID',
+            sigla: 'GPON ID',
+            campo: 'gpon',
+            valor: gVal || valPre
+          };
+        } else if (mClean && (valPreClean === mClean || valPreClean === mVal.toUpperCase().replace(/[^A-Z0-9]/g, ''))) {
+          preAlertaOrigem = {
+            tipo: 'MAC',
+            sigla: 'MAC',
+            campo: 'mac',
+            valor: mVal || valPre
+          };
+        } else {
+          // Se não coincidiu diretamente com os dados salvos ou a unidade está apenas no pré-alerta
+          let inferido = 'Identificador Pré-Alerta';
+          let inferidoSigla = 'Pré-Alerta';
+          let inferidoCampo = 'geral';
+
+          if (valPreClean.length === 12 && /^[0-9A-F]{12}$/i.test(valPreClean)) {
+            inferido = 'MAC';
+            inferidoSigla = 'MAC';
+            inferidoCampo = 'mac';
+          } else if (/^[A-Z]{4}[0-9A-F]{8}$/i.test(valPreClean) || /^GPON/i.test(valPreClean)) {
+            inferido = 'GPON ID';
+            inferidoSigla = 'GPON ID';
+            inferidoCampo = 'gpon';
+          } else {
+            inferido = 'Serial Number';
+            inferidoSigla = 'SN';
+            inferidoCampo = 'serial';
+          }
+
+          preAlertaOrigem = {
+            tipo: inferido,
+            sigla: inferidoSigla,
+            campo: inferidoCampo,
+            valor: valPre
+          };
+        }
+      } else {
+        preAlertaOrigem = {
+          tipo: 'Pré-Alerta',
+          sigla: 'Pré-Alerta',
+          campo: 'geral',
+          valor: 'Confirmado no Recebimento'
+        };
+      }
+    }
+
+    unit.pre_alerta_origem = preAlertaOrigem;
+
     // Montar Linha do Tempo / Histórico
     const history = [];
 
     // Etapa Pré-Alerta
     if (preAlerta) {
+      let extraOrigem = '';
+      if (preAlertaOrigem && preAlertaOrigem.valor) {
+        extraOrigem = ` | Entrada via: ${preAlertaOrigem.tipo} (${preAlertaOrigem.valor})`;
+      } else if (preAlerta.serial) {
+        extraOrigem = ` | Identificador cadastrado: ${preAlerta.serial}`;
+      }
+
       history.push({
         etapa: 'Pré-Alerta',
         titulo: 'Presente na Base de Pré-Alerta',
-        descricao: `Código: ${preAlerta.codigo || '---'} | Descrição: ${preAlerta.descricao || '---'} | Fabricante: ${preAlerta.fabricante || '---'}`,
+        descricao: `Código: ${preAlerta.codigo || '---'} | Descrição: ${preAlerta.descricao || '---'} | Fabricante: ${preAlerta.fabricante || '---'}${extraOrigem}`,
         data_hora: null,
         usuario: 'Sistema / Importação',
         status: 'Cadastrada no Pré-Alerta',
@@ -2290,10 +2375,19 @@ app.get('/api/consulta-unidade/:query', async (req, res) => {
     // Etapa Recebimento
     if (recebimento) {
       const senhaInfo = superUserVal === 'Sim' ? ' | Senha: Com senha' : superUserVal === 'Não' ? ' | Senha: Sem senha' : '';
+      let preAlertaStatusDesc = 'Fora do Pré-Alerta';
+      if (recebimento.no_pre_alerta) {
+        if (preAlertaOrigem && preAlertaOrigem.valor) {
+          preAlertaStatusDesc = `No Pré-Alerta via ${preAlertaOrigem.tipo}: ${preAlertaOrigem.valor}`;
+        } else {
+          preAlertaStatusDesc = 'No Pré-Alerta';
+        }
+      }
+
       history.push({
         etapa: 'Recebimento',
         titulo: 'Unidade Recebida no Sistema',
-        descricao: `Modelo: ${recebimento.modelo || '---'} | Serial: ${recebimento.serial_number || '---'} | PON: ${recebimento.gpon_id || '---'} | MAC: ${recebimento.mac || '---'} (${recebimento.no_pre_alerta ? 'No Pré-Alerta' : 'Fora do Pré-Alerta'}${senhaInfo})`,
+        descricao: `Modelo: ${recebimento.modelo || '---'} | Serial: ${recebimento.serial_number || '---'} | PON: ${recebimento.gpon_id || '---'} | MAC: ${recebimento.mac || '---'} (${preAlertaStatusDesc}${senhaInfo})`,
         data_hora: recebimento.data_hora,
         usuario: recebimento.usuario || 'Não registrado',
         status: recebimento.status || 'Recebida',

@@ -620,6 +620,27 @@ input[type="date"]::-webkit-calendar-picker-indicator {
     word-break: break-all;
 }
 
+.unit-detail-item.highlight-match {
+    border-color: rgba(16, 185, 129, 0.45);
+    background: rgba(16, 185, 129, 0.09);
+    box-shadow: 0 0 12px rgba(16, 185, 129, 0.12);
+}
+
+.badge-match {
+    display: inline-flex;
+    align-items: center;
+    gap: 3px;
+    font-size: 0.65rem;
+    padding: 1px 7px;
+    border-radius: 10px;
+    background: rgba(16, 185, 129, 0.22);
+    border: 1px solid rgba(16, 185, 129, 0.5);
+    color: #34d399;
+    font-weight: 600;
+    text-transform: none;
+    letter-spacing: normal;
+}
+
 .font-mono {
     font-family: 'Consolas', 'Courier New', monospace;
     letter-spacing: 0.04em;

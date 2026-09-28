@@ -3109,6 +3109,20 @@ function limparConsulta() {
     if (container) {
         container.classList.add('hidden');
     }
+
+    // Resetar destaques de match
+    const cardSerial = document.getElementById('consulta-card-serial');
+    const cardGpon = document.getElementById('consulta-card-gpon');
+    const cardMac = document.getElementById('consulta-card-mac');
+    const tagMatchSerial = document.getElementById('consulta-tag-match-serial');
+    const tagMatchGpon = document.getElementById('consulta-tag-match-gpon');
+    const tagMatchMac = document.getElementById('consulta-tag-match-mac');
+    if (cardSerial) cardSerial.classList.remove('highlight-match');
+    if (cardGpon) cardGpon.classList.remove('highlight-match');
+    if (cardMac) cardMac.classList.remove('highlight-match');
+    if (tagMatchSerial) tagMatchSerial.classList.add('hidden');
+    if (tagMatchGpon) tagMatchGpon.classList.add('hidden');
+    if (tagMatchMac) tagMatchMac.classList.add('hidden');
 }
 
 async function executarConsultaUnidade(termoOverride = null) {
@@ -3244,15 +3258,60 @@ function renderConsultaResultado(data) {
         }
     }
 
-    // Pré-Alerta Badge
+    // Pré-Alerta Badge e Destaque do Identificador de Entrada
+    const orig = unit.pre_alerta_origem;
     if (badgePrealerta) {
         badgePrealerta.className = 'consulta-badge';
         if (unit.no_pre_alerta) {
-            badgePrealerta.innerHTML = '✅ No Pré-Alerta';
+            const viaText = (orig && orig.sigla) ? ` (via ${escapeHtml(orig.sigla)})` : '';
+            badgePrealerta.innerHTML = `✅ No Pré-Alerta${viaText}`;
             badgePrealerta.classList.add('badge-success-custom');
         } else {
             badgePrealerta.innerHTML = '⚠️ Fora do Pré-Alerta';
             badgePrealerta.classList.add('badge-danger-custom');
+        }
+    }
+
+    // Campo de Entrada no Pré-Alerta no Grid de Detalhes
+    const txtPrealertaOrigem = document.getElementById('consulta-txt-prealerta-origem');
+    if (txtPrealertaOrigem) {
+        if (unit.no_pre_alerta) {
+            if (orig && orig.valor) {
+                txtPrealertaOrigem.innerHTML = `<span style="color: #34d399; font-weight: 600;">${escapeHtml(orig.tipo)}</span>: <span class="font-mono" style="color: #60a5fa; font-weight: 600;">${escapeHtml(orig.valor)}</span>`;
+            } else {
+                txtPrealertaOrigem.innerHTML = `<span style="color: #34d399; font-weight: 600;">Consta na base de Pré-Alerta</span>`;
+            }
+        } else {
+            txtPrealertaOrigem.innerHTML = `<span style="color: #f87171; font-weight: 500;">Não consta na base</span>`;
+        }
+    }
+
+    // Destaque visual nos cards dos identificadores (Serial, GPON, MAC)
+    const cardSerial = document.getElementById('consulta-card-serial');
+    const cardGpon = document.getElementById('consulta-card-gpon');
+    const cardMac = document.getElementById('consulta-card-mac');
+    const tagMatchSerial = document.getElementById('consulta-tag-match-serial');
+    const tagMatchGpon = document.getElementById('consulta-tag-match-gpon');
+    const tagMatchMac = document.getElementById('consulta-tag-match-mac');
+
+    if (cardSerial) cardSerial.classList.remove('highlight-match');
+    if (cardGpon) cardGpon.classList.remove('highlight-match');
+    if (cardMac) cardMac.classList.remove('highlight-match');
+
+    if (tagMatchSerial) tagMatchSerial.classList.add('hidden');
+    if (tagMatchGpon) tagMatchGpon.classList.add('hidden');
+    if (tagMatchMac) tagMatchMac.classList.add('hidden');
+
+    if (unit.no_pre_alerta && orig && orig.campo) {
+        if (orig.campo === 'serial') {
+            if (cardSerial) cardSerial.classList.add('highlight-match');
+            if (tagMatchSerial) tagMatchSerial.classList.remove('hidden');
+        } else if (orig.campo === 'gpon') {
+            if (cardGpon) cardGpon.classList.add('highlight-match');
+            if (tagMatchGpon) tagMatchGpon.classList.remove('hidden');
+        } else if (orig.campo === 'mac') {
+            if (cardMac) cardMac.classList.add('highlight-match');
+            if (tagMatchMac) tagMatchMac.classList.remove('hidden');
         }
     }
 

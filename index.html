@@ -575,17 +575,30 @@
 
                         <!-- Grid de Detalhes da Unidade -->
                         <div class="unit-details-grid">
-                            <div class="unit-detail-item">
-                                <span class="unit-detail-label">Serial Number</span>
+                            <div class="unit-detail-item" id="consulta-card-serial">
+                                <div style="display: flex; justify-content: space-between; align-items: center;">
+                                    <span class="unit-detail-label">Serial Number</span>
+                                    <span id="consulta-tag-match-serial" class="badge-match hidden">✔ Pré-Alerta</span>
+                                </div>
                                 <strong id="consulta-txt-serial" class="unit-detail-value font-mono">---</strong>
                             </div>
-                            <div class="unit-detail-item">
-                                <span class="unit-detail-label">GPON / PON ID</span>
+                            <div class="unit-detail-item" id="consulta-card-gpon">
+                                <div style="display: flex; justify-content: space-between; align-items: center;">
+                                    <span class="unit-detail-label">GPON / PON ID</span>
+                                    <span id="consulta-tag-match-gpon" class="badge-match hidden">✔ Pré-Alerta</span>
+                                </div>
                                 <strong id="consulta-txt-gpon" class="unit-detail-value font-mono">---</strong>
                             </div>
-                            <div class="unit-detail-item">
-                                <span class="unit-detail-label">Endereço MAC</span>
+                            <div class="unit-detail-item" id="consulta-card-mac">
+                                <div style="display: flex; justify-content: space-between; align-items: center;">
+                                    <span class="unit-detail-label">Endereço MAC</span>
+                                    <span id="consulta-tag-match-mac" class="badge-match hidden">✔ Pré-Alerta</span>
+                                </div>
                                 <strong id="consulta-txt-mac" class="unit-detail-value font-mono">---</strong>
+                            </div>
+                            <div class="unit-detail-item" id="consulta-container-prealerta-origem">
+                                <span class="unit-detail-label">Entrada no Pré-Alerta</span>
+                                <strong id="consulta-txt-prealerta-origem" class="unit-detail-value">---</strong>
                             </div>
                             <div class="unit-detail-item">
                                 <span class="unit-detail-label">Fabricante</span>
