@@ -3139,6 +3139,12 @@ function limparConsulta() {
     if (containerSenha) {
         containerSenha.className = 'unit-detail-item hidden';
     }
+
+    // Resetar aviso de aguardando recebimento
+    const avisoAguardando = document.getElementById('consulta-aviso-aguardando');
+    if (avisoAguardando) {
+        avisoAguardando.classList.add('hidden');
+    }
 }
 
 async function executarConsultaUnidade(termoOverride = null) {
@@ -3258,19 +3264,36 @@ function renderConsultaResultado(data) {
     if (txtCodigo) txtCodigo.textContent = unit.codigo || '---';
     if (txtDescricao) txtDescricao.textContent = unit.descricao || '---';
 
-    // Status Atual Badge
+    // Status Atual Badge e Aviso de Aguardando Recebimento
+    const avisoAguardando = document.getElementById('consulta-aviso-aguardando');
+    const isAguardandoRecebimento = (unit.status_atual || '').toLowerCase().includes('aguardando recebimento') || (!data.detalhes?.recebimento && unit.no_pre_alerta);
+
     if (badgeStatus) {
-        badgeStatus.textContent = unit.status_atual || 'Desconhecido';
         badgeStatus.className = 'consulta-badge';
         const st = (unit.status_atual || '').toLowerCase();
         if (st.includes('retorno')) {
+            badgeStatus.textContent = unit.status_atual;
             badgeStatus.classList.add('badge-success-custom');
         } else if (st.includes('pallet')) {
+            badgeStatus.textContent = unit.status_atual;
             badgeStatus.classList.add('badge-warning-custom');
         } else if (st.includes('recebida')) {
+            badgeStatus.textContent = unit.status_atual;
             badgeStatus.classList.add('badge-primary');
+        } else if (isAguardandoRecebimento) {
+            badgeStatus.innerHTML = '⏳ Aguardando Recebimento';
+            badgeStatus.classList.add('badge-warning-custom');
         } else {
+            badgeStatus.textContent = unit.status_atual || 'Desconhecido';
             badgeStatus.classList.add('badge-neutral');
+        }
+    }
+
+    if (avisoAguardando) {
+        if (isAguardandoRecebimento) {
+            avisoAguardando.classList.remove('hidden');
+        } else {
+            avisoAguardando.classList.add('hidden');
         }
     }
 

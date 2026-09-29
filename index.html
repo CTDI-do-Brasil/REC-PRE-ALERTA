@@ -550,6 +550,19 @@
 
                 <!-- Resultados da Consulta -->
                 <div id="consulta-resultado-container" class="hidden" style="margin-top: 1.5rem; display: flex; flex-direction: column; gap: 1.5rem;">
+                    <!-- Banner de Alerta: Aguardando Recebimento -->
+                    <div id="consulta-aviso-aguardando" class="status-warning hidden" style="padding: 16px 20px; border-radius: 12px; display: flex; align-items: center; gap: 14px; border-left: 5px solid #f59e0b; background: rgba(245, 158, 11, 0.12); box-shadow: 0 4px 16px rgba(245, 158, 11, 0.1);">
+                        <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="#fbbf24" stroke-width="2.2" style="flex-shrink: 0;"><circle cx="12" cy="12" r="10"></circle><polyline points="12 6 12 12 16 14"></polyline></svg>
+                        <div>
+                            <div style="color: #fbbf24; font-size: 1.05rem; font-weight: 700; letter-spacing: 0.5px; display: flex; align-items: center; gap: 8px;">
+                                ⚠️ UNIDADE AGUARDANDO RECEBIMENTO
+                            </div>
+                            <div style="color: rgba(255, 255, 255, 0.9); font-size: 0.92rem; margin-top: 4px; line-height: 1.4;">
+                                Esta unidade consta cadastrada na base de Pré-Alerta, mas <strong>ainda não foi recebida fisicamente no sistema</strong>.
+                            </div>
+                        </div>
+                    </div>
+
                     <!-- Card Resumo da Unidade -->
                     <div class="card glass">
                         <div style="display: flex; justify-content: space-between; align-items: flex-start; flex-wrap: wrap; gap: 1rem; margin-bottom: 1.25rem; border-bottom: 1px solid rgba(255,255,255,0.08); padding-bottom: 1rem;">
