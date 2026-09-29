@@ -2243,17 +2243,21 @@ app.get('/api/consulta-unidade/:query', async (req, res) => {
     const unitModelo = recebimento?.modelo || palletRes.rows[0]?.modelo || retornoRes.rows[0]?.modelo || 'Não identificado';
     const unitGpon = recebimento?.gpon_id || palletRes.rows[0]?.gpon_id || retornoRes.rows[0]?.gpon_id || null;
 
-    let superUserVal = recebimento?.super_user || null;
-    const isF6600P = (unitModelo || '').toUpperCase().includes('F6600P');
-    if (!superUserVal && isF6600P && secondPool && unitGpon) {
-      try {
-        const chk = await secondPool.query(
-          'SELECT 1 FROM etiquetas_scan_onu WHERE UPPER(TRIM(gpon_sn)) = UPPER(TRIM($1)) LIMIT 1',
-          [unitGpon.trim()]
-        );
-        superUserVal = chk.rows.length > 0 ? 'Sim' : 'Não';
-      } catch (e) {
-        console.warn('Erro ao consultar segundo banco na consulta da unidade:', e.message);
+    // Senha (super_user) só é considerada se a unidade estiver RECEBIDA
+    let superUserVal = null;
+    if (recebimento) {
+      superUserVal = recebimento.super_user || null;
+      const isF6600P = (unitModelo || '').toUpperCase().includes('F6600P');
+      if (!superUserVal && isF6600P && secondPool && unitGpon) {
+        try {
+          const chk = await secondPool.query(
+            'SELECT 1 FROM etiquetas_scan_onu WHERE UPPER(TRIM(gpon_sn)) = UPPER(TRIM($1)) LIMIT 1',
+            [unitGpon.trim()]
+          );
+          superUserVal = chk.rows.length > 0 ? 'Sim' : 'Não';
+        } catch (e) {
+          console.warn('Erro ao consultar segundo banco na consulta da unidade:', e.message);
+        }
       }
     }
 

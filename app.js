@@ -3123,6 +3123,22 @@ function limparConsulta() {
     if (tagMatchSerial) tagMatchSerial.classList.add('hidden');
     if (tagMatchGpon) tagMatchGpon.classList.add('hidden');
     if (tagMatchMac) tagMatchMac.classList.add('hidden');
+
+    // Resetar status da senha
+    const badgeSenha = document.getElementById('consulta-badge-senha');
+    const txtSenha = document.getElementById('consulta-txt-senha');
+    const containerSenha = document.getElementById('consulta-container-senha');
+    if (badgeSenha) {
+        badgeSenha.className = 'consulta-badge hidden';
+        badgeSenha.innerHTML = '---';
+    }
+    if (txtSenha) {
+        txtSenha.textContent = '---';
+        txtSenha.style.color = '';
+    }
+    if (containerSenha) {
+        containerSenha.className = 'unit-detail-item hidden';
+    }
 }
 
 async function executarConsultaUnidade(termoOverride = null) {
@@ -3316,12 +3332,15 @@ function renderConsultaResultado(data) {
     }
 
     // Status da Senha (Super_User: Sim = "Com senha", Não = "Sem senha")
+    // SÓ DEVE MOSTRAR SE A UNIDADE ESTIVER RECEBIDA
     const badgeSenha = document.getElementById('consulta-badge-senha');
     const txtSenha = document.getElementById('consulta-txt-senha');
     const containerSenha = document.getElementById('consulta-container-senha');
 
-    const superUser = unit.super_user;
-    if (superUser === 'Sim') {
+    const isRecebida = !!(data.detalhes?.recebimento || (history && history.some(h => h.tipo === 'recebimento')));
+    const superUser = isRecebida ? unit.super_user : null;
+
+    if (isRecebida && superUser === 'Sim') {
         if (badgeSenha) {
             badgeSenha.innerHTML = '🔑 Com senha';
             badgeSenha.className = 'consulta-badge badge-senha-com';
@@ -3332,7 +3351,7 @@ function renderConsultaResultado(data) {
             txtSenha.style.color = '#fbbf24';
         }
         if (containerSenha) containerSenha.classList.remove('hidden');
-    } else if (superUser === 'Não') {
+    } else if (isRecebida && superUser === 'Não') {
         if (badgeSenha) {
             badgeSenha.innerHTML = '🔓 Sem senha';
             badgeSenha.className = 'consulta-badge badge-senha-sem';
@@ -3344,12 +3363,17 @@ function renderConsultaResultado(data) {
         }
         if (containerSenha) containerSenha.classList.remove('hidden');
     } else {
-        if (badgeSenha) badgeSenha.classList.add('hidden');
+        if (badgeSenha) {
+            badgeSenha.className = 'consulta-badge hidden';
+            badgeSenha.innerHTML = '---';
+        }
         if (txtSenha) {
             txtSenha.textContent = '---';
             txtSenha.style.color = '';
         }
-        if (containerSenha) containerSenha.classList.add('hidden');
+        if (containerSenha) {
+            containerSenha.classList.add('hidden');
+        }
     }
 
     // Contador de Eventos

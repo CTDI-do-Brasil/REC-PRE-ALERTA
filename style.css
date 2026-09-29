@@ -362,7 +362,8 @@ input[type="date"]::-webkit-calendar-picker-indicator {
     font-size: 1.1rem;
 }
 
-.status-message.hidden { display: none; }
+.hidden { display: none !important; }
+.status-message.hidden { display: none !important; }
 
 .status-success {
     background-color: var(--success-bg);
