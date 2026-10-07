@@ -2246,18 +2246,45 @@ app.get('/api/consulta-unidade/:query', async (req, res) => {
     // Senha (super_user) só é considerada se a unidade estiver RECEBIDA
     let superUserVal = null;
     if (recebimento) {
-      superUserVal = recebimento.super_user || null;
       const isF6600P = (unitModelo || '').toUpperCase().includes('F6600P');
-      if (!superUserVal && isF6600P && secondPool && unitGpon) {
-        try {
-          const chk = await secondPool.query(
-            'SELECT 1 FROM etiquetas_scan_onu WHERE UPPER(TRIM(gpon_sn)) = UPPER(TRIM($1)) LIMIT 1',
-            [unitGpon.trim()]
-          );
-          superUserVal = chk.rows.length > 0 ? 'Sim' : 'Não';
-        } catch (e) {
-          console.warn('Erro ao consultar segundo banco na consulta da unidade:', e.message);
+      if (isF6600P) {
+        let searchPon = unitGpon ? unitGpon.trim().toUpperCase() : '';
+        if (!searchPon && recebimento.serial_number) {
+          const s = recebimento.serial_number.trim().toUpperCase();
+          if (s.startsWith('ZTE3') || s.startsWith('ZTEG')) searchPon = s;
         }
+
+        if (secondPool && searchPon) {
+          try {
+            const chk = await secondPool.query(
+              `SELECT password_router FROM etiquetas_scan_onu 
+               WHERE UPPER(TRIM(gpon_sn)) = UPPER(TRIM($1)) 
+               LIMIT 1`,
+              [searchPon]
+            );
+            if (chk.rows.length > 0) {
+              const pwd = chk.rows[0].password_router;
+              const hasPassword = !!(pwd && pwd.trim() !== '' && pwd.trim().toUpperCase() !== 'N/A');
+              superUserVal = hasPassword ? 'Sim' : 'Não';
+            } else {
+              superUserVal = 'Não';
+            }
+
+            // Sincroniza e corrige o banco principal se o valor histórico estiver divergente
+            if (recebimento.id && recebimento.super_user !== superUserVal) {
+              await pool.query('UPDATE recebimentos SET super_user = $1 WHERE id = $2', [superUserVal, recebimento.id])
+                .catch(e => console.warn('Erro ao atualizar super_user no recebimento:', e.message));
+              recebimento.super_user = superUserVal;
+            }
+          } catch (e) {
+            console.warn('Erro ao consultar segundo banco na consulta da unidade:', e.message);
+            superUserVal = recebimento.super_user || null;
+          }
+        } else {
+          superUserVal = recebimento.super_user || null;
+        }
+      } else {
+        superUserVal = recebimento.super_user || null;
       }
     }
 
