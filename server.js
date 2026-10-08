@@ -2240,51 +2240,85 @@ app.get('/api/consulta-unidade/:query', async (req, res) => {
     }
 
     // Consolidar dados da unidade
-    const unitModelo = recebimento?.modelo || palletRes.rows[0]?.modelo || retornoRes.rows[0]?.modelo || 'Não identificado';
-    const unitGpon = recebimento?.gpon_id || palletRes.rows[0]?.gpon_id || retornoRes.rows[0]?.gpon_id || null;
+    let unitModelo = recebimento?.modelo || palletRes.rows[0]?.modelo || retornoRes.rows[0]?.modelo || 'Não identificado';
+    let unitGpon = recebimento?.gpon_id || palletRes.rows[0]?.gpon_id || retornoRes.rows[0]?.gpon_id || null;
 
-    // Senha (super_user) só é considerada se a unidade estiver RECEBIDA
-    let superUserVal = null;
-    if (recebimento) {
-      const isF6600P = (unitModelo || '').toUpperCase().includes('F6600P');
-      if (isF6600P) {
-        let searchPon = unitGpon ? unitGpon.trim().toUpperCase() : '';
-        if (!searchPon && recebimento.serial_number) {
-          const s = recebimento.serial_number.trim().toUpperCase();
-          if (s.startsWith('ZTE3') || s.startsWith('ZTEG')) searchPon = s;
+    // Se o modelo não foi identificado, tenta inferir pela descrição do pré-alerta
+    if (unitModelo === 'Não identificado' && preAlerta?.descricao) {
+      const descUpper = preAlerta.descricao.toUpperCase();
+      for (const m of DEFAULT_MODELS_SEED) {
+        if (descUpper.includes(m.name.toUpperCase())) {
+          unitModelo = m.name;
+          break;
         }
+      }
+    }
 
-        if (secondPool && searchPon) {
-          try {
-            const chk = await secondPool.query(
-              `SELECT password_router FROM etiquetas_scan_onu 
-               WHERE UPPER(TRIM(gpon_sn)) = UPPER(TRIM($1)) 
-               LIMIT 1`,
-              [searchPon]
-            );
-            if (chk.rows.length > 0) {
-              const pwd = chk.rows[0].password_router;
-              const hasPassword = !!(pwd && pwd.trim() !== '' && pwd.trim().toUpperCase() !== 'N/A');
-              superUserVal = hasPassword ? 'Sim' : 'Não';
-            } else {
-              superUserVal = 'Não';
-            }
+    // Identificar GPON para busca no banco de etiquetas (direto ou a partir do serial cadastrado)
+    let searchPon = unitGpon ? unitGpon.trim().toUpperCase() : '';
+    if (!searchPon) {
+      const candidates = [
+        recebimento?.serial_number,
+        preAlerta?.serial,
+        rawQuery,
+        cleanQuery
+      ];
+      for (const cand of candidates) {
+        if (cand) {
+          const c = String(cand).trim().toUpperCase();
+          if (c.startsWith('ZTE3') || c.startsWith('ZTEG')) {
+            searchPon = c;
+            break;
+          }
+        }
+      }
+    }
 
-            // Sincroniza e corrige o banco principal se o valor histórico estiver divergente
-            if (recebimento.id && recebimento.super_user !== superUserVal) {
-              await pool.query('UPDATE recebimentos SET super_user = $1 WHERE id = $2', [superUserVal, recebimento.id])
-                .catch(e => console.warn('Erro ao atualizar super_user no recebimento:', e.message));
-              recebimento.super_user = superUserVal;
-            }
-          } catch (e) {
-            console.warn('Erro ao consultar segundo banco na consulta da unidade:', e.message);
-            superUserVal = recebimento.super_user || null;
+    if (!unitGpon && searchPon && (searchPon.startsWith('ZTE3') || searchPon.startsWith('ZTEG'))) {
+      unitGpon = searchPon;
+    }
+
+    const isF6600P = (unitModelo || '').toUpperCase().includes('F6600P') ||
+                     (preAlerta?.descricao || '').toUpperCase().includes('F6600P') ||
+                     (searchPon && (searchPon.startsWith('ZTE3') || searchPon.startsWith('ZTEG')));
+
+    // Status da senha: se a unidade já tiver sido recebida, usa o gravado inicialmente
+    let superUserVal = recebimento?.super_user || null;
+
+    // Consulta de senha no 2º banco para F6600P (tanto para recebidas quanto para aguardando recebimento)
+    if (isF6600P && secondPool && searchPon) {
+      try {
+        const chk = await secondPool.query(
+          `SELECT password_router, modelo, fabricante, cpe_sn, mac 
+           FROM etiquetas_scan_onu 
+           WHERE UPPER(TRIM(gpon_sn)) = UPPER(TRIM($1)) 
+           LIMIT 1`,
+          [searchPon]
+        );
+        if (chk.rows.length > 0) {
+          const etiq = chk.rows[0];
+          const pwd = etiq.password_router;
+          const hasPassword = !!(pwd && pwd.trim() !== '' && pwd.trim().toUpperCase() !== 'N/A');
+          superUserVal = hasPassword ? 'Sim' : 'Não';
+
+          if (unitModelo === 'Não identificado' && etiq.modelo) {
+            unitModelo = etiq.modelo.toUpperCase().includes('F6600') ? 'ZXHN F6600P' : etiq.modelo;
           }
         } else {
+          superUserVal = 'Não';
+        }
+
+        // Se a unidade já está recebida e o valor em recebimentos divergir da regra real, corrige no banco principal
+        if (recebimento && recebimento.id && recebimento.super_user !== superUserVal) {
+          await pool.query('UPDATE recebimentos SET super_user = $1 WHERE id = $2', [superUserVal, recebimento.id])
+            .catch(e => console.warn('Erro ao atualizar super_user no recebimento:', e.message));
+          recebimento.super_user = superUserVal;
+        }
+      } catch (e) {
+        console.warn('Erro ao consultar segundo banco na consulta da unidade:', e.message);
+        if (recebimento) {
           superUserVal = recebimento.super_user || null;
         }
-      } else {
-        superUserVal = recebimento.super_user || null;
       }
     }
 
@@ -2391,10 +2425,12 @@ app.get('/api/consulta-unidade/:query', async (req, res) => {
         extraOrigem = ` | Identificador cadastrado: ${preAlerta.serial}`;
       }
 
+      const senhaPreInfo = !recebimento && superUserVal ? (superUserVal === 'Sim' ? ' | Senha: Com senha' : ' | Senha: Sem senha') : '';
+
       history.push({
         etapa: 'Pré-Alerta',
         titulo: 'Presente na Base de Pré-Alerta',
-        descricao: `Código: ${preAlerta.codigo || '---'} | Descrição: ${preAlerta.descricao || '---'} | Fabricante: ${preAlerta.fabricante || '---'}${extraOrigem}`,
+        descricao: `Código: ${preAlerta.codigo || '---'} | Descrição: ${preAlerta.descricao || '---'} | Fabricante: ${preAlerta.fabricante || '---'}${extraOrigem}${senhaPreInfo}`,
         data_hora: null,
         usuario: 'Sistema / Importação',
         status: 'Cadastrada no Pré-Alerta',
