@@ -403,25 +403,29 @@ app.post('/api/recebimentos', async (req, res) => {
   }
 
   let cleanSerial = sanitizeDataCode(rawSerial);
-  const cleanPon = sanitizeDataCode(rawPon);
+  let cleanPon = sanitizeDataCode(rawPon);
   let cleanMac = sanitizeDataCode(rawMac);
 
   const isF6600P = body.modelo && body.modelo.trim().toUpperCase().includes('F6600P');
+  const isNP7287 = body.modelo && body.modelo.trim().toUpperCase().includes('NP7287');
+  const hasPasswordCheck = isF6600P || isNP7287;
   let superUserStatus = null;
   let destinoMsg = null;
   let destinoTipo = null;
 
   try {
-    if (isF6600P) {
-      if (secondPool && cleanPon) {
+    if (hasPasswordCheck) {
+      if (secondPool && (cleanPon || cleanSerial)) {
         try {
           const checkQuery = `
             SELECT gpon_sn, cpe_sn, mac, fabricante, modelo, password_router
             FROM etiquetas_scan_onu
-            WHERE UPPER(TRIM(gpon_sn)) = UPPER(TRIM($1))
+            WHERE ( $1 != '' AND UPPER(TRIM(gpon_sn)) = UPPER(TRIM($1)) )
+               OR ( $2 != '' AND UPPER(TRIM(cpe_sn)) = UPPER(TRIM($2)) )
+            ORDER BY (CASE WHEN password_router IS NOT NULL AND password_router != '' AND UPPER(password_router) != 'N/A' THEN 1 ELSE 0 END) DESC
             LIMIT 1
           `;
-          const checkRes = await secondPool.query(checkQuery, [cleanPon]);
+          const checkRes = await secondPool.query(checkQuery, [cleanPon || '', cleanSerial || '']);
           if (checkRes.rows.length > 0) {
             const etiqueta = checkRes.rows[0];
             const hasPassword = etiqueta.password_router && etiqueta.password_router.trim() !== '' && etiqueta.password_router.trim().toUpperCase() !== 'N/A';
@@ -440,22 +444,26 @@ app.post('/api/recebimentos', async (req, res) => {
               }
             }
 
-            // Se o serial ou mac não foram informados ou vieram vazios, completa com os dados do segundo banco
+            // Se o serial, mac ou pon não foram informados ou vieram vazios, completa com os dados do segundo banco
             if (!cleanSerial && etiqueta.cpe_sn) {
               cleanSerial = sanitizeDataCode(etiqueta.cpe_sn);
             }
             if (!cleanMac && etiqueta.mac) {
               cleanMac = sanitizeDataCode(etiqueta.mac);
             }
+            if (!cleanPon && etiqueta.gpon_sn) {
+              cleanPon = sanitizeDataCode(etiqueta.gpon_sn);
+            }
             // Atualiza cpe_sn e mac no segundo banco com o que foi bipado no recebimento
             try {
-              if (cleanSerial || cleanMac) {
+              const targetGpon = cleanPon || etiqueta.gpon_sn;
+              if (targetGpon && (cleanSerial || cleanMac)) {
                 await secondPool.query(`
                   UPDATE etiquetas_scan_onu
                   SET cpe_sn = COALESCE($1, cpe_sn),
                       mac = COALESCE($2, mac)
                   WHERE UPPER(TRIM(gpon_sn)) = UPPER(TRIM($3))
-                `, [cleanSerial || null, cleanMac || null, cleanPon]);
+                `, [cleanSerial || null, cleanMac || null, targetGpon]);
               }
             } catch (updSecErr) {
               console.error('Erro ao atualizar cpe_sn/mac em etiquetas_scan_onu no recebimento:', updSecErr.message);
@@ -468,7 +476,7 @@ app.post('/api/recebimentos', async (req, res) => {
             }
           }
         } catch (secDbErr) {
-          console.error('Error querying second DB for F6600P gpon_sn:', secDbErr);
+          console.error('Error querying second DB for F6600P/NP7287 gpon_sn:', secDbErr);
           superUserStatus = 'Não';
           if (body.noPreAlerta) {
             destinoMsg = 'Separe essa unidade para a engenharia';
@@ -591,7 +599,7 @@ app.get('/api/etiquetas/lookup', async (req, res) => {
     const query = `
       SELECT gpon_sn, cpe_sn, mac, fabricante, modelo, password_router
       FROM etiquetas_scan_onu
-      WHERE UPPER(TRIM(gpon_sn)) = UPPER(TRIM($1))
+      WHERE UPPER(TRIM(gpon_sn)) = UPPER(TRIM($1)) OR UPPER(TRIM(cpe_sn)) = UPPER(TRIM($1))
       ORDER BY (CASE WHEN cpe_sn IS NOT NULL AND cpe_sn != '' AND UPPER(cpe_sn) != 'N/A' THEN 1 ELSE 0 END) DESC,
                (CASE WHEN mac IS NOT NULL AND mac != '' AND UPPER(mac) != 'N/A' THEN 1 ELSE 0 END) DESC
       LIMIT 1
@@ -727,28 +735,29 @@ async function updateBatchEtiquetas(items, clientOrPool) {
   return totalUpdated;
 }
 
-// Retroactive sync and completion endpoint for ZTE F6600P
-app.get('/api/admin/sync-f6600p', async (req, res) => {
+// Retroactive sync and completion endpoint for ZTE F6600P and NP7287
+async function handleSyncUnits(req, res, forcedModelo) {
   if (!secondPool) {
     return res.status(400).json({ error: 'Second database connection is not configured.' });
   }
 
-  const { limit, last_id } = req.query;
+  const { limit, last_id, modelo } = req.query;
   const limitNum = limit ? parseInt(limit, 10) : null;
   const lastIdNum = last_id ? parseInt(last_id, 10) : 0;
+  const targetModelo = forcedModelo || (modelo && modelo.toUpperCase().includes('NP7287') ? 'NP7287' : 'F6600P');
 
   try {
-    // 1. Get F6600P units in recebimentos
+    // 1. Get units in recebimentos
     let selectQuery = `
       SELECT id, modelo, fabricante, serial_number, gpon_id, mac, usuario, super_user, no_pre_alerta
       FROM recebimentos
-      WHERE UPPER(modelo) LIKE '%F6600P%'
-        AND id > $1
+      WHERE UPPER(modelo) LIKE $1
+        AND id > $2
       ORDER BY id ASC
     `;
-    const queryParams = [lastIdNum];
+    const queryParams = [`%${targetModelo}%`, lastIdNum];
     if (limitNum) {
-      selectQuery += ` LIMIT $2`;
+      selectQuery += ` LIMIT $3`;
       queryParams.push(limitNum);
     }
 
@@ -756,7 +765,7 @@ app.get('/api/admin/sync-f6600p', async (req, res) => {
     if (rows.length === 0) {
       return res.json({
         success: true,
-        message: 'Nenhuma unidade F6600P restante para sincronizar.',
+        message: `Nenhuma unidade ${targetModelo} restante para sincronizar.`,
         totalProcessed: 0,
         lastId: lastIdNum,
         simCount: 0,
@@ -776,7 +785,7 @@ app.get('/api/admin/sync-f6600p', async (req, res) => {
         gponSet.add(gponVal);
       } else if (r.serial_number) {
         const serVal = r.serial_number.trim().toUpperCase();
-        if (serVal.startsWith('ZTE3') || serVal.startsWith('ZTEG')) {
+        if (serVal.startsWith('ZTE3') || serVal.startsWith('ZTEG') || serVal.startsWith('TLCT')) {
           gponSet.add(serVal);
         }
       }
@@ -821,7 +830,7 @@ app.get('/api/admin/sync-f6600p', async (req, res) => {
       let cleanMac = r.mac ? r.mac.trim().toUpperCase() : '';
 
       // If gpon_id was empty but serial contains the GPON
-      if (!cleanPon && cleanSerial && (cleanSerial.startsWith('ZTE3') || cleanSerial.startsWith('ZTEG'))) {
+      if (!cleanPon && cleanSerial && (cleanSerial.startsWith('ZTE3') || cleanSerial.startsWith('ZTEG') || cleanSerial.startsWith('TLCT'))) {
         cleanPon = cleanSerial;
       }
 
@@ -909,7 +918,7 @@ app.get('/api/admin/sync-f6600p', async (req, res) => {
 
     res.json({
       success: true,
-      message: 'Sincronização de unidades F6600P concluída com sucesso!',
+      message: `Sincronização de unidades ${targetModelo} concluída com sucesso!`,
       totalProcessed: rows.length,
       lastId,
       simCount,
@@ -922,10 +931,13 @@ app.get('/api/admin/sync-f6600p', async (req, res) => {
       sampleResults
     });
   } catch (err) {
-    console.error('Error during F6600P sync:', err);
-    res.status(500).json({ error: 'F6600P sync database error.', details: err.message });
+    console.error(`Error during ${targetModelo} sync:`, err);
+    res.status(500).json({ error: `${targetModelo} sync database error.`, details: err.message });
   }
-});
+}
+
+app.get('/api/admin/sync-f6600p', (req, res) => handleSyncUnits(req, res, req.query.modelo ? null : 'F6600P'));
+app.get('/api/admin/sync-np7287', (req, res) => handleSyncUnits(req, res, 'NP7287'));
 
 // Endpoint de análise, simulação e reversão do F6600P
 app.get('/api/admin/revert-f6600p', async (req, res) => {
@@ -1485,12 +1497,12 @@ const DEFAULT_MODELS_SEED = [
   { name: "ZXHN F6600P", fields: 3, rules: { serial: "ZTE3, ZTEGD", pon: "ZTE3, ZTEGD" } },
   { name: "BC-UM221E", fields: 2, rules: { serial: "FTTH" } },
   { name: "HG8145X6-10", fields: 3, rules: { serial: "2102315", pon: "HWTC" } },
-  { name: "NP7287", fields: 3, rules: { serial: "T25", pon: "TLCTA" } }
+  { name: "NP7287", fields: 3, rules: { serial: "T25", pon: "TLCTA, TLCT" } }
 ];
 
 // App Version Check for Auto-Update
 app.get('/api/version', (req, res) => {
-  res.json({ version: 'v1.5.6' });
+  res.json({ version: 'v1.5.7' });
 });
 
 // GET all models from Postgres
@@ -2266,7 +2278,7 @@ app.get('/api/consulta-unidade/:query', async (req, res) => {
       for (const cand of candidates) {
         if (cand) {
           const c = String(cand).trim().toUpperCase();
-          if (c.startsWith('ZTE3') || c.startsWith('ZTEG')) {
+          if (c.startsWith('ZTE3') || c.startsWith('ZTEG') || c.startsWith('TLCT')) {
             searchPon = c;
             break;
           }
@@ -2274,7 +2286,7 @@ app.get('/api/consulta-unidade/:query', async (req, res) => {
       }
     }
 
-    if (!unitGpon && searchPon && (searchPon.startsWith('ZTE3') || searchPon.startsWith('ZTEG'))) {
+    if (!unitGpon && searchPon && (searchPon.startsWith('ZTE3') || searchPon.startsWith('ZTEG') || searchPon.startsWith('TLCT'))) {
       unitGpon = searchPon;
     }
 
@@ -2282,11 +2294,17 @@ app.get('/api/consulta-unidade/:query', async (req, res) => {
                      (preAlerta?.descricao || '').toUpperCase().includes('F6600P') ||
                      (searchPon && (searchPon.startsWith('ZTE3') || searchPon.startsWith('ZTEG')));
 
+    const isNP7287 = (unitModelo || '').toUpperCase().includes('NP7287') ||
+                     (preAlerta?.descricao || '').toUpperCase().includes('NP7287') ||
+                     (searchPon && searchPon.startsWith('TLCT'));
+
+    const shouldCheckPassword = (isF6600P || isNP7287);
+
     // Status da senha: se a unidade já tiver sido recebida, usa o gravado inicialmente
     let superUserVal = recebimento?.super_user || null;
 
-    // Consulta de senha no 2º banco para F6600P (tanto para recebidas quanto para aguardando recebimento)
-    if (isF6600P && secondPool && searchPon) {
+    // Consulta de senha no 2º banco para F6600P e NP7287 (tanto para recebidas quanto para aguardando recebimento)
+    if (shouldCheckPassword && secondPool && searchPon) {
       try {
         const chk = await secondPool.query(
           `SELECT password_router, modelo, fabricante, cpe_sn, mac 
@@ -2301,8 +2319,12 @@ app.get('/api/consulta-unidade/:query', async (req, res) => {
           const hasPassword = !!(pwd && pwd.trim() !== '' && pwd.trim().toUpperCase() !== 'N/A');
           superUserVal = hasPassword ? 'Sim' : 'Não';
 
-          if (unitModelo === 'Não identificado' && etiq.modelo) {
-            unitModelo = etiq.modelo.toUpperCase().includes('F6600') ? 'ZXHN F6600P' : etiq.modelo;
+          if (unitModelo === 'Não identificado') {
+            if (isNP7287) {
+              unitModelo = 'NP7287';
+            } else if (etiq.modelo) {
+              unitModelo = etiq.modelo.toUpperCase().includes('F6600') ? 'ZXHN F6600P' : etiq.modelo;
+            }
           }
         } else {
           superUserVal = 'Não';
@@ -2608,7 +2630,8 @@ async function handleEditarSeries(req, res) {
 
     let superUserEdit = null;
     const isF6600PEdit = cleanModelo && cleanModelo.toUpperCase().includes('F6600P');
-    if (isF6600PEdit) {
+    const isNP7287Edit = cleanModelo && cleanModelo.toUpperCase().includes('NP7287');
+    if (isF6600PEdit || isNP7287Edit) {
       if (secondPool && cleanNewGpon) {
         try {
           const chk = await secondPool.query(`

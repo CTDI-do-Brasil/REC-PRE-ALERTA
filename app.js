@@ -1,4 +1,4 @@
-const CURRENT_APP_VERSION = 'v1.5.6';
+const CURRENT_APP_VERSION = 'v1.5.7';
 
 function startVersionPolling() {
     setInterval(async () => {
@@ -39,7 +39,7 @@ const defaultModels = [
     { name: "ZXHN F6600P", fields: 3, rules: { serial: "ZTE3, ZTEGD", pon: "ZTE3, ZTEGD" } },
     { name: "BC-UM221E", fields: 2, rules: { serial: "FTTH" } },
     { name: "HG8145X6-10", fields: 3, rules: { serial: "2102315", pon: "HWTC" } },
-    { name: "NP7287", fields: 3, rules: { serial: "T25", pon: "TLCTA" } }
+    { name: "NP7287", fields: 3, rules: { serial: "T25", pon: "TLCTA, TLCT" } }
 ];
 
 // App State
@@ -760,11 +760,12 @@ function setupAdminListeners() {
         }
     }, 60000);
 
-    const btnSyncF6600P = document.getElementById('btn-sync-f6600p');
-    if (btnSyncF6600P) {
-        btnSyncF6600P.addEventListener('click', async () => {
+    const setupSyncButton = (btnId, statusId, endpoint, modelName) => {
+        const btn = document.getElementById(btnId);
+        if (!btn) return;
+        btn.addEventListener('click', async () => {
             const confirmed = confirm(
-                'Deseja iniciar a sincronização e validação de senhas das unidades ZXHN F6600P?\n\n' +
+                `Deseja iniciar a sincronização e validação de senhas das unidades ${modelName}?\n\n` +
                 'Esta operação irá:\n' +
                 '1. Buscar o GPON no banco de etiquetas e preencher Serial e MAC pendentes no banco principal.\n' +
                 '2. Definir o status Super_User ("Sim" para encontradas no banco de etiquetas / "Não" para não encontradas).\n\n' +
@@ -772,11 +773,11 @@ function setupAdminListeners() {
             );
             if (!confirmed) return;
 
-            btnSyncF6600P.disabled = true;
-            const originalHtml = btnSyncF6600P.innerHTML;
-            btnSyncF6600P.innerHTML = '<span>Sincronizando... Aguarde</span>';
+            btn.disabled = true;
+            const originalHtml = btn.innerHTML;
+            btn.innerHTML = '<span>Sincronizando... Aguarde</span>';
 
-            const statusEl = document.getElementById('sync-f6600p-status');
+            const statusEl = document.getElementById(statusId);
             if (statusEl) {
                 statusEl.style.display = 'block';
                 statusEl.style.color = '#93c5fd';
@@ -798,7 +799,7 @@ function setupAdminListeners() {
                         statusEl.textContent = `⏳ Sincronizando... (${totalProcessedAll} unidades já processadas)`;
                     }
 
-                    const res = await fetch(`${SERVER_URL.replace(/\/$/, '')}/api/admin/sync-f6600p?limit=${batchSize}&last_id=${lastId}`);
+                    const res = await fetch(`${SERVER_URL.replace(/\/$/, '')}${endpoint}?limit=${batchSize}&last_id=${lastId}`);
                     const data = await res.json();
 
                     if (!res.ok || !data.success) {
@@ -806,7 +807,7 @@ function setupAdminListeners() {
                     }
 
                     if (!data.totalProcessed || data.totalProcessed === 0) {
-                        break; // Nenhuma unidade restante
+                        break;
                     }
 
                     lastId = data.lastId;
@@ -817,14 +818,13 @@ function setupAdminListeners() {
                     completedMacsAll += data.completedMacsCount;
                     totalUpdatedSecondDbAll += (data.totalUpdatedSecondDb || 0);
 
-                    // Se processou menos que o tamanho do lote, acabaram as unidades
                     if (data.totalProcessed < batchSize) {
                         break;
                     }
                 }
 
                 const msg = `✅ Sincronização Concluída!\n\n` +
-                    `• Total de unidades F6600P processadas: ${totalProcessedAll}\n` +
+                    `• Total de unidades ${modelName} processadas: ${totalProcessedAll}\n` +
                     `• Com Senha (Super_User Sim): ${simCountAll}\n` +
                     `• Sem Senha (Super_User Não): ${naoCountAll}\n` +
                     `• Unidades com SN/MAC sincronizados no 2º banco: ${totalUpdatedSecondDbAll}`;
@@ -835,18 +835,21 @@ function setupAdminListeners() {
                 }
                 alert(msg);
             } catch (err) {
-                console.error('Falha ao acionar sync-f6600p:', err);
+                console.error(`Falha ao acionar ${endpoint}:`, err);
                 if (statusEl) {
                     statusEl.style.color = '#f87171';
                     statusEl.textContent = `❌ Falha: ${err.message}`;
                 }
                 alert(`Erro na sincronização: ${err.message}`);
             } finally {
-                btnSyncF6600P.disabled = false;
-                btnSyncF6600P.innerHTML = originalHtml;
+                btn.disabled = false;
+                btn.innerHTML = originalHtml;
             }
         });
-    }
+    };
+
+    setupSyncButton('btn-sync-f6600p', 'sync-f6600p-status', '/api/admin/sync-f6600p', 'ZXHN F6600P');
+    setupSyncButton('btn-sync-np7287', 'sync-np7287-status', '/api/admin/sync-np7287', 'NP7287');
 
     document.getElementById('btn-novo-usuario').addEventListener('click', () => {
         document.getElementById('modal-usuario-title').textContent = 'Cadastrar Usuario';
@@ -1044,7 +1047,8 @@ document.getElementById('btn-clear-base').addEventListener('click', async () => 
 });
 
 // ============================================================
-// AUTOCOMPLETE F6600P VIA SEGUNDO BANCO (etiquetas_scan_onu)
+// ============================================================
+// AUTOCOMPLETE F6600P / NP7287 VIA SEGUNDO BANCO (etiquetas_scan_onu)
 // ============================================================
 let isLookupF6600PRunning = false;
 
@@ -1052,7 +1056,9 @@ async function lookupAndFillF6600P(gponValue, sourceField = 'pon') {
     if (!gponValue || isLookupF6600PRunning) return false;
     const modeloEl = document.getElementById('modelo');
     const modelo = modeloEl ? modeloEl.value : '';
-    if (!modelo || !modelo.toUpperCase().includes('F6600P')) return false;
+    const isF6600P = modelo && modelo.toUpperCase().includes('F6600P');
+    const isNP7287 = modelo && modelo.toUpperCase().includes('NP7287');
+    if (!isF6600P && !isNP7287) return false;
 
     const cleanPon = gponValue.trim().toUpperCase();
     if (cleanPon.length < 6) return false;
@@ -1075,6 +1081,8 @@ async function lookupAndFillF6600P(gponValue, sourceField = 'pon') {
 
             if (isValid(data.gpon_sn) && ponInput && (!ponInput.value || ponInput.value.trim().toUpperCase() === 'N/A')) {
                 ponInput.value = data.gpon_sn.trim().toUpperCase();
+                preencheuAlgo = true;
+                camposPreenchidos.push('PON ID');
             }
 
             if (isValid(data.cpe_sn) && serialInput && (!serialInput.value || serialInput.value.trim().toUpperCase() === 'N/A')) {
@@ -1094,7 +1102,8 @@ async function lookupAndFillF6600P(gponValue, sourceField = 'pon') {
             }
 
             if (preencheuAlgo) {
-                showMessage(`Unidade F6600P localizada! ${camposPreenchidos.join(' e ')} preenchido(s) automaticamente.`, 'info');
+                const labelMod = isNP7287 ? 'NP7287' : 'F6600P';
+                showMessage(`Unidade ${labelMod} localizada! ${camposPreenchidos.join(' e ')} preenchido(s) automaticamente.`, 'info');
                 setTimeout(() => {
                     const msgEl = document.getElementById('status-message');
                     if (msgEl && msgEl.classList.contains('status-info')) {
@@ -1105,7 +1114,7 @@ async function lookupAndFillF6600P(gponValue, sourceField = 'pon') {
             return true;
         }
     } catch (err) {
-        console.error('Erro na consulta de etiquetas F6600P:', err);
+        console.error('Erro na consulta de etiquetas:', err);
     } finally {
         isLookupF6600PRunning = false;
     }
@@ -1134,8 +1143,9 @@ function setupEventListeners() {
                     e.preventDefault();
                     const modelo = document.getElementById('modelo').value;
                     const isException = (window.modelFieldsConfig[modelo] === 2);
+                    const isAutoLookupModel = modelo && (modelo.toUpperCase().includes('F6600P') || modelo.toUpperCase().includes('NP7287'));
 
-                    if (modelo && modelo.toUpperCase().includes('F6600P')) {
+                    if (isAutoLookupModel) {
                         if (id === 'pon' && el.value.trim()) {
                             await lookupAndFillF6600P(el.value, 'pon');
                         } else if (id === 'serial' && el.value.trim() && !document.getElementById('pon').value.trim()) {
@@ -1163,7 +1173,8 @@ function setupEventListeners() {
     if (ponInput) {
         ponInput.addEventListener('input', (e) => {
             const modelo = document.getElementById('modelo').value;
-            if (modelo && modelo.toUpperCase().includes('F6600P')) {
+            const isAutoLookupModel = modelo && (modelo.toUpperCase().includes('F6600P') || modelo.toUpperCase().includes('NP7287'));
+            if (isAutoLookupModel) {
                 clearTimeout(f6600pDebounceTimeout);
                 const val = e.target.value;
                 if (val && val.trim().length >= 8) {
@@ -1175,7 +1186,8 @@ function setupEventListeners() {
         });
         ponInput.addEventListener('blur', (e) => {
             const modelo = document.getElementById('modelo').value;
-            if (modelo && modelo.toUpperCase().includes('F6600P') && e.target.value.trim()) {
+            const isAutoLookupModel = modelo && (modelo.toUpperCase().includes('F6600P') || modelo.toUpperCase().includes('NP7287'));
+            if (isAutoLookupModel && e.target.value.trim()) {
                 lookupAndFillF6600P(e.target.value, 'pon');
             }
         });
@@ -1186,7 +1198,8 @@ function setupEventListeners() {
         serialInput.addEventListener('blur', (e) => {
             const modelo = document.getElementById('modelo').value;
             const ponVal = document.getElementById('pon').value.trim();
-            if (modelo && modelo.toUpperCase().includes('F6600P') && !ponVal && e.target.value.trim().length >= 8) {
+            const isAutoLookupModel = modelo && (modelo.toUpperCase().includes('F6600P') || modelo.toUpperCase().includes('NP7287'));
+            if (isAutoLookupModel && !ponVal && e.target.value.trim().length >= 8) {
                 lookupAndFillF6600P(e.target.value, 'serial');
             }
         });
@@ -1536,7 +1549,7 @@ async function processRecebimento() {
         let pon = isException ? '' : document.getElementById('pon').value.trim().toUpperCase();
         let mac = document.getElementById('mac').value.trim().toUpperCase();
 
-        if (modelo && modelo.toUpperCase().includes('F6600P')) {
+        if (modelo && (modelo.toUpperCase().includes('F6600P') || modelo.toUpperCase().includes('NP7287'))) {
             if (pon && (!serial || !mac)) {
                 const filled = await lookupAndFillF6600P(pon, 'pon');
                 if (filled) {
