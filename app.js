@@ -1,4 +1,4 @@
-const CURRENT_APP_VERSION = 'v1.5.7';
+const CURRENT_APP_VERSION = 'v1.5.8';
 
 function startVersionPolling() {
     setInterval(async () => {
@@ -1046,80 +1046,6 @@ document.getElementById('btn-clear-base').addEventListener('click', async () => 
     }
 });
 
-// ============================================================
-// ============================================================
-// AUTOCOMPLETE F6600P / NP7287 VIA SEGUNDO BANCO (etiquetas_scan_onu)
-// ============================================================
-let isLookupF6600PRunning = false;
-
-async function lookupAndFillF6600P(gponValue, sourceField = 'pon') {
-    if (!gponValue || isLookupF6600PRunning) return false;
-    const modeloEl = document.getElementById('modelo');
-    const modelo = modeloEl ? modeloEl.value : '';
-    const isF6600P = modelo && modelo.toUpperCase().includes('F6600P');
-    const isNP7287 = modelo && modelo.toUpperCase().includes('NP7287');
-    if (!isF6600P && !isNP7287) return false;
-
-    const cleanPon = gponValue.trim().toUpperCase();
-    if (cleanPon.length < 6) return false;
-
-    try {
-        isLookupF6600PRunning = true;
-        const res = await fetch(`${SERVER_URL.replace(/\/$/, '')}/api/etiquetas/lookup?gpon=${encodeURIComponent(cleanPon)}`);
-        if (!res.ok) return false;
-        const result = await res.json();
-        if (result && result.found && result.data) {
-            const data = result.data;
-            const serialInput = document.getElementById('serial');
-            const ponInput = document.getElementById('pon');
-            const macInput = document.getElementById('mac');
-
-            const isValid = (val) => val && typeof val === 'string' && val.trim() !== '' && val.trim().toUpperCase() !== 'N/A';
-
-            let preencheuAlgo = false;
-            const camposPreenchidos = [];
-
-            if (isValid(data.gpon_sn) && ponInput && (!ponInput.value || ponInput.value.trim().toUpperCase() === 'N/A')) {
-                ponInput.value = data.gpon_sn.trim().toUpperCase();
-                preencheuAlgo = true;
-                camposPreenchidos.push('PON ID');
-            }
-
-            if (isValid(data.cpe_sn) && serialInput && (!serialInput.value || serialInput.value.trim().toUpperCase() === 'N/A')) {
-                serialInput.value = data.cpe_sn.trim().toUpperCase();
-                preencheuAlgo = true;
-                camposPreenchidos.push('Serial');
-            } else if (serialInput && serialInput.value && serialInput.value.trim().toUpperCase() === 'N/A') {
-                serialInput.value = '';
-            }
-
-            if (isValid(data.mac) && macInput && (!macInput.value || macInput.value.trim().toUpperCase() === 'N/A')) {
-                macInput.value = data.mac.trim().toUpperCase();
-                preencheuAlgo = true;
-                camposPreenchidos.push('MAC');
-            } else if (macInput && macInput.value && macInput.value.trim().toUpperCase() === 'N/A') {
-                macInput.value = '';
-            }
-
-            if (preencheuAlgo) {
-                const labelMod = isNP7287 ? 'NP7287' : 'F6600P';
-                showMessage(`Unidade ${labelMod} localizada! ${camposPreenchidos.join(' e ')} preenchido(s) automaticamente.`, 'info');
-                setTimeout(() => {
-                    const msgEl = document.getElementById('status-message');
-                    if (msgEl && msgEl.classList.contains('status-info')) {
-                        hideMessage();
-                    }
-                }, 3000);
-            }
-            return true;
-        }
-    } catch (err) {
-        console.error('Erro na consulta de etiquetas:', err);
-    } finally {
-        isLookupF6600PRunning = false;
-    }
-    return false;
-}
 
 // ============================================================
 // Receive Logic
@@ -1138,20 +1064,11 @@ function setupEventListeners() {
     inputs.forEach((id) => {
         const el = document.getElementById(id);
         if (el) {
-            el.addEventListener('keydown', async (e) => {
+            el.addEventListener('keydown', (e) => {
                 if (e.key === 'Enter' || e.keyCode === 13 || e.key === 'Tab' || e.keyCode === 9) {
                     e.preventDefault();
                     const modelo = document.getElementById('modelo').value;
                     const isException = (window.modelFieldsConfig[modelo] === 2);
-                    const isAutoLookupModel = modelo && (modelo.toUpperCase().includes('F6600P') || modelo.toUpperCase().includes('NP7287'));
-
-                    if (isAutoLookupModel) {
-                        if (id === 'pon' && el.value.trim()) {
-                            await lookupAndFillF6600P(el.value, 'pon');
-                        } else if (id === 'serial' && el.value.trim() && !document.getElementById('pon').value.trim()) {
-                            await lookupAndFillF6600P(el.value, 'serial');
-                        }
-                    }
 
                     setTimeout(() => {
                         if (id === 'serial') {
@@ -1167,43 +1084,6 @@ function setupEventListeners() {
             });
         }
     });
-
-    let f6600pDebounceTimeout = null;
-    const ponInput = document.getElementById('pon');
-    if (ponInput) {
-        ponInput.addEventListener('input', (e) => {
-            const modelo = document.getElementById('modelo').value;
-            const isAutoLookupModel = modelo && (modelo.toUpperCase().includes('F6600P') || modelo.toUpperCase().includes('NP7287'));
-            if (isAutoLookupModel) {
-                clearTimeout(f6600pDebounceTimeout);
-                const val = e.target.value;
-                if (val && val.trim().length >= 8) {
-                    f6600pDebounceTimeout = setTimeout(() => {
-                        lookupAndFillF6600P(val, 'pon');
-                    }, 350);
-                }
-            }
-        });
-        ponInput.addEventListener('blur', (e) => {
-            const modelo = document.getElementById('modelo').value;
-            const isAutoLookupModel = modelo && (modelo.toUpperCase().includes('F6600P') || modelo.toUpperCase().includes('NP7287'));
-            if (isAutoLookupModel && e.target.value.trim()) {
-                lookupAndFillF6600P(e.target.value, 'pon');
-            }
-        });
-    }
-
-    const serialInput = document.getElementById('serial');
-    if (serialInput) {
-        serialInput.addEventListener('blur', (e) => {
-            const modelo = document.getElementById('modelo').value;
-            const ponVal = document.getElementById('pon').value.trim();
-            const isAutoLookupModel = modelo && (modelo.toUpperCase().includes('F6600P') || modelo.toUpperCase().includes('NP7287'));
-            if (isAutoLookupModel && !ponVal && e.target.value.trim().length >= 8) {
-                lookupAndFillF6600P(e.target.value, 'serial');
-            }
-        });
-    }
 
     document.getElementById('btn-modal-ok').addEventListener('click', confirmSegregar);
     document.getElementById('modelo').addEventListener('change', updateFormFields);
@@ -1548,23 +1428,6 @@ async function processRecebimento() {
         let serial = document.getElementById('serial').value.trim().toUpperCase();
         let pon = isException ? '' : document.getElementById('pon').value.trim().toUpperCase();
         let mac = document.getElementById('mac').value.trim().toUpperCase();
-
-        if (modelo && (modelo.toUpperCase().includes('F6600P') || modelo.toUpperCase().includes('NP7287'))) {
-            if (pon && (!serial || !mac)) {
-                const filled = await lookupAndFillF6600P(pon, 'pon');
-                if (filled) {
-                    serial = document.getElementById('serial').value.trim().toUpperCase();
-                    mac = document.getElementById('mac').value.trim().toUpperCase();
-                }
-            } else if (!pon && serial && !mac) {
-                const filled = await lookupAndFillF6600P(serial, 'serial');
-                if (filled) {
-                    serial = document.getElementById('serial').value.trim().toUpperCase();
-                    pon = document.getElementById('pon').value.trim().toUpperCase();
-                    mac = document.getElementById('mac').value.trim().toUpperCase();
-                }
-            }
-        }
 
         if (serial === 'N/A') serial = '';
         if (mac === 'N/A') mac = '';

@@ -443,17 +443,6 @@ app.post('/api/recebimentos', async (req, res) => {
                 destinoTipo = 'engenharia';
               }
             }
-
-            // Se o serial, mac ou pon não foram informados ou vieram vazios, completa com os dados do segundo banco
-            if (!cleanSerial && etiqueta.cpe_sn) {
-              cleanSerial = sanitizeDataCode(etiqueta.cpe_sn);
-            }
-            if (!cleanMac && etiqueta.mac) {
-              cleanMac = sanitizeDataCode(etiqueta.mac);
-            }
-            if (!cleanPon && etiqueta.gpon_sn) {
-              cleanPon = sanitizeDataCode(etiqueta.gpon_sn);
-            }
             // Atualiza cpe_sn e mac no segundo banco com o que foi bipado no recebimento
             try {
               const targetGpon = cleanPon || etiqueta.gpon_sn;
@@ -1502,7 +1491,7 @@ const DEFAULT_MODELS_SEED = [
 
 // App Version Check for Auto-Update
 app.get('/api/version', (req, res) => {
-  res.json({ version: 'v1.5.7' });
+  res.json({ version: 'v1.5.8' });
 });
 
 // GET all models from Postgres
