@@ -1,4 +1,4 @@
-const CURRENT_APP_VERSION = 'v1.5.8';
+const CURRENT_APP_VERSION = 'v1.5.9';
 
 function startVersionPolling() {
     setInterval(async () => {
@@ -38,7 +38,7 @@ const defaultModels = [
     { name: "ZXHN F680", fields: 3, rules: { serial: "ZTEEQ", pon: "ZTEGC" } },
     { name: "ZXHN F6600P", fields: 3, rules: { serial: "ZTE3, ZTEGD", pon: "ZTE3, ZTEGD" } },
     { name: "BC-UM221E", fields: 2, rules: { serial: "FTTH" } },
-    { name: "HG8145X6-10", fields: 3, rules: { serial: "2102315", pon: "HWTC" } },
+    { name: "HG8145X6-10", fields: 3, rules: { serial: "2102315", pon: "HWTC, 48575443" } },
     { name: "NP7287", fields: 3, rules: { serial: "T25", pon: "TLCTA, TLCT" } }
 ];
 
@@ -850,6 +850,7 @@ function setupAdminListeners() {
 
     setupSyncButton('btn-sync-f6600p', 'sync-f6600p-status', '/api/admin/sync-f6600p', 'ZXHN F6600P');
     setupSyncButton('btn-sync-np7287', 'sync-np7287-status', '/api/admin/sync-np7287', 'NP7287');
+    setupSyncButton('btn-sync-hg8145', 'sync-hg8145-status', '/api/admin/sync-hg8145', 'HG8145X6-10');
 
     document.getElementById('btn-novo-usuario').addEventListener('click', () => {
         document.getElementById('modal-usuario-title').textContent = 'Cadastrar Usuario';

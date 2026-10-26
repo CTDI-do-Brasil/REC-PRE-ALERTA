@@ -408,7 +408,8 @@ app.post('/api/recebimentos', async (req, res) => {
 
   const isF6600P = body.modelo && body.modelo.trim().toUpperCase().includes('F6600P');
   const isNP7287 = body.modelo && body.modelo.trim().toUpperCase().includes('NP7287');
-  const hasPasswordCheck = isF6600P || isNP7287;
+  const isHG8145 = body.modelo && (body.modelo.trim().toUpperCase().includes('HG8145') || body.modelo.trim().toUpperCase().includes('8145X6'));
+  const hasPasswordCheck = isF6600P || isNP7287 || isHG8145;
   let superUserStatus = null;
   let destinoMsg = null;
   let destinoTipo = null;
@@ -417,15 +418,25 @@ app.post('/api/recebimentos', async (req, res) => {
     if (hasPasswordCheck) {
       if (secondPool && (cleanPon || cleanSerial)) {
         try {
+          let ponAlt = '';
+          if (cleanPon) {
+            if (cleanPon.startsWith('HWTC')) {
+              ponAlt = '48575443' + cleanPon.slice(4);
+            } else if (cleanPon.startsWith('48575443')) {
+              ponAlt = 'HWTC' + cleanPon.slice(8);
+            }
+          }
+
           const checkQuery = `
             SELECT gpon_sn, cpe_sn, mac, fabricante, modelo, password_router
             FROM etiquetas_scan_onu
             WHERE ( $1 != '' AND UPPER(TRIM(gpon_sn)) = UPPER(TRIM($1)) )
-               OR ( $2 != '' AND UPPER(TRIM(cpe_sn)) = UPPER(TRIM($2)) )
+               OR ( $2 != '' AND UPPER(TRIM(gpon_sn)) = UPPER(TRIM($2)) )
+               OR ( $3 != '' AND UPPER(TRIM(cpe_sn)) = UPPER(TRIM($3)) )
             ORDER BY (CASE WHEN password_router IS NOT NULL AND password_router != '' AND UPPER(password_router) != 'N/A' THEN 1 ELSE 0 END) DESC
             LIMIT 1
           `;
-          const checkRes = await secondPool.query(checkQuery, [cleanPon || '', cleanSerial || '']);
+          const checkRes = await secondPool.query(checkQuery, [cleanPon || '', ponAlt || '', cleanSerial || '']);
           if (checkRes.rows.length > 0) {
             const etiqueta = checkRes.rows[0];
             const hasPassword = etiqueta.password_router && etiqueta.password_router.trim() !== '' && etiqueta.password_router.trim().toUpperCase() !== 'N/A';
@@ -465,7 +476,7 @@ app.post('/api/recebimentos', async (req, res) => {
             }
           }
         } catch (secDbErr) {
-          console.error('Error querying second DB for F6600P/NP7287 gpon_sn:', secDbErr);
+          console.error('Error querying second DB for F6600P/NP7287/HG8145 gpon_sn:', secDbErr);
           superUserStatus = 'Não';
           if (body.noPreAlerta) {
             destinoMsg = 'Separe essa unidade para a engenharia';
@@ -733,7 +744,10 @@ async function handleSyncUnits(req, res, forcedModelo) {
   const { limit, last_id, modelo } = req.query;
   const limitNum = limit ? parseInt(limit, 10) : null;
   const lastIdNum = last_id ? parseInt(last_id, 10) : 0;
-  const targetModelo = forcedModelo || (modelo && modelo.toUpperCase().includes('NP7287') ? 'NP7287' : 'F6600P');
+  const targetModelo = forcedModelo || (
+    modelo && (modelo.toUpperCase().includes('HG8145') || modelo.toUpperCase().includes('8145X6')) ? 'HG8145X6-10' :
+    modelo && modelo.toUpperCase().includes('NP7287') ? 'NP7287' : 'F6600P'
+  );
 
   try {
     // 1. Get units in recebimentos
@@ -744,7 +758,8 @@ async function handleSyncUnits(req, res, forcedModelo) {
         AND id > $2
       ORDER BY id ASC
     `;
-    const queryParams = [`%${targetModelo}%`, lastIdNum];
+    const modelLikePattern = targetModelo.toUpperCase().includes('HG8145') ? '%8145%' : `%${targetModelo}%`;
+    const queryParams = [modelLikePattern, lastIdNum];
     if (limitNum) {
       selectQuery += ` LIMIT $3`;
       queryParams.push(limitNum);
@@ -772,10 +787,20 @@ async function handleSyncUnits(req, res, forcedModelo) {
       const gponVal = r.gpon_id ? r.gpon_id.trim().toUpperCase() : '';
       if (gponVal) {
         gponSet.add(gponVal);
+        if (gponVal.startsWith('HWTC')) {
+          gponSet.add('48575443' + gponVal.slice(4));
+        } else if (gponVal.startsWith('48575443')) {
+          gponSet.add('HWTC' + gponVal.slice(8));
+        }
       } else if (r.serial_number) {
         const serVal = r.serial_number.trim().toUpperCase();
-        if (serVal.startsWith('ZTE3') || serVal.startsWith('ZTEG') || serVal.startsWith('TLCT')) {
+        if (serVal.startsWith('ZTE3') || serVal.startsWith('ZTEG') || serVal.startsWith('TLCT') || serVal.startsWith('HWTC') || serVal.startsWith('48575443')) {
           gponSet.add(serVal);
+          if (serVal.startsWith('HWTC')) {
+            gponSet.add('48575443' + serVal.slice(4));
+          } else if (serVal.startsWith('48575443')) {
+            gponSet.add('HWTC' + serVal.slice(8));
+          }
         }
       }
     }
@@ -819,11 +844,18 @@ async function handleSyncUnits(req, res, forcedModelo) {
       let cleanMac = r.mac ? r.mac.trim().toUpperCase() : '';
 
       // If gpon_id was empty but serial contains the GPON
-      if (!cleanPon && cleanSerial && (cleanSerial.startsWith('ZTE3') || cleanSerial.startsWith('ZTEG') || cleanSerial.startsWith('TLCT'))) {
+      if (!cleanPon && cleanSerial && (cleanSerial.startsWith('ZTE3') || cleanSerial.startsWith('ZTEG') || cleanSerial.startsWith('TLCT') || cleanSerial.startsWith('HWTC') || cleanSerial.startsWith('48575443'))) {
         cleanPon = cleanSerial;
       }
 
-      const etiqueta = cleanPon ? etiquetasMap.get(cleanPon) : null;
+      let etiqueta = cleanPon ? etiquetasMap.get(cleanPon) : null;
+      if (!etiqueta && cleanPon) {
+        if (cleanPon.startsWith('HWTC')) {
+          etiqueta = etiquetasMap.get('48575443' + cleanPon.slice(4));
+        } else if (cleanPon.startsWith('48575443')) {
+          etiqueta = etiquetasMap.get('HWTC' + cleanPon.slice(8));
+        }
+      }
       const hasPassword = etiqueta && etiqueta.password_router && etiqueta.password_router !== '' && etiqueta.password_router.toUpperCase() !== 'N/A';
       const newSuperUser = hasPassword ? 'Sim' : 'Não';
 
@@ -927,6 +959,7 @@ async function handleSyncUnits(req, res, forcedModelo) {
 
 app.get('/api/admin/sync-f6600p', (req, res) => handleSyncUnits(req, res, req.query.modelo ? null : 'F6600P'));
 app.get('/api/admin/sync-np7287', (req, res) => handleSyncUnits(req, res, 'NP7287'));
+app.get('/api/admin/sync-hg8145', (req, res) => handleSyncUnits(req, res, 'HG8145X6-10'));
 
 // Endpoint de análise, simulação e reversão do F6600P
 app.get('/api/admin/revert-f6600p', async (req, res) => {
@@ -1485,13 +1518,13 @@ const DEFAULT_MODELS_SEED = [
   { name: "ZXHN F680", fields: 3, rules: { serial: "ZTEEQ", pon: "ZTEGC" } },
   { name: "ZXHN F6600P", fields: 3, rules: { serial: "ZTE3, ZTEGD", pon: "ZTE3, ZTEGD" } },
   { name: "BC-UM221E", fields: 2, rules: { serial: "FTTH" } },
-  { name: "HG8145X6-10", fields: 3, rules: { serial: "2102315", pon: "HWTC" } },
+  { name: "HG8145X6-10", fields: 3, rules: { serial: "2102315", pon: "HWTC, 48575443" } },
   { name: "NP7287", fields: 3, rules: { serial: "T25", pon: "TLCTA, TLCT" } }
 ];
 
 // App Version Check for Auto-Update
 app.get('/api/version', (req, res) => {
-  res.json({ version: 'v1.5.8' });
+  res.json({ version: 'v1.5.9' });
 });
 
 // GET all models from Postgres
@@ -2267,7 +2300,7 @@ app.get('/api/consulta-unidade/:query', async (req, res) => {
       for (const cand of candidates) {
         if (cand) {
           const c = String(cand).trim().toUpperCase();
-          if (c.startsWith('ZTE3') || c.startsWith('ZTEG') || c.startsWith('TLCT')) {
+          if (c.startsWith('ZTE3') || c.startsWith('ZTEG') || c.startsWith('TLCT') || c.startsWith('HWTC') || c.startsWith('48575443')) {
             searchPon = c;
             break;
           }
@@ -2275,8 +2308,13 @@ app.get('/api/consulta-unidade/:query', async (req, res) => {
       }
     }
 
-    if (!unitGpon && searchPon && (searchPon.startsWith('ZTE3') || searchPon.startsWith('ZTEG') || searchPon.startsWith('TLCT'))) {
+    if (!unitGpon && searchPon && (searchPon.startsWith('ZTE3') || searchPon.startsWith('ZTEG') || searchPon.startsWith('TLCT') || searchPon.startsWith('HWTC') || searchPon.startsWith('48575443'))) {
       unitGpon = searchPon;
+    }
+
+    let searchSerial = recebimento?.serial_number || preAlerta?.serial || '';
+    if (!searchSerial && (cleanQuery.startsWith('2102315') || rawQuery.startsWith('2102315') || cleanQuery.startsWith('T25') || rawQuery.startsWith('T25'))) {
+      searchSerial = cleanQuery;
     }
 
     const isF6600P = (unitModelo || '').toUpperCase().includes('F6600P') ||
@@ -2285,22 +2323,42 @@ app.get('/api/consulta-unidade/:query', async (req, res) => {
 
     const isNP7287 = (unitModelo || '').toUpperCase().includes('NP7287') ||
                      (preAlerta?.descricao || '').toUpperCase().includes('NP7287') ||
-                     (searchPon && searchPon.startsWith('TLCT'));
+                     (searchPon && searchPon.startsWith('TLCT')) ||
+                     (searchSerial && searchSerial.startsWith('T25'));
 
-    const shouldCheckPassword = (isF6600P || isNP7287);
+    const isHG8145 = (unitModelo || '').toUpperCase().includes('HG8145') ||
+                     (unitModelo || '').toUpperCase().includes('8145X6') ||
+                     (preAlerta?.descricao || '').toUpperCase().includes('HG8145') ||
+                     (preAlerta?.descricao || '').toUpperCase().includes('8145X6') ||
+                     (searchPon && (searchPon.startsWith('HWTC') || searchPon.startsWith('48575443'))) ||
+                     (searchSerial && searchSerial.startsWith('2102315'));
+
+    const shouldCheckPassword = (isF6600P || isNP7287 || isHG8145);
 
     // Status da senha: se a unidade já tiver sido recebida, usa o gravado inicialmente
     let superUserVal = recebimento?.super_user || null;
 
-    // Consulta de senha no 2º banco para F6600P e NP7287 (tanto para recebidas quanto para aguardando recebimento)
-    if (shouldCheckPassword && secondPool && searchPon) {
+    // Consulta de senha no 2º banco para F6600P, NP7287 e HG8145 (tanto para recebidas quanto para aguardando recebimento)
+    if (shouldCheckPassword && secondPool && (searchPon || searchSerial)) {
       try {
+        let ponAlt = '';
+        if (searchPon) {
+          if (searchPon.startsWith('HWTC')) {
+            ponAlt = '48575443' + searchPon.slice(4);
+          } else if (searchPon.startsWith('48575443')) {
+            ponAlt = 'HWTC' + searchPon.slice(8);
+          }
+        }
+
         const chk = await secondPool.query(
           `SELECT password_router, modelo, fabricante, cpe_sn, mac 
            FROM etiquetas_scan_onu 
-           WHERE UPPER(TRIM(gpon_sn)) = UPPER(TRIM($1)) 
+           WHERE ( $1 != '' AND UPPER(TRIM(gpon_sn)) = UPPER(TRIM($1)) )
+              OR ( $2 != '' AND UPPER(TRIM(gpon_sn)) = UPPER(TRIM($2)) )
+              OR ( $3 != '' AND UPPER(TRIM(cpe_sn)) = UPPER(TRIM($3)) )
+           ORDER BY (CASE WHEN password_router IS NOT NULL AND password_router != '' AND UPPER(password_router) != 'N/A' THEN 1 ELSE 0 END) DESC
            LIMIT 1`,
-          [searchPon]
+          [searchPon || '', ponAlt || '', searchSerial || '']
         );
         if (chk.rows.length > 0) {
           const etiq = chk.rows[0];
@@ -2311,6 +2369,8 @@ app.get('/api/consulta-unidade/:query', async (req, res) => {
           if (unitModelo === 'Não identificado') {
             if (isNP7287) {
               unitModelo = 'NP7287';
+            } else if (isHG8145) {
+              unitModelo = 'HG8145X6-10';
             } else if (etiq.modelo) {
               unitModelo = etiq.modelo.toUpperCase().includes('F6600') ? 'ZXHN F6600P' : etiq.modelo;
             }
@@ -2620,17 +2680,29 @@ async function handleEditarSeries(req, res) {
     let superUserEdit = null;
     const isF6600PEdit = cleanModelo && cleanModelo.toUpperCase().includes('F6600P');
     const isNP7287Edit = cleanModelo && cleanModelo.toUpperCase().includes('NP7287');
-    if (isF6600PEdit || isNP7287Edit) {
-      if (secondPool && cleanNewGpon) {
+    const isHG8145Edit = cleanModelo && (cleanModelo.toUpperCase().includes('HG8145') || cleanModelo.toUpperCase().includes('8145X6'));
+    if (isF6600PEdit || isNP7287Edit || isHG8145Edit) {
+      if (secondPool && (cleanNewGpon || cleanNewSerial)) {
         try {
+          let editPonAlt = '';
+          if (cleanNewGpon) {
+            if (cleanNewGpon.startsWith('HWTC')) {
+              editPonAlt = '48575443' + cleanNewGpon.slice(4);
+            } else if (cleanNewGpon.startsWith('48575443')) {
+              editPonAlt = 'HWTC' + cleanNewGpon.slice(8);
+            }
+          }
+
           const chk = await secondPool.query(`
             SELECT 1 FROM etiquetas_scan_onu 
-            WHERE UPPER(TRIM(gpon_sn)) = UPPER(TRIM($1))
+            WHERE ( ( $1 != '' AND UPPER(TRIM(gpon_sn)) = UPPER(TRIM($1)) )
+                 OR ( $2 != '' AND UPPER(TRIM(gpon_sn)) = UPPER(TRIM($2)) )
+                 OR ( $3 != '' AND UPPER(TRIM(cpe_sn)) = UPPER(TRIM($3)) ) )
               AND password_router IS NOT NULL 
               AND TRIM(password_router) != '' 
               AND TRIM(UPPER(password_router)) != 'N/A'
             LIMIT 1
-          `, [cleanNewGpon]);
+          `, [cleanNewGpon || '', editPonAlt || '', cleanNewSerial || '']);
           superUserEdit = chk.rows.length > 0 ? 'Sim' : 'Não';
         } catch (e) {
           superUserEdit = 'Não';
