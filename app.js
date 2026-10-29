@@ -126,6 +126,7 @@ function applyAccessLevel(user) {
     currentSessionDay = new Date().toLocaleDateString();
     document.getElementById('display-user-name').textContent = user.username;
     const navAdmin = document.getElementById('nav-admin');
+    const navExpedicaoTim = document.getElementById('nav-expedicao-tim');
     const navPreAlerta = document.querySelector('li[data-tab="pre-alerta"]');
     const navRelatorios = document.querySelector('li[data-tab="relatorios"]');
     const navConsulta = document.querySelector('li[data-tab="consulta"]');
@@ -135,13 +136,15 @@ function applyAccessLevel(user) {
     if (navConsulta) navConsulta.style.display = '';
 
     if (user.level === 'admin') {
-        navAdmin.style.display = '';
+        if (navAdmin) navAdmin.style.display = '';
+        if (navExpedicaoTim) navExpedicaoTim.style.display = '';
         if (navPreAlerta) navPreAlerta.style.display = '';
         if (navRelatorios) navRelatorios.style.display = '';
         if (btnEditModelo) btnEditModelo.style.display = '';
         if (btnNovoModelo) btnNovoModelo.style.display = '';
     } else {
-        navAdmin.style.display = 'none';
+        if (navAdmin) navAdmin.style.display = 'none';
+        if (navExpedicaoTim) navExpedicaoTim.style.display = 'none';
         if (navPreAlerta) navPreAlerta.style.display = 'none';
         if (navRelatorios) navRelatorios.style.display = 'none';
         if (btnEditModelo) btnEditModelo.style.display = 'none';
@@ -205,6 +208,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     setupAdminListeners();
     setupReportListeners();
     setupExpedicaoListeners();
+    setupExpedicaoGarantiaListeners();
     setupRetornoPinturaListeners();
     setupConsultaListeners();
     setupEditarSeriesModal();
@@ -237,14 +241,40 @@ document.addEventListener('DOMContentLoaded', async () => {
 // Navigation Logic
 // ============================================================
 function setupNavigation() {
-    const navLinks = document.querySelectorAll('.nav-links li');
+    const navLinks = document.querySelectorAll('.nav-links li[data-tab]');
     const tabs = document.querySelectorAll('.tab-content');
+    const dropdownPintura = document.getElementById('nav-dropdown-pintura');
+    const headerPintura = document.getElementById('nav-expedicao-pintura-header');
+
+    if (headerPintura && dropdownPintura) {
+        headerPintura.addEventListener('click', (e) => {
+            e.stopPropagation();
+            dropdownPintura.classList.toggle('open');
+            const hasActiveSub = dropdownPintura.querySelector('.nav-sub-item.active');
+            if (dropdownPintura.classList.contains('open') && !hasActiveSub) {
+                const firstSub = dropdownPintura.querySelector('.nav-sub-item[data-tab="expedicao-pintura"]');
+                if (firstSub) firstSub.click();
+            }
+        });
+    }
 
     navLinks.forEach(link => {
         link.addEventListener('click', () => {
             const target = link.dataset.tab;
+            if (!target) return;
+
             navLinks.forEach(l => l.classList.remove('active'));
             link.classList.add('active');
+
+            if (dropdownPintura) {
+                if (link.closest('#nav-dropdown-pintura')) {
+                    dropdownPintura.classList.add('open');
+                    dropdownPintura.classList.add('active-parent');
+                } else {
+                    dropdownPintura.classList.remove('active-parent');
+                }
+            }
+
             tabs.forEach(tab => {
                 if (tab.id === target) {
                     tab.classList.add('active');
@@ -257,6 +287,9 @@ function setupNavigation() {
                     if (target === 'expedicao-pintura') {
                         loadActivePallet();
                     }
+                    if (target === 'expedicao-garantia') {
+                        loadActivePalletGarantia();
+                    }
                     if (target === 'retorno-pintura') {
                         loadRetornoPinturaData();
                     }
@@ -267,6 +300,11 @@ function setupNavigation() {
                                 inputConsulta.focus();
                                 inputConsulta.select();
                             }, 50);
+                        }
+                    }
+                    if (target === 'expedicao-tim') {
+                        if (typeof renderDashboard === 'function') {
+                            renderDashboard();
                         }
                     }
                 }
@@ -1277,6 +1315,7 @@ function setupDataFieldLocks() {
 
     // 2. Expedição Pintura
     applyDataFieldLock(document.getElementById('exp-scan-input'), 'alphanumeric');
+    applyDataFieldLock(document.getElementById('gar-scan-input'), 'alphanumeric');
 
     // 3. Retorno de Pintura
     applyDataFieldLock(document.getElementById('retorno-scan-input'), 'alphanumeric');
@@ -1812,6 +1851,52 @@ function setupReportListeners() {
         }
     });
 
+    const btnExpGarantia = document.getElementById('btn-export-exp-garantia');
+    if (btnExpGarantia) {
+        btnExpGarantia.addEventListener('click', async () => {
+            const startVal = document.getElementById('report-date-start').value;
+            const endVal = document.getElementById('report-date-end').value;
+            const modeloVal = document.getElementById('report-modelo').value;
+            
+            let url = `${SERVER_URL.replace(/\/$/, '')}/api/expedicao-garantia/report?`;
+            if (startVal) url += `&start=${startVal}`;
+            if (endVal) url += `&end=${endVal}`;
+            if (modeloVal) url += `&modelo=${encodeURIComponent(modeloVal)}`;
+
+            try {
+                const res = await fetch(url);
+                if (!res.ok) throw new Error('Failed to fetch report');
+                const rows = await res.json();
+                
+                if (rows.length === 0) { alert("Nenhum dado encontrado para exportar nesse período."); return; }
+                
+                const data = rows.map((item, index) => ({
+                    ID: index + 1,
+                    "Código Pallet": item.codigo_pallet || '',
+                    "Status Pallet": item.pallet_status || '',
+                    "Data Criação Pallet": item.data_criacao ? new Date(item.data_criacao).toLocaleString('pt-BR') : '',
+                    "Data Fechamento Pallet": (item.pallet_status === 'FECHADO' && item.data_fechamento) ? new Date(item.data_fechamento).toLocaleString('pt-BR') : '',
+                    Fabricante: item.fabricante || '',
+                    Modelo: item.modelo || '',
+                    "Serial Number": item.serial_number || '',
+                    "GPON ID": item.gpon_id || '',
+                    MAC: item.mac || '',
+                    "Usuário Bipagem": item.usuario || '',
+                    "Data Bipagem": item.data_bipagem ? new Date(item.data_bipagem).toLocaleString('pt-BR') : '',
+                    "Status Item": item.status || 'Em Pallet (Garantia)'
+                }));
+
+                const worksheet = XLSX.utils.json_to_sheet(data);
+                const workbook = XLSX.utils.book_new();
+                XLSX.utils.book_append_sheet(workbook, worksheet, "Itens Expedição Garantia");
+                XLSX.writeFile(workbook, "relatorio_expedicao_garantia.xlsx");
+            } catch (err) {
+                console.error(err);
+                alert('Erro ao carregar dados do relatório de garantia.');
+            }
+        });
+    }
+
     const btnExpRetornoPintura = document.getElementById('btn-export-retorno-pintura');
     if (btnExpRetornoPintura) {
         btnExpRetornoPintura.addEventListener('click', async () => {
@@ -2137,7 +2222,8 @@ function imprimirFolhaA4PalletGenerica(dados) {
     dataHora = new Date().toLocaleString('pt-BR'),
     totalUnidades = 0,
     listaUnidades = [],
-    logoUrl = 'logo.png'
+    logoUrl = 'logo.png',
+    tituloPallet = 'PALLET #'
   } = dados;
 
   const barcodeSvgHtml = generateCode128SvgHtml(palletId, 68, 3.2);
@@ -2370,7 +2456,7 @@ function imprimirFolhaA4PalletGenerica(dados) {
     </div>
 
     <div class="pallet-header">
-      <div class="pallet-title">PALLET #</div>
+      <div class="pallet-title">${tituloPallet}</div>
       <div class="pallet-code">${palletId}</div>
       <div class="barcode-container">
         ${barcodeSvgHtml}
@@ -2734,6 +2820,453 @@ window.selecionarPalletAberto = async function(codigo) {
         console.error("Erro ao selecionar pallet:", err);
     }
 };
+
+// ============================================================
+// EXPEDIÇÃO PINTURA - GARANTIA MODULE
+// ============================================================
+
+let currentGarantiaPallet = null;
+let currentGarantiaItems = [];
+let allGarantiaPalletsCache = [];
+
+function showGarantiaStatus(msg, isError = false) {
+    const el = document.getElementById('gar-status-message');
+    if (!el) return;
+    el.innerHTML = msg;
+    el.className = isError ? 'status-message error' : 'status-message success';
+    el.classList.remove('hidden');
+    if (!isError) {
+        setTimeout(() => {
+            el.classList.add('hidden');
+        }, 5000);
+    }
+}
+
+async function loadActivePalletGarantia() {
+    try {
+        const res = await fetch(`${SERVER_URL.replace(/\/$/, '')}/api/expedicao-garantia/active`);
+        if (res.ok) {
+            const data = await res.json();
+            currentGarantiaPallet = data.pallet;
+            currentGarantiaItems = data.items || [];
+            renderPalletGarantiaData(data.pallet, data.items || []);
+            const inputScan = document.getElementById('gar-scan-input');
+            if (inputScan) setTimeout(() => inputScan.focus(), 100);
+        } else {
+            console.error('Falha ao carregar pallet de garantia ativo:', res.statusText);
+        }
+    } catch (err) {
+        console.error('Erro de conexão ao carregar pallet de garantia ativo:', err);
+    }
+}
+
+function renderPalletGarantiaData(pallet, items) {
+    if (!pallet) return;
+    currentGarantiaPallet = pallet;
+    currentGarantiaItems = items || [];
+
+    const inputCodigo = document.getElementById('gar-codigo-pallet');
+    const statPallet = document.getElementById('gar-stat-pallet');
+    const resumoCodigo = document.getElementById('gar-resumo-codigo');
+    const resumoStatus = document.getElementById('gar-resumo-status');
+    const statTotal = document.getElementById('gar-stat-total');
+    const resumoTotal = document.getElementById('gar-resumo-total');
+    const tabelaCount = document.getElementById('gar-tabela-count');
+    const tbody = document.getElementById('gar-itens-tbody');
+
+    const totalUnidades = (items && items.length !== undefined) ? items.length : (pallet.total_unidades || 0);
+
+    if (inputCodigo) inputCodigo.value = pallet.codigo_pallet;
+    if (statPallet) statPallet.textContent = pallet.codigo_pallet;
+    if (resumoCodigo) resumoCodigo.textContent = pallet.codigo_pallet;
+
+    if (resumoStatus) {
+        resumoStatus.textContent = pallet.status || 'ABERTO';
+        resumoStatus.className = pallet.status === 'ABERTO' ? 'badge badge-success' : 'badge badge-danger';
+    }
+
+    // Toggle Reabrir vs Fechar buttons
+    const btnFechar = document.getElementById('btn-gar-fechar-pallet');
+    const btnReabrir = document.getElementById('btn-gar-reabrir-pallet');
+    if (pallet.status === 'FECHADO') {
+        if (btnFechar) btnFechar.style.display = 'none';
+        if (btnReabrir) btnReabrir.style.display = '';
+    } else {
+        if (btnFechar) btnFechar.style.display = '';
+        if (btnReabrir) btnReabrir.style.display = 'none';
+    }
+
+    if (statTotal) statTotal.textContent = totalUnidades;
+    if (resumoTotal) resumoTotal.textContent = `${totalUnidades} Unidades`;
+    if (tabelaCount) tabelaCount.textContent = `${totalUnidades} itens`;
+
+    // Render table
+    if (tbody) {
+        if (!items || items.length === 0) {
+            tbody.innerHTML = `
+                <tr>
+                    <td colspan="5" style="padding: 20px; text-align: center; color: var(--text-secondary);">
+                        Nenhuma unidade de garantia bipada ainda neste pallet.
+                    </td>
+                </tr>
+            `;
+        } else {
+            tbody.innerHTML = items.map((item, idx) => {
+                const num = items.length - idx;
+                const hora = item.data_bipagem ? new Date(item.data_bipagem).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit', second: '2-digit' }) : '';
+                return `
+                    <tr style="border-bottom: 1px solid rgba(255,255,255,0.05);">
+                        <td style="padding: 8px 10px; color: var(--text-secondary);">${num}</td>
+                        <td style="padding: 8px 10px; font-weight: 600; color: var(--text-primary); font-family: monospace;">${item.serial_number || '---'}</td>
+                        <td style="padding: 8px 10px; color: #fbbf24;">${item.modelo || '---'}</td>
+                        <td style="padding: 8px 10px; color: var(--text-secondary); font-size: 0.8rem;">${hora}</td>
+                        <td style="padding: 8px 10px; text-align: right; white-space: nowrap;">
+                            <button onclick="handleEditarItemPallet('${escapeHtml(item.serial_number)}', '${escapeHtml(item.gpon_id || '')}', '${escapeHtml(item.mac || '')}', '${escapeHtml(item.modelo || '')}')" class="btn btn-secondary" style="padding: 2px 8px; font-size: 0.75rem; background: rgba(59, 130, 246, 0.2); color: #93c5fd; border: 1px solid rgba(59, 130, 246, 0.4); margin-right: 4px;" title="Editar Séries">
+                                ✏️
+                            </button>
+                            <button onclick="handleRemoverItemGarantiaPallet(${item.id})" class="btn btn-secondary" style="padding: 2px 8px; font-size: 0.75rem; background: rgba(244, 63, 94, 0.2); color: #f43f5e; border: 1px solid rgba(244, 63, 94, 0.4);" title="Remover unidade do pallet de garantia">
+                                &times;
+                            </button>
+                        </td>
+                    </tr>
+                `;
+            }).join('');
+        }
+    }
+}
+
+async function handleRemoverItemGarantiaPallet(itemId) {
+    if (!confirm("Deseja realmente remover esta unidade do pallet de garantia? O status dela no sistema retornará para 'Retorno de Pintura'.")) return;
+    try {
+        const res = await fetch(`${SERVER_URL.replace(/\/$/, '')}/api/expedicao-garantia/item/${itemId}`, {
+            method: 'DELETE'
+        });
+        if (res.ok) {
+            const data = await res.json();
+            showGarantiaStatus(`Unidade <strong>${data.serial}</strong> removida do Pallet de Garantia ${data.codigo_pallet}! Status revertido para 'Retorno de Pintura'.`, false);
+            if (currentGarantiaPallet && currentGarantiaPallet.codigo_pallet) {
+                await selecionarPalletGarantiaAberto(currentGarantiaPallet.codigo_pallet);
+            } else {
+                await loadActivePalletGarantia();
+            }
+        } else {
+            const err = await res.json();
+            alert(err.error || "Erro ao remover item do pallet de garantia.");
+        }
+    } catch (err) {
+        console.error("Erro ao remover item do pallet de garantia:", err);
+        alert("Erro de comunicação ao remover item.");
+    }
+}
+
+function renderPalletsGarantiaModalTable(pallets) {
+    const tbody = document.getElementById('pallets-garantia-tbody');
+    if (!tbody) return;
+
+    if (!pallets || pallets.length === 0) {
+        tbody.innerHTML = `
+            <tr>
+                <td colspan="4" style="text-align: center; padding: 20px; color: var(--text-secondary);">
+                    Nenhum pallet de garantia encontrado.
+                </td>
+            </tr>
+        `;
+        return;
+    }
+
+    tbody.innerHTML = pallets.map(p => {
+        const statusBadge = p.status === 'ABERTO' 
+            ? `<span class="badge badge-success" style="font-size: 0.75rem;">ABERTO</span>` 
+            : `<span class="badge badge-danger" style="font-size: 0.75rem;">FECHADO</span>`;
+        return `
+            <tr style="border-bottom: 1px solid rgba(255,255,255,0.05);">
+                <td style="padding: 10px; font-weight: 700; color: #fbbf24; font-family: monospace;">${p.codigo_pallet}</td>
+                <td style="padding: 10px; text-align: center;">${statusBadge}</td>
+                <td style="padding: 10px; text-align: center; font-weight: 600;">${p.total_unidades || 0}</td>
+                <td style="padding: 10px; text-align: right;">
+                    <button onclick="selecionarPalletGarantiaAberto('${p.codigo_pallet}')" class="btn btn-secondary" style="padding: 4px 10px; font-size: 0.8rem; background: rgba(217, 119, 6, 0.2); color: #fbbf24; border-color: rgba(217, 119, 6, 0.4);">
+                        Selecionar
+                    </button>
+                </td>
+            </tr>
+        `;
+    }).join('');
+}
+
+window.selecionarPalletGarantiaAberto = async function(codigo) {
+    try {
+        const res = await fetch(`${SERVER_URL.replace(/\/$/, '')}/api/expedicao-garantia/pallet/${encodeURIComponent(codigo)}`);
+        if (res.ok) {
+            const data = await res.json();
+            currentGarantiaPallet = data.pallet;
+            currentGarantiaItems = data.items || [];
+            renderPalletGarantiaData(data.pallet, data.items || []);
+            const modal = document.getElementById('modal-pallets-garantia');
+            if (modal) modal.classList.add('hidden');
+            showGarantiaStatus(`Pallet de garantia ativo alterado para <strong>${codigo}</strong>.`, false);
+            const inputScan = document.getElementById('gar-scan-input');
+            if (inputScan) inputScan.focus();
+        }
+    } catch (err) {
+        console.error("Erro ao selecionar pallet de garantia:", err);
+    }
+};
+
+function setupExpedicaoGarantiaListeners() {
+    const formBipar = document.getElementById('form-garantia-bipar');
+    const inputScan = document.getElementById('gar-scan-input');
+    const btnLimpar = document.getElementById('btn-gar-limpar');
+    const btnNovoPallet = document.getElementById('btn-gar-novo-pallet');
+    const btnAbertos = document.getElementById('btn-gar-abertos');
+    const btnFecharModal = document.getElementById('btn-fechar-modal-garantia-pallets');
+    const inputBuscaPallets = document.getElementById('input-busca-garantia-pallets');
+    const btnFecharPallet = document.getElementById('btn-gar-fechar-pallet');
+    const btnReabrirPallet = document.getElementById('btn-gar-reabrir-pallet');
+    const btnRefresh = document.getElementById('btn-gar-refresh');
+    const btnImprimir = document.getElementById('btn-gar-imprimir');
+
+    function limparCampos() {
+        if (inputScan) {
+            inputScan.value = '';
+            inputScan.focus();
+        }
+    }
+
+    if (btnLimpar) {
+        btnLimpar.addEventListener('click', limparCampos);
+    }
+
+    if (btnNovoPallet) {
+        btnNovoPallet.addEventListener('click', async () => {
+            if (!confirm("Deseja criar um novo Pallet de Garantia? A numeração PG será gerada automaticamente.")) return;
+            try {
+                const res = await fetch(`${SERVER_URL.replace(/\/$/, '')}/api/expedicao-garantia/novo-pallet`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ usuario: currentUser?.username || 'OPERADOR' })
+                });
+                if (res.ok) {
+                    const data = await res.json();
+                    currentGarantiaPallet = data.pallet;
+                    currentGarantiaItems = [];
+                    renderPalletGarantiaData(data.pallet, []);
+                    showGarantiaStatus(`Novo Pallet de Garantia <strong>${data.pallet.codigo_pallet}</strong> criado com sucesso!`, false);
+                    limparCampos();
+                } else {
+                    alert("Erro ao criar novo pallet de garantia.");
+                }
+            } catch (err) {
+                console.error("Erro ao criar novo pallet de garantia:", err);
+                alert("Erro de comunicação ao criar novo pallet de garantia.");
+            }
+        });
+    }
+
+    if (btnAbertos) {
+        btnAbertos.addEventListener('click', async () => {
+            try {
+                const res = await fetch(`${SERVER_URL.replace(/\/$/, '')}/api/expedicao-garantia/pallets-todos`);
+                if (res.ok) {
+                    allGarantiaPalletsCache = await res.json();
+                    if (inputBuscaPallets) inputBuscaPallets.value = '';
+                    renderPalletsGarantiaModalTable(allGarantiaPalletsCache);
+                    const modal = document.getElementById('modal-pallets-garantia');
+                    if (modal) modal.classList.remove('hidden');
+                }
+            } catch (err) {
+                console.error("Erro ao buscar pallets de garantia:", err);
+            }
+        });
+    }
+
+    if (btnFecharModal) {
+        btnFecharModal.addEventListener('click', () => {
+            const modal = document.getElementById('modal-pallets-garantia');
+            if (modal) modal.classList.add('hidden');
+        });
+    }
+
+    if (inputBuscaPallets) {
+        inputBuscaPallets.addEventListener('input', (e) => {
+            const termo = e.target.value.trim().toUpperCase();
+            if (!termo) {
+                renderPalletsGarantiaModalTable(allGarantiaPalletsCache);
+            } else {
+                const filtrados = allGarantiaPalletsCache.filter(p => p.codigo_pallet.toUpperCase().includes(termo));
+                renderPalletsGarantiaModalTable(filtrados);
+            }
+        });
+    }
+
+    if (btnReabrirPallet) {
+        btnReabrirPallet.addEventListener('click', async () => {
+            if (!currentGarantiaPallet) return;
+            const cod = currentGarantiaPallet.codigo_pallet;
+            if (!confirm(`Deseja realmente reabrir o Pallet de Garantia ${cod}?`)) return;
+
+            try {
+                const res = await fetch(`${SERVER_URL.replace(/\/$/, '')}/api/expedicao-garantia/reabrir-pallet`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ codigo_pallet: cod })
+                });
+                if (res.ok) {
+                    showGarantiaStatus(`Pallet de Garantia <strong>${cod}</strong> reaberto com sucesso!`, false);
+                    await selecionarPalletGarantiaAberto(cod);
+                } else {
+                    alert("Erro ao reabrir o pallet de garantia.");
+                }
+            } catch (err) {
+                console.error("Erro ao reabrir pallet de garantia:", err);
+            }
+        });
+    }
+
+    if (btnRefresh) {
+        btnRefresh.addEventListener('click', loadActivePalletGarantia);
+    }
+
+    if (btnImprimir) {
+        btnImprimir.addEventListener('click', () => {
+            if (!currentGarantiaPallet) {
+                alert("Nenhum pallet de garantia selecionado.");
+                return;
+            }
+            const items = currentGarantiaItems || [];
+            const modelosUnicos = [...new Set(items.map(i => i.modelo).filter(Boolean))];
+            const modeloTexto = modelosUnicos.length === 1 ? modelosUnicos[0] : (modelosUnicos.length > 1 ? modelosUnicos.join(', ') : 'QUALQUER MODELO');
+            const listaSeriais = items.map(i => i.serial_number || i.gpon_id || i.mac).filter(Boolean);
+
+            imprimirFolhaA4PalletGenerica({
+                palletId: currentGarantiaPallet.codigo_pallet,
+                modelo: modeloTexto,
+                dataHora: new Date().toLocaleString('pt-BR'),
+                totalUnidades: items.length,
+                listaUnidades: listaSeriais,
+                logoUrl: 'logo.png',
+                tituloPallet: 'PALLET GARANTIA #'
+            });
+        });
+    }
+
+    if (btnFecharPallet) {
+        btnFecharPallet.addEventListener('click', async () => {
+            if (!currentGarantiaPallet) return;
+            const cod = currentGarantiaPallet.codigo_pallet;
+            const total = currentGarantiaItems ? currentGarantiaItems.length : (currentGarantiaPallet.total_unidades || 0);
+
+            if (total === 0) {
+                if (!confirm(`O Pallet de Garantia ${cod} está vazio (0 unidades). Deseja realmente fechá-lo?`)) return;
+            } else {
+                if (!confirm(`Deseja realmente FECHAR o Pallet de Garantia ${cod} com ${total} unidades? O status das unidades será alterado para 'Aguardando retorno de pintura (Garantia)'.`)) return;
+            }
+
+            try {
+                const res = await fetch(`${SERVER_URL.replace(/\/$/, '')}/api/expedicao-garantia/fechar-pallet`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ codigo_pallet: cod })
+                });
+
+                if (res.ok) {
+                    showGarantiaStatus(`Pallet de Garantia <strong>${cod}</strong> fechado com sucesso!`, false);
+
+                    const itemsToPrint = currentGarantiaItems || [];
+                    const modelosUnicos = [...new Set(itemsToPrint.map(i => i.modelo).filter(Boolean))];
+                    const modeloTexto = modelosUnicos.length === 1 ? modelosUnicos[0] : (modelosUnicos.length > 1 ? modelosUnicos.join(', ') : 'QUALQUER MODELO');
+                    const listaSeriais = itemsToPrint.map(i => i.serial_number || i.gpon_id || i.mac).filter(Boolean);
+
+                    imprimirFolhaA4PalletGenerica({
+                        palletId: cod,
+                        modelo: modeloTexto,
+                        dataHora: new Date().toLocaleString('pt-BR'),
+                        totalUnidades: total,
+                        listaUnidades: listaSeriais,
+                        logoUrl: 'logo.png',
+                        tituloPallet: 'PALLET GARANTIA #'
+                    });
+
+                    await loadActivePalletGarantia();
+                } else {
+                    alert("Erro ao fechar o pallet de garantia.");
+                }
+            } catch (err) {
+                console.error("Erro ao fechar pallet de garantia:", err);
+            }
+        });
+    }
+
+    if (formBipar) {
+        formBipar.addEventListener('submit', async (e) => {
+            e.preventDefault();
+            if (!currentGarantiaPallet) {
+                showGarantiaStatus("Nenhum pallet de garantia ativo selecionado.", true);
+                return;
+            }
+            if (currentGarantiaPallet.status === 'FECHADO') {
+                showGarantiaStatus(`🚫 O Pallet <strong>${currentGarantiaPallet.codigo_pallet}</strong> está FECHADO. Clique em 'Reabrir Pallet' ou '+ Novo Pallet' para bipar.`, true);
+                return;
+            }
+
+            const valorScan = inputScan ? inputScan.value.trim().toUpperCase() : '';
+            if (!valorScan) {
+                showGarantiaStatus("Informe ou bipe o código da unidade (Serial, GPON ou MAC).", true);
+                if (inputScan) inputScan.focus();
+                return;
+            }
+
+            if (hasSpecialCharacters(valorScan)) {
+                showGarantiaStatus("🚫 <strong>ERRO</strong>: Caracteres especiais não são permitidos no código da unidade.", true);
+                if (inputScan) {
+                    inputScan.select();
+                    inputScan.focus();
+                }
+                return;
+            }
+
+            try {
+                const res = await fetch(`${SERVER_URL.replace(/\/$/, '')}/api/expedicao-garantia/bipar`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        codigo_pallet: currentGarantiaPallet.codigo_pallet,
+                        scan: valorScan,
+                        serial: valorScan,
+                        usuario: currentUser?.username || 'OPERADOR'
+                    })
+                });
+
+                const data = await res.json();
+
+                if (!res.ok || !data.success) {
+                    const errorMsg = data.error || 'Erro na bipagem de garantia.';
+                    if (data.code === 'UNIDADE_NAO_RECEBIDA') {
+                        showGarantiaStatus(`⚠️ <strong>UNIDADE NÃO RECEBIDA</strong>: Esta unidade não consta na base de recebimento.`, true);
+                        showUnidadeNaoRecebidaModal(`A unidade "${valorScan}" não foi recebida no sistema.`);
+                    } else if (data.code === 'NAO_PASSOU_RETORNO') {
+                        showGarantiaStatus(`⚠️ <strong>REPROVADO PARA GARANTIA</strong>: ${errorMsg}`, true);
+                    } else {
+                        showGarantiaStatus(`❌ ${errorMsg}`, true);
+                    }
+                    if (inputScan) {
+                        inputScan.select();
+                        inputScan.focus();
+                    }
+                    return;
+                }
+
+                // Sucesso
+                currentGarantiaItems = data.items || [];
+                renderPalletGarantiaData(currentGarantiaPallet, data.items);
+                showGarantiaStatus(`✅ Unidade <strong>${data.item.serial_number}</strong> (${data.item.modelo}) adicionada ao Pallet de Garantia ${currentGarantiaPallet.codigo_pallet}!`, false);
+                limparCampos();
+            } catch (err) {
+                console.error("Erro ao bipar unidade para o pallet de garantia:", err);
+                showGarantiaStatus("Erro de comunicação com o servidor.", true);
+            }
+        });
+    }
+}
 
 // ============================================================
 // RETORNO PINTURA MODULE
@@ -3624,6 +4157,12 @@ async function salvarEdicaoSeries() {
                     await selecionarPalletAberto(currentExpedicaoPallet.codigo_pallet);
                 } else {
                     await loadActivePallet();
+                }
+            } else if (activeTab && activeTab.id === 'expedicao-garantia') {
+                if (typeof currentGarantiaPallet !== 'undefined' && currentGarantiaPallet) {
+                    await selecionarPalletGarantiaAberto(currentGarantiaPallet.codigo_pallet);
+                } else {
+                    await loadActivePalletGarantia();
                 }
             } else if (activeTab && activeTab.id === 'retorno-pintura') {
                 await loadRetornoPinturaData();

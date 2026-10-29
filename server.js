@@ -136,6 +136,7 @@ async function ensureDBAndMinIO() {
 
     // Ensure Pallets Pintura tables and sequence
     await client.query(`CREATE SEQUENCE IF NOT EXISTS seq_pallet_pintura START WITH 1`);
+    await client.query(`CREATE SEQUENCE IF NOT EXISTS seq_pallet_garantia START WITH 1`);
     await client.query(`CREATE TABLE IF NOT EXISTS pallets_pintura (
       id SERIAL PRIMARY KEY,
       codigo_pallet TEXT UNIQUE NOT NULL,
@@ -145,6 +146,7 @@ async function ensureDBAndMinIO() {
       usuario_criacao TEXT,
       total_unidades INTEGER DEFAULT 0
     )`);
+    await client.query(`ALTER TABLE pallets_pintura ADD COLUMN IF NOT EXISTS tipo TEXT DEFAULT 'NORMAL'`);
     await client.query(`CREATE TABLE IF NOT EXISTS pallet_pintura_itens (
       id SERIAL PRIMARY KEY,
       pallet_id INTEGER REFERENCES pallets_pintura(id) ON DELETE CASCADE,
@@ -158,8 +160,11 @@ async function ensureDBAndMinIO() {
       usuario TEXT,
       status TEXT DEFAULT 'Em Pallet'
     )`);
+    await client.query(`ALTER TABLE pallet_pintura_itens ADD COLUMN IF NOT EXISTS tipo TEXT DEFAULT 'NORMAL'`);
     await client.query(`CREATE INDEX IF NOT EXISTS idx_pallet_itens_serial ON pallet_pintura_itens(serial_number)`);
     await client.query(`CREATE INDEX IF NOT EXISTS idx_pallet_itens_codigo ON pallet_pintura_itens(codigo_pallet)`);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_pallet_tipo ON pallets_pintura(tipo)`);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_pallet_itens_tipo ON pallet_pintura_itens(tipo)`);
 
     // Ensure Retorno de Pintura table
     await client.query(`CREATE TABLE IF NOT EXISTS retorno_pintura_itens (
@@ -1658,12 +1663,12 @@ async function generateNextPalletCode(clientOrPool) {
 app.get('/api/expedicao-pintura/active', async (req, res) => {
   try {
     const palletRes = await pool.query(
-      "SELECT * FROM pallets_pintura WHERE status = 'ABERTO' ORDER BY data_criacao DESC LIMIT 1"
+      "SELECT * FROM pallets_pintura WHERE status = 'ABERTO' AND (tipo IS NULL OR tipo = 'NORMAL') ORDER BY data_criacao DESC LIMIT 1"
     );
     if (palletRes.rows.length === 0) {
       const codigo = await generateNextPalletCode(pool);
       const newPallet = await pool.query(
-        "INSERT INTO pallets_pintura(codigo_pallet, status, usuario_criacao, total_unidades, data_criacao) VALUES($1, 'ABERTO', 'SISTEMA', 0, NOW()) RETURNING *",
+        "INSERT INTO pallets_pintura(codigo_pallet, status, usuario_criacao, total_unidades, data_criacao, tipo) VALUES($1, 'ABERTO', 'SISTEMA', 0, NOW(), 'NORMAL') RETURNING *",
         [codigo]
       );
       return res.json({ pallet: newPallet.rows[0], items: [] });
@@ -1686,7 +1691,7 @@ app.post('/api/expedicao-pintura/novo-pallet', async (req, res) => {
     const { usuario } = req.body;
     const codigo = await generateNextPalletCode(pool);
     const newPallet = await pool.query(
-      "INSERT INTO pallets_pintura(codigo_pallet, status, usuario_criacao, total_unidades, data_criacao) VALUES($1, 'ABERTO', $2, 0, NOW()) RETURNING *",
+      "INSERT INTO pallets_pintura(codigo_pallet, status, usuario_criacao, total_unidades, data_criacao, tipo) VALUES($1, 'ABERTO', $2, 0, NOW(), 'NORMAL') RETURNING *",
       [codigo, usuario || 'OPERADOR']
     );
     res.json({ success: true, pallet: newPallet.rows[0], items: [] });
@@ -1700,7 +1705,7 @@ app.post('/api/expedicao-pintura/novo-pallet', async (req, res) => {
 app.get('/api/expedicao-pintura/pallet/:codigo', async (req, res) => {
   try {
     const codigo = req.params.codigo.trim().toUpperCase();
-    const palletRes = await pool.query("SELECT * FROM pallets_pintura WHERE UPPER(codigo_pallet) = $1", [codigo]);
+    const palletRes = await pool.query("SELECT * FROM pallets_pintura WHERE UPPER(codigo_pallet) = $1 AND (tipo IS NULL OR tipo = 'NORMAL')", [codigo]);
     if (palletRes.rows.length === 0) return res.status(404).json({ error: 'Pallet não encontrado.' });
     const pallet = palletRes.rows[0];
     const itemsRes = await pool.query("SELECT * FROM pallet_pintura_itens WHERE UPPER(codigo_pallet) = $1 ORDER BY id DESC", [codigo]);
@@ -1714,7 +1719,7 @@ app.get('/api/expedicao-pintura/pallet/:codigo', async (req, res) => {
 // Get list of open pallets
 app.get('/api/expedicao-pintura/pallets-abertos', async (req, res) => {
   try {
-    const result = await pool.query("SELECT * FROM pallets_pintura WHERE status = 'ABERTO' ORDER BY data_criacao DESC");
+    const result = await pool.query("SELECT * FROM pallets_pintura WHERE status = 'ABERTO' AND (tipo IS NULL OR tipo = 'NORMAL') ORDER BY data_criacao DESC");
     res.json(result.rows);
   } catch (err) {
     console.error('Error fetching open pallets:', err);
@@ -1885,7 +1890,7 @@ app.post('/api/expedicao-pintura/fechar-pallet', async (req, res) => {
 // Get all pallets (open and closed)
 app.get('/api/expedicao-pintura/pallets-todos', async (req, res) => {
   try {
-    const result = await pool.query("SELECT * FROM pallets_pintura ORDER BY id DESC");
+    const result = await pool.query("SELECT * FROM pallets_pintura WHERE (tipo IS NULL OR tipo = 'NORMAL') ORDER BY id DESC");
     res.json(result.rows);
   } catch (err) {
     console.error('Error fetching all pallets:', err);
@@ -1901,7 +1906,7 @@ app.get('/api/expedicao-pintura/report', async (req, res) => {
       SELECT ppi.*, p.data_criacao, p.data_fechamento, p.status as pallet_status 
       FROM pallet_pintura_itens ppi
       JOIN pallets_pintura p ON ppi.pallet_id = p.id
-      WHERE 1=1
+      WHERE (p.tipo IS NULL OR p.tipo = 'NORMAL')
     `;
     const params = [];
     let paramIndex = 1;
@@ -2018,6 +2023,416 @@ app.delete('/api/expedicao-pintura/item/:id', async (req, res) => {
 });
 
 // ============================================================
+// Expedição Pintura - Garantia Routes
+// ============================================================
+
+async function generateNextPalletGarantiaCode(clientOrPool) {
+  const res = await clientOrPool.query("SELECT nextval('seq_pallet_garantia') AS num");
+  const num = parseInt(res.rows[0].num, 10);
+  return 'PG' + String(num).padStart(8, '0');
+}
+
+// Get active open pallet for Garantia (or creates initial one)
+app.get('/api/expedicao-garantia/active', async (req, res) => {
+  try {
+    const palletRes = await pool.query(
+      "SELECT * FROM pallets_pintura WHERE status = 'ABERTO' AND tipo = 'GARANTIA' ORDER BY data_criacao DESC LIMIT 1"
+    );
+    if (palletRes.rows.length === 0) {
+      const codigo = await generateNextPalletGarantiaCode(pool);
+      const newPallet = await pool.query(
+        "INSERT INTO pallets_pintura(codigo_pallet, status, usuario_criacao, total_unidades, data_criacao, tipo) VALUES($1, 'ABERTO', 'SISTEMA', 0, NOW(), 'GARANTIA') RETURNING *",
+        [codigo]
+      );
+      return res.json({ pallet: newPallet.rows[0], items: [] });
+    }
+    const pallet = palletRes.rows[0];
+    const itemsRes = await pool.query(
+      "SELECT * FROM pallet_pintura_itens WHERE UPPER(codigo_pallet) = UPPER($1) ORDER BY id DESC",
+      [pallet.codigo_pallet]
+    );
+    res.json({ pallet, items: itemsRes.rows });
+  } catch (err) {
+    console.error('Error fetching active garantia pallet:', err);
+    res.status(500).json({ error: 'Database error fetching active garantia pallet.' });
+  }
+});
+
+// Create new garantia pallet
+app.post('/api/expedicao-garantia/novo-pallet', async (req, res) => {
+  try {
+    const { usuario } = req.body;
+    const codigo = await generateNextPalletGarantiaCode(pool);
+    const newPallet = await pool.query(
+      "INSERT INTO pallets_pintura(codigo_pallet, status, usuario_criacao, total_unidades, data_criacao, tipo) VALUES($1, 'ABERTO', $2, 0, NOW(), 'GARANTIA') RETURNING *",
+      [codigo, usuario || 'OPERADOR']
+    );
+    res.json({ success: true, pallet: newPallet.rows[0], items: [] });
+  } catch (err) {
+    console.error('Error creating new garantia pallet:', err);
+    res.status(500).json({ error: 'Database error creating new garantia pallet.' });
+  }
+});
+
+// Get specific garantia pallet
+app.get('/api/expedicao-garantia/pallet/:codigo', async (req, res) => {
+  try {
+    const codigo = req.params.codigo.trim().toUpperCase();
+    const palletRes = await pool.query("SELECT * FROM pallets_pintura WHERE UPPER(codigo_pallet) = $1 AND tipo = 'GARANTIA'", [codigo]);
+    if (palletRes.rows.length === 0) return res.status(404).json({ error: 'Pallet de garantia não encontrado.' });
+    const pallet = palletRes.rows[0];
+    const itemsRes = await pool.query("SELECT * FROM pallet_pintura_itens WHERE UPPER(codigo_pallet) = $1 ORDER BY id DESC", [codigo]);
+    res.json({ pallet, items: itemsRes.rows });
+  } catch (err) {
+    console.error('Error loading garantia pallet:', err);
+    res.status(500).json({ error: 'Database error loading garantia pallet.' });
+  }
+});
+
+// Get list of open garantia pallets
+app.get('/api/expedicao-garantia/pallets-abertos', async (req, res) => {
+  try {
+    const result = await pool.query("SELECT * FROM pallets_pintura WHERE status = 'ABERTO' AND tipo = 'GARANTIA' ORDER BY data_criacao DESC");
+    res.json(result.rows);
+  } catch (err) {
+    console.error('Error fetching open garantia pallets:', err);
+    res.status(500).json({ error: 'Database error fetching open garantia pallets.' });
+  }
+});
+
+// Get all garantia pallets (open and closed)
+app.get('/api/expedicao-garantia/pallets-todos', async (req, res) => {
+  try {
+    const result = await pool.query("SELECT * FROM pallets_pintura WHERE tipo = 'GARANTIA' ORDER BY id DESC");
+    res.json(result.rows);
+  } catch (err) {
+    console.error('Error fetching all garantia pallets:', err);
+    res.status(500).json({ error: 'Database error fetching garantia pallets.' });
+  }
+});
+
+// Scan/Add unit to garantia pallet
+app.post('/api/expedicao-garantia/bipar', async (req, res) => {
+  try {
+    const { codigo_pallet, serial, scan, pon, mac, usuario } = req.body;
+    const targetScan = String(serial || scan || '').trim();
+    if (!codigo_pallet || (!targetScan && !pon && !mac)) {
+      return res.status(400).json({ error: 'Informe ao menos um campo da unidade (Serial, PON ou MAC).' });
+    }
+
+    if (hasSpecialChars(targetScan) || (pon && hasSpecialChars(pon)) || (mac && hasSpecialChars(mac))) {
+      return res.status(400).json({ success: false, error: 'Caracteres especiais não são permitidos no código da unidade.' });
+    }
+
+    const cleanSerial = sanitizeDataCode(targetScan);
+    const cleanPon = sanitizeDataCode(pon);
+    const cleanMac = sanitizeDataCode(mac);
+    const codPallet = sanitizeDataCode(codigo_pallet);
+
+    // 1. Check if pallet exists, is GARANTIA and is ABERTO
+    const palletRes = await pool.query("SELECT * FROM pallets_pintura WHERE UPPER(codigo_pallet) = $1 AND tipo = 'GARANTIA'", [codPallet]);
+    if (palletRes.rows.length === 0) {
+      return res.status(404).json({ error: 'Pallet de garantia não encontrado.' });
+    }
+    const pallet = palletRes.rows[0];
+    if (pallet.status !== 'ABERTO') {
+      return res.status(400).json({ error: 'Este pallet de garantia já está fechado.' });
+    }
+
+    // 2. Query recebimentos to check if unit exists
+    const searchTerms = [cleanSerial, cleanPon, cleanMac].filter(Boolean);
+    const recRes = await pool.query(`
+      SELECT * FROM recebimentos 
+      WHERE (serial_number IS NOT NULL AND serial_number != '' AND UPPER(TRIM(serial_number)) = ANY($1))
+         OR (gpon_id IS NOT NULL AND gpon_id != '' AND UPPER(TRIM(gpon_id)) = ANY($1))
+         OR (mac IS NOT NULL AND mac != '' AND UPPER(TRIM(mac)) = ANY($1))
+      ORDER BY id DESC LIMIT 1
+    `, [searchTerms]);
+
+    if (recRes.rows.length === 0) {
+      return res.status(400).json({
+        success: false,
+        code: 'UNIDADE_NAO_RECEBIDA',
+        error: 'Unidade não encontrada na base de recebimento'
+      });
+    }
+
+    const unitReceived = recRes.rows[0];
+    const unitSerial = unitReceived.serial_number || cleanSerial;
+    const unitPon = unitReceived.gpon_id || cleanPon;
+    const unitMac = unitReceived.mac || cleanMac;
+    const unitModelo = unitReceived.modelo || 'NÃO INFORMADO';
+    const unitFabricante = unitReceived.fabricante || 'NÃO INFORMADO';
+    const unitIdentifiers = [unitSerial, unitPon, unitMac].filter(Boolean);
+
+    // 3. MANDATORY RULE: Check if unit passed through "Retorno de Pintura"
+    const retornoCheck = await pool.query(`
+      SELECT * FROM retorno_pintura_itens
+      WHERE (serial_number IS NOT NULL AND serial_number != '' AND UPPER(TRIM(serial_number)) = ANY($1))
+         OR (gpon_id IS NOT NULL AND gpon_id != '' AND UPPER(TRIM(gpon_id)) = ANY($1))
+         OR (mac IS NOT NULL AND mac != '' AND UPPER(TRIM(mac)) = ANY($1))
+      LIMIT 1
+    `, [unitIdentifiers]);
+
+    const isRetornoStatus = unitReceived.status === 'Retorno de Pintura';
+    const hasRetornoRecord = retornoCheck.rows.length > 0;
+
+    if (!isRetornoStatus && !hasRetornoRecord) {
+      return res.status(400).json({
+        success: false,
+        code: 'NAO_PASSOU_RETORNO',
+        error: `A unidade "${unitSerial}" não passou por "Retorno de Pintura" (status atual: "${unitReceived.status || 'Recebida'}"). Apenas unidades que retornaram da pintura podem ser expedidas em Garantia.`
+      });
+    }
+
+    // 4. Check if unit is currently in an open or pending warranty pallet
+    if (unitReceived.status === 'Em Pallet (Garantia)') {
+      return res.status(400).json({
+        success: false,
+        code: 'JA_BIPADO_GARANTIA',
+        error: `Unidade já está em um pallet de garantia aberto.`
+      });
+    }
+
+    if (unitReceived.status === 'Aguardando retorno de pintura (Garantia)') {
+      return res.status(400).json({
+        success: false,
+        code: 'JA_BIPADO_GARANTIA',
+        error: `Unidade já foi expedida em garantia e está aguardando retorno de pintura.`
+      });
+    }
+
+    // Check if already in this specific pallet
+    const checkItemInThisPallet = await pool.query(`
+      SELECT * FROM pallet_pintura_itens
+      WHERE UPPER(codigo_pallet) = $1
+        AND ((serial_number IS NOT NULL AND serial_number != '' AND UPPER(TRIM(serial_number)) = ANY($2))
+         OR (gpon_id IS NOT NULL AND gpon_id != '' AND UPPER(TRIM(gpon_id)) = ANY($2))
+         OR (mac IS NOT NULL AND mac != '' AND UPPER(TRIM(mac)) = ANY($2)))
+      LIMIT 1
+    `, [codPallet, unitIdentifiers]);
+
+    if (checkItemInThisPallet.rows.length > 0) {
+      return res.status(400).json({
+        success: false,
+        code: 'JA_BIPADO',
+        error: `Unidade já bipada neste pallet de garantia (${codPallet})`
+      });
+    }
+
+    // 5. Insert into pallet_pintura_itens
+    const insertRes = await pool.query(`
+      INSERT INTO pallet_pintura_itens (pallet_id, codigo_pallet, serial_number, gpon_id, mac, modelo, fabricante, data_bipagem, usuario, status, tipo)
+      VALUES ($1, $2, $3, $4, $5, $6, $7, NOW(), $8, 'Em Pallet (Garantia)', 'GARANTIA')
+      RETURNING *
+    `, [pallet.id, codPallet, unitSerial, unitPon, unitMac, unitModelo, unitFabricante, usuario || 'OPERADOR']);
+
+    // 6. Update unit status in recebimentos to 'Em Pallet (Garantia)'
+    await pool.query(`
+      UPDATE recebimentos
+      SET status = 'Em Pallet (Garantia)'
+      WHERE (serial_number IS NOT NULL AND serial_number != '' AND UPPER(TRIM(serial_number)) = ANY($1))
+         OR (gpon_id IS NOT NULL AND gpon_id != '' AND UPPER(TRIM(gpon_id)) = ANY($1))
+         OR (mac IS NOT NULL AND mac != '' AND UPPER(TRIM(mac)) = ANY($1))
+    `, [unitIdentifiers]);
+
+    // 7. Update total_unidades
+    await pool.query(`
+      UPDATE pallets_pintura 
+      SET total_unidades = (SELECT COUNT(*)::int FROM pallet_pintura_itens WHERE UPPER(codigo_pallet) = $1)
+      WHERE UPPER(codigo_pallet) = $1
+    `, [codPallet]);
+
+    const itemsRes = await pool.query(
+      "SELECT * FROM pallet_pintura_itens WHERE UPPER(codigo_pallet) = $1 ORDER BY id DESC",
+      [codPallet]
+    );
+
+    res.json({
+      success: true,
+      item: insertRes.rows[0],
+      total_unidades: itemsRes.rows.length,
+      items: itemsRes.rows
+    });
+  } catch (err) {
+    console.error('Error scanning unit to garantia pallet:', err);
+    res.status(500).json({ error: 'Database error during scan.' });
+  }
+});
+
+// Close garantia pallet
+app.post('/api/expedicao-garantia/fechar-pallet', async (req, res) => {
+  try {
+    const { codigo_pallet } = req.body;
+    const codPallet = codigo_pallet.trim().toUpperCase();
+
+    // 1. Update status of units in recebimentos to "Aguardando retorno de pintura (Garantia)"
+    const updateRecebimentosQuery = `
+      UPDATE recebimentos
+      SET status = 'Aguardando retorno de pintura (Garantia)'
+      WHERE id IN (
+        SELECT r.id FROM recebimentos r
+        JOIN pallet_pintura_itens ppi ON (
+          (r.serial_number IS NOT NULL AND r.serial_number != '' AND UPPER(TRIM(r.serial_number)) = UPPER(TRIM(ppi.serial_number)))
+          OR (r.gpon_id IS NOT NULL AND r.gpon_id != '' AND UPPER(TRIM(r.gpon_id)) = UPPER(TRIM(ppi.gpon_id)))
+          OR (r.mac IS NOT NULL AND r.mac != '' AND UPPER(TRIM(r.mac)) = UPPER(TRIM(ppi.mac)))
+        )
+        WHERE UPPER(ppi.codigo_pallet) = $1
+      )
+    `;
+    const updateRecRes = await pool.query(updateRecebimentosQuery, [codPallet]);
+
+    // 2. Update status of items in pallet_pintura_itens
+    await pool.query(`
+      UPDATE pallet_pintura_itens
+      SET status = 'Aguardando retorno de pintura (Garantia)'
+      WHERE UPPER(codigo_pallet) = $1
+    `, [codPallet]);
+
+    // 3. Close the pallet
+    await pool.query(`
+      UPDATE pallets_pintura 
+      SET status = 'FECHADO', data_fechamento = NOW() 
+      WHERE UPPER(codigo_pallet) = $1 AND tipo = 'GARANTIA'
+    `, [codPallet]);
+
+    console.log(`Pallet Garantia ${codPallet} fechado. ${updateRecRes.rowCount} unidades com status atualizado para 'Aguardando retorno de pintura (Garantia)'.`);
+    res.json({
+      success: true,
+      message: `Pallet Garantia ${codPallet} fechado com sucesso. ${updateRecRes.rowCount} unidades atualizadas para 'Aguardando retorno de pintura (Garantia)'.`,
+      unidadesAtualizadas: updateRecRes.rowCount
+    });
+  } catch (err) {
+    console.error('Error closing garantia pallet:', err);
+    res.status(500).json({ error: 'Database error closing garantia pallet.' });
+  }
+});
+
+// Reopen a closed garantia pallet
+app.post('/api/expedicao-garantia/reabrir-pallet', async (req, res) => {
+  try {
+    const { codigo_pallet } = req.body;
+    const codPallet = codigo_pallet.trim().toUpperCase();
+
+    // 1. Reopen pallet
+    await pool.query(`
+      UPDATE pallets_pintura 
+      SET status = 'ABERTO', data_fechamento = NULL 
+      WHERE UPPER(codigo_pallet) = $1 AND tipo = 'GARANTIA'
+    `, [codPallet]);
+
+    // 2. Update status of units in recebimentos to 'Em Pallet (Garantia)'
+    const updateRecebimentosQuery = `
+      UPDATE recebimentos
+      SET status = 'Em Pallet (Garantia)'
+      WHERE id IN (
+        SELECT r.id FROM recebimentos r
+        JOIN pallet_pintura_itens ppi ON (
+          (r.serial_number IS NOT NULL AND r.serial_number != '' AND UPPER(TRIM(r.serial_number)) = UPPER(TRIM(ppi.serial_number)))
+          OR (r.gpon_id IS NOT NULL AND r.gpon_id != '' AND UPPER(TRIM(r.gpon_id)) = UPPER(TRIM(ppi.gpon_id)))
+          OR (r.mac IS NOT NULL AND r.mac != '' AND UPPER(TRIM(r.mac)) = UPPER(TRIM(ppi.mac)))
+        )
+        WHERE UPPER(ppi.codigo_pallet) = $1
+      )
+    `;
+    const recRes = await pool.query(updateRecebimentosQuery, [codPallet]);
+
+    // 3. Update status of items in pallet_pintura_itens
+    await pool.query(`
+      UPDATE pallet_pintura_itens
+      SET status = 'Em Pallet (Garantia)'
+      WHERE UPPER(codigo_pallet) = $1
+    `, [codPallet]);
+
+    console.log(`Pallet Garantia ${codPallet} reaberto. ${recRes.rowCount} unidades atualizadas para 'Em Pallet (Garantia)'.`);
+    res.json({
+      success: true,
+      message: `Pallet Garantia ${codPallet} reaberto com sucesso. Status das unidades alterado para 'Em Pallet (Garantia)'.`,
+      unidadesAtualizadas: recRes.rowCount
+    });
+  } catch (err) {
+    console.error('Error reopening garantia pallet:', err);
+    res.status(500).json({ error: 'Database error reopening garantia pallet.' });
+  }
+});
+
+// Remove item from garantia pallet (and revert unit status back to 'Retorno de Pintura')
+app.delete('/api/expedicao-garantia/item/:id', async (req, res) => {
+  try {
+    const itemId = req.params.id;
+    const itemRes = await pool.query('SELECT * FROM pallet_pintura_itens WHERE id = $1', [itemId]);
+    if (itemRes.rows.length === 0) return res.status(404).json({ error: 'Item não encontrado.' });
+    const item = itemRes.rows[0];
+
+    // 1. Delete item from pallet
+    await pool.query('DELETE FROM pallet_pintura_itens WHERE id = $1', [itemId]);
+
+    // 2. Revert unit status in recebimentos back to 'Retorno de Pintura'
+    const identifiers = [item.serial_number, item.gpon_id, item.mac].filter(Boolean);
+    if (identifiers.length > 0) {
+      await pool.query(`
+        UPDATE recebimentos
+        SET status = 'Retorno de Pintura'
+        WHERE (serial_number IS NOT NULL AND serial_number != '' AND UPPER(TRIM(serial_number)) = ANY($1))
+           OR (gpon_id IS NOT NULL AND gpon_id != '' AND UPPER(TRIM(gpon_id)) = ANY($1))
+           OR (mac IS NOT NULL AND mac != '' AND UPPER(TRIM(mac)) = ANY($1))
+      `, [identifiers]);
+    }
+
+    // 3. Recalculate total_unidades on pallet
+    await pool.query(`
+      UPDATE pallets_pintura 
+      SET total_unidades = (SELECT COUNT(*)::int FROM pallet_pintura_itens WHERE UPPER(codigo_pallet) = UPPER($1))
+      WHERE UPPER(codigo_pallet) = UPPER($1)
+    `, [item.codigo_pallet]);
+
+    console.log(`Item ${item.serial_number} removido do pallet de garantia ${item.codigo_pallet}. Status revertido para 'Retorno de Pintura'.`);
+    res.json({ success: true, codigo_pallet: item.codigo_pallet, serial: item.serial_number });
+  } catch (err) {
+    console.error('Error removing item from garantia pallet:', err);
+    res.status(500).json({ error: 'Database error removing item.' });
+  }
+});
+
+// Get report data for expedicao garantia
+app.get('/api/expedicao-garantia/report', async (req, res) => {
+  const { start, end, modelo } = req.query;
+  try {
+    let query = `
+      SELECT ppi.*, p.data_criacao, p.data_fechamento, p.status as pallet_status 
+      FROM pallet_pintura_itens ppi
+      JOIN pallets_pintura p ON ppi.pallet_id = p.id
+      WHERE p.tipo = 'GARANTIA'
+    `;
+    const params = [];
+    let paramIndex = 1;
+
+    if (start) {
+      query += ` AND ppi.data_bipagem >= $${paramIndex}`;
+      params.push(`${start} 00:00:00`);
+      paramIndex++;
+    }
+    if (end) {
+      query += ` AND ppi.data_bipagem <= $${paramIndex}`;
+      params.push(`${end} 23:59:59`);
+      paramIndex++;
+    }
+    if (modelo) {
+      query += ` AND ppi.modelo = $${paramIndex}`;
+      params.push(modelo);
+      paramIndex++;
+    }
+
+    query += ' ORDER BY ppi.id ASC';
+    const result = await pool.query(query, params);
+    res.json(result.rows);
+  } catch (err) {
+    console.error('Error fetching expedicao garantia report:', err);
+    res.status(500).json({ error: 'Failed to fetch report data.' });
+  }
+});
+
+// ============================================================
 // Retorno de Pintura Routes
 // ============================================================
 
@@ -2054,7 +2469,9 @@ app.post('/api/retorno-pintura/bipar', async (req, res) => {
     const unit = recRes.rows[0];
     const identifiers = [unit.serial_number, unit.gpon_id, unit.mac].filter(Boolean);
 
-    // 2. Check if unit was already scanned into Retorno de Pintura (Prevent duplication)
+    // 2. Check if unit was already scanned into Retorno de Pintura (Allow if returning from Garantia)
+    const isReturningFromGarantia = (unit.status === 'Aguardando retorno de pintura (Garantia)' || unit.status === 'Em Pallet (Garantia)');
+
     const checkDup = await pool.query(`
       SELECT * FROM retorno_pintura_itens
       WHERE (serial_number IS NOT NULL AND serial_number != '' AND UPPER(TRIM(serial_number)) = ANY($1))
@@ -2063,7 +2480,7 @@ app.post('/api/retorno-pintura/bipar', async (req, res) => {
       ORDER BY id DESC LIMIT 1
     `, [identifiers]);
 
-    if (checkDup.rows.length > 0) {
+    if (checkDup.rows.length > 0 && !isReturningFromGarantia) {
       const dup = checkDup.rows[0];
       const dataHoraStr = dup.data_retorno ? new Date(dup.data_retorno).toLocaleString('pt-BR') : '';
       return res.status(400).json({
