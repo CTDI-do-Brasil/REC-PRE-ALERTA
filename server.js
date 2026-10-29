@@ -190,6 +190,37 @@ async function ensureDBAndMinIO() {
     // Ensure super_user column in recebimentos
     await client.query(`ALTER TABLE recebimentos ADD COLUMN IF NOT EXISTS super_user TEXT`);
 
+    // Ensure Expedição TIM tables
+    await client.query(`CREATE TABLE IF NOT EXISTS expedicao_tim_relatorio (
+      id SERIAL PRIMARY KEY,
+      report_data JSONB NOT NULL DEFAULT '[]'::jsonb,
+      raw_data JSONB NOT NULL DEFAULT '[]'::jsonb,
+      raw_headers JSONB NOT NULL DEFAULT '[]'::jsonb,
+      column_map JSONB NOT NULL DEFAULT '{}'::jsonb,
+      total_linhas INTEGER DEFAULT 0,
+      usuario TEXT,
+      updated_at TIMESTAMP DEFAULT NOW()
+    )`);
+
+    await client.query(`CREATE TABLE IF NOT EXISTS expedicao_tim_lotes (
+      id TEXT PRIMARY KEY,
+      number INTEGER,
+      dest TEXT,
+      obs TEXT,
+      status TEXT DEFAULT 'aberto',
+      created_at TEXT,
+      groups JSONB NOT NULL DEFAULT '[]'::jsonb,
+      expedition_data JSONB,
+      usuario TEXT,
+      updated_at TIMESTAMP DEFAULT NOW()
+    )`);
+
+    await client.query(`CREATE TABLE IF NOT EXISTS expedicao_tim_config (
+      key TEXT PRIMARY KEY,
+      value JSONB,
+      updated_at TIMESTAMP DEFAULT NOW()
+    )`);
+
     console.log('Postgres tables verified/created successfully.');
   } catch (err) {
     console.error('Error establishing database tables:', err);
@@ -3270,6 +3301,223 @@ async function handleEditarSeries(req, res) {
 
 app.post('/api/unidades/editar-series', handleEditarSeries);
 app.put('/api/unidades/editar-series', handleEditarSeries);
+
+// ============================================================
+// Expedição TIM - Routes
+// ============================================================
+
+// 1. Obter estado completo (Relatório, Lotes, Configurações)
+app.get('/api/expedicao-tim/state', async (req, res) => {
+  try {
+    const repRes = await pool.query(
+      `SELECT report_data, raw_data, raw_headers, column_map, updated_at 
+       FROM expedicao_tim_relatorio ORDER BY id DESC LIMIT 1`
+    );
+    const reportRow = repRes.rows[0] || {};
+
+    const lotsRes = await pool.query(
+      `SELECT id, number, dest, obs, status, created_at, groups, expedition_data 
+       FROM expedicao_tim_lotes ORDER BY number ASC`
+    );
+    const lots = (lotsRes.rows || []).map(r => ({
+      id: r.id,
+      number: r.number,
+      dest: r.dest,
+      obs: r.obs,
+      status: r.status,
+      createdAt: r.created_at,
+      groups: r.groups || [],
+      expeditionData: r.expedition_data || null
+    }));
+
+    const cfgRes = await pool.query(`SELECT key, value FROM expedicao_tim_config`);
+    const config = {};
+    (cfgRes.rows || []).forEach(r => { config[r.key] = r.value; });
+
+    res.json({
+      success: true,
+      reportData: reportRow.report_data || [],
+      rawData: reportRow.raw_data || [],
+      rawHeaders: reportRow.raw_headers || [],
+      columnMap: reportRow.column_map || {},
+      lots: lots,
+      lastResponsavel: config.last_responsavel || ''
+    });
+  } catch (err) {
+    console.error('Error fetching expedicao-tim state:', err);
+    res.status(500).json({ error: 'Erro ao buscar dados da Expedição TIM no banco de dados.' });
+  }
+});
+
+// 2. Salvar relatório importado
+app.post('/api/expedicao-tim/report', async (req, res) => {
+  try {
+    const { reportData, rawData, rawHeaders, columnMap, usuario } = req.body;
+    const total = Array.isArray(reportData) ? reportData.length : 0;
+
+    await pool.query(`DELETE FROM expedicao_tim_relatorio`);
+    await pool.query(
+      `INSERT INTO expedicao_tim_relatorio (report_data, raw_data, raw_headers, column_map, total_linhas, usuario, updated_at)
+       VALUES ($1, $2, $3, $4, $5, $6, NOW())`,
+      [
+        JSON.stringify(reportData || []),
+        JSON.stringify(rawData || []),
+        JSON.stringify(rawHeaders || []),
+        JSON.stringify(columnMap || {}),
+        total,
+        usuario || 'ADMIN'
+      ]
+    );
+
+    res.json({ success: true, message: 'Relatório salvo com sucesso no banco de dados!' });
+  } catch (err) {
+    console.error('Error saving expedicao-tim report:', err);
+    res.status(500).json({ error: 'Erro ao salvar relatório no banco de dados.' });
+  }
+});
+
+// 3. Limpar relatório importado
+app.delete('/api/expedicao-tim/report', async (req, res) => {
+  try {
+    await pool.query(`DELETE FROM expedicao_tim_relatorio`);
+    res.json({ success: true, message: 'Relatório removido com sucesso do banco de dados.' });
+  } catch (err) {
+    console.error('Error clearing expedicao-tim report:', err);
+    res.status(500).json({ error: 'Erro ao limpar relatório do banco.' });
+  }
+});
+
+// 4. Salvar ou atualizar um Lote
+app.post('/api/expedicao-tim/lote', async (req, res) => {
+  try {
+    const { id, number, dest, obs, status, createdAt, groups, expeditionData, usuario } = req.body;
+    if (!id) return res.status(400).json({ error: 'ID do lote é obrigatório.' });
+
+    await pool.query(
+      `INSERT INTO expedicao_tim_lotes (id, number, dest, obs, status, created_at, groups, expedition_data, usuario, updated_at)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, NOW())
+       ON CONFLICT (id) DO UPDATE SET
+         number = EXCLUDED.number,
+         dest = EXCLUDED.dest,
+         obs = EXCLUDED.obs,
+         status = EXCLUDED.status,
+         created_at = EXCLUDED.created_at,
+         groups = EXCLUDED.groups,
+         expedition_data = EXCLUDED.expedition_data,
+         usuario = EXCLUDED.usuario,
+         updated_at = NOW()`,
+      [
+        id,
+        number || 1,
+        dest || '',
+        obs || '',
+        status || 'aberto',
+        createdAt || new Date().toLocaleString('pt-BR'),
+        JSON.stringify(groups || []),
+        expeditionData ? JSON.stringify(expeditionData) : null,
+        usuario || 'ADMIN'
+      ]
+    );
+
+    res.json({ success: true, message: 'Lote salvo com sucesso no banco de dados!' });
+  } catch (err) {
+    console.error('Error saving expedicao-tim lote:', err);
+    res.status(500).json({ error: 'Erro ao salvar lote no banco de dados.' });
+  }
+});
+
+// 5. Excluir um Lote
+app.delete('/api/expedicao-tim/lote/:id', async (req, res) => {
+  try {
+    const { id } = req.params;
+    await pool.query(`DELETE FROM expedicao_tim_lotes WHERE id = $1`, [id]);
+    res.json({ success: true, message: 'Lote excluído com sucesso do banco de dados.' });
+  } catch (err) {
+    console.error('Error deleting expedicao-tim lote:', err);
+    res.status(500).json({ error: 'Erro ao excluir lote no banco de dados.' });
+  }
+});
+
+// 6. Sincronização completa (sync-all)
+app.post('/api/expedicao-tim/sync-all', async (req, res) => {
+  const client = await pool.connect();
+  try {
+    const { reportData, rawData, rawHeaders, columnMap, lots, lastResponsavel, usuario } = req.body;
+    await client.query('BEGIN');
+
+    if (reportData !== undefined) {
+      await client.query(`DELETE FROM expedicao_tim_relatorio`);
+      await client.query(
+        `INSERT INTO expedicao_tim_relatorio (report_data, raw_data, raw_headers, column_map, total_linhas, usuario, updated_at)
+         VALUES ($1, $2, $3, $4, $5, $6, NOW())`,
+        [
+          JSON.stringify(reportData || []),
+          JSON.stringify(rawData || []),
+          JSON.stringify(rawHeaders || []),
+          JSON.stringify(columnMap || {}),
+          Array.isArray(reportData) ? reportData.length : 0,
+          usuario || 'ADMIN'
+        ]
+      );
+    }
+
+    if (Array.isArray(lots)) {
+      const lotIds = lots.map(l => l.id).filter(Boolean);
+      if (lotIds.length > 0) {
+        await client.query(`DELETE FROM expedicao_tim_lotes WHERE NOT (id = ANY($1))`, [lotIds]);
+      } else {
+        await client.query(`DELETE FROM expedicao_tim_lotes`);
+      }
+
+      for (const l of lots) {
+        if (!l.id) continue;
+        await client.query(
+          `INSERT INTO expedicao_tim_lotes (id, number, dest, obs, status, created_at, groups, expedition_data, usuario, updated_at)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, NOW())
+           ON CONFLICT (id) DO UPDATE SET
+             number = EXCLUDED.number,
+             dest = EXCLUDED.dest,
+             obs = EXCLUDED.obs,
+             status = EXCLUDED.status,
+             created_at = EXCLUDED.created_at,
+             groups = EXCLUDED.groups,
+             expedition_data = EXCLUDED.expedition_data,
+             usuario = EXCLUDED.usuario,
+             updated_at = NOW()`,
+          [
+            l.id,
+            l.number || 1,
+            l.dest || '',
+            l.obs || '',
+            l.status || 'aberto',
+            l.createdAt || new Date().toLocaleString('pt-BR'),
+            JSON.stringify(l.groups || []),
+            l.expeditionData ? JSON.stringify(l.expeditionData) : null,
+            usuario || 'ADMIN'
+          ]
+        );
+      }
+    }
+
+    if (lastResponsavel) {
+      await client.query(
+        `INSERT INTO expedicao_tim_config (key, value, updated_at)
+         VALUES ('last_responsavel', $1, NOW())
+         ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = NOW()`,
+        [JSON.stringify(lastResponsavel)]
+      );
+    }
+
+    await client.query('COMMIT');
+    res.json({ success: true, message: 'Dados da Expedição TIM sincronizados com sucesso no banco de dados!' });
+  } catch (err) {
+    await client.query('ROLLBACK');
+    console.error('Error syncing all expedicao-tim data:', err);
+    res.status(500).json({ error: 'Erro ao sincronizar dados no banco de dados.' });
+  } finally {
+    client.release();
+  }
+});
 
 const PORT = process.env.PORT || 4000;
 app.listen(PORT, () => console.log(`Unified server listening on port ${PORT}`));

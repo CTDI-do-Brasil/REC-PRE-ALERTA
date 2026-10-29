@@ -205,6 +205,40 @@ function sanitizeLots() {
   });
 }
 
+let syncServerTimer = null;
+
+async function syncStateWithServer(payload) {
+  if (syncServerTimer) clearTimeout(syncServerTimer);
+  syncServerTimer = setTimeout(async () => {
+    try {
+      const user = (typeof currentUser !== 'undefined' && currentUser && currentUser.username) ? currentUser.username : 'ADMIN';
+      const bodyPayload = payload || {
+        reportData: STATE.reportData || [],
+        rawData: STATE.rawData || [],
+        rawHeaders: STATE.rawHeaders || [],
+        columnMap: STATE.columnMap || {},
+        lots: STATE.lots || [],
+        lastResponsavel: localStorage.getItem('last_exp_responsavel') || '',
+        usuario: user
+      };
+
+      const res = await fetch('/api/expedicao-tim/sync-all', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(bodyPayload)
+      });
+      if (res.ok) {
+        updateSaveIndicator('server');
+      } else {
+        updateSaveIndicator('local');
+      }
+    } catch(err) {
+      console.warn('PostgreSQL sync offline (salvo localmente no navegador):', err);
+      updateSaveIndicator('local');
+    }
+  }, 350);
+}
+
 function saveState() {
   try {
     localStorage.setItem('exp_lots', JSON.stringify(STATE.lots || []));
@@ -233,13 +267,83 @@ function saveState() {
     rawData: STATE.rawData || [],
     rawHeaders: STATE.rawHeaders || [],
     currentLotId: STATE.currentLotId || null,
-    lastResponsavel: localStorage.getItem('last_exp_responsavel') || ''
+    lastResponsavel: localStorage.getItem('last_exp_responsavel') || '',
+    usuario: (typeof currentUser !== 'undefined' && currentUser && currentUser.username) ? currentUser.username : 'ADMIN'
   };
   idbSaveState(fullPayload);
 
+  // Sincronizar com o banco PostgreSQL no servidor
+  syncStateWithServer(fullPayload);
+
   buildPalletIndex();
   updateStorageBar();
-  updateSaveIndicator();
+  updateSaveIndicator('saving');
+}
+
+async function loadStateFromServer() {
+  try {
+    const res = await fetch('/api/expedicao-tim/state');
+    if (!res.ok) {
+      updateSaveIndicator('local');
+      return;
+    }
+    const data = await res.json();
+    if (!data || !data.success) {
+      updateSaveIndicator('local');
+      return;
+    }
+
+    let hasServerData = false;
+
+    if (Array.isArray(data.reportData) && data.reportData.length > 0) {
+      STATE.reportData = data.reportData;
+      STATE.rawData = data.rawData || [];
+      STATE.rawHeaders = data.rawHeaders || [];
+      hasServerData = true;
+    }
+
+    if (data.columnMap && Object.keys(data.columnMap).length > 0) {
+      STATE.columnMap = data.columnMap;
+      hasServerData = true;
+    }
+
+    if (Array.isArray(data.lots)) {
+      if (data.lots.length > 0 || (STATE.lots && STATE.lots.length === 0)) {
+        STATE.lots = data.lots;
+        hasServerData = true;
+      }
+    }
+
+    if (data.lastResponsavel) {
+      localStorage.setItem('last_exp_responsavel', data.lastResponsavel);
+    }
+
+    if (hasServerData) {
+      sanitizeLots();
+      buildPalletIndex();
+      renderDashboard();
+      updateStorageBar();
+      updateSaveIndicator('server');
+
+      const activePage = document.querySelector('#expedicao-tim .page.active');
+      if (activePage) {
+        if (activePage.id === 'page-lots') renderLotsList();
+        else if (activePage.id === 'page-report') renderReportTable();
+        else if (activePage.id === 'page-lot-detail' && STATE.currentLotId) renderLotDetail();
+      }
+    } else {
+      // Se o banco central estiver vazio mas tivermos dados locais, migra automaticamente para o PostgreSQL
+      if ((STATE.lots && STATE.lots.length > 0) || (STATE.reportData && STATE.reportData.length > 0)) {
+        console.info('Migrando dados locais para o banco central PostgreSQL...');
+        syncStateWithServer();
+      } else {
+        updateSaveIndicator('server');
+      }
+    }
+  } catch(err) {
+    console.warn('Banco central indisponível no momento. Usando dados locais salvos:', err);
+    updateSaveIndicator('local');
+  }
 }
 
 function loadState() {
@@ -300,6 +404,9 @@ function loadState() {
     }
   }).catch(err => {
     console.warn('IndexedDB load warning:', err);
+  }).finally(() => {
+    // Após carregar localmente, sincroniza com o banco central PostgreSQL
+    loadStateFromServer();
   });
 }
 
@@ -330,13 +437,28 @@ function updateStorageBar() {
   } catch(e) { console.warn(e); }
 }
 
-function updateSaveIndicator() {
+function updateSaveIndicator(mode) {
   const badge = document.getElementById('topbar-badge');
   if (badge) {
     const now = new Date();
     const timeStr = now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-    badge.innerHTML = `<span style="display:inline-block;width:7px;height:7px;border-radius:50%;background:#10b981;margin-right:4px;"></span> Salvo (${timeStr})`;
-    badge.title = 'Todas as informações estão salvas localmente no seu computador (LocalStorage + IndexedDB)';
+    if (mode === 'server') {
+      badge.innerHTML = `<span style="display:inline-block;width:7px;height:7px;border-radius:50%;background:#10b981;margin-right:4px;"></span> Banco PostgreSQL (${timeStr})`;
+      badge.title = 'Todas as informações estão sincronizadas e salvas no banco de dados central PostgreSQL!';
+      badge.style.borderColor = 'rgba(16,185,129,0.4)';
+      badge.style.color = '#6ee7b7';
+    } else if (mode === 'saving') {
+      badge.innerHTML = `<span style="display:inline-block;width:7px;height:7px;border-radius:50%;background:#3b82f6;margin-right:4px;"></span> Salvando...`;
+      badge.title = 'Salvando no banco de dados...';
+    } else if (mode === 'local') {
+      badge.innerHTML = `<span style="display:inline-block;width:7px;height:7px;border-radius:50%;background:#f59e0b;margin-right:4px;"></span> Salvo Local (${timeStr})`;
+      badge.title = 'Salvo no navegador local (offline). Sincronizará com o banco assim que a conexão restabelecer.';
+      badge.style.borderColor = 'rgba(245,158,11,0.4)';
+      badge.style.color = '#fcd34d';
+    } else {
+      badge.innerHTML = `<span style="display:inline-block;width:7px;height:7px;border-radius:50%;background:#10b981;margin-right:4px;"></span> Salvo (${timeStr})`;
+      badge.title = 'Salvo no banco de dados central e navegador.';
+    }
   }
 }
 
@@ -803,8 +925,9 @@ function clearReport() {
   STATE.columnMap = {};
   STATE.palletIndex = {};
   saveState();
+  fetch('/api/expedicao-tim/report', { method: 'DELETE' }).catch(err => console.warn('Erro ao limpar do banco:', err));
   renderReportTable();
-  showToast('Dados do relatório removidos.', 'warning');
+  showToast('Dados do relatório removidos do banco e da tela.', 'warning');
 }
 
 // ============================================================
