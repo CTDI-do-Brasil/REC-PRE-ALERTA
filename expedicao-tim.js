@@ -1315,7 +1315,7 @@ function buildRomaneioHtml(lot) {
     return `
       <tr>
         <td style="border:1px solid #000;padding:5px 6px;text-align:center;font-size:12px;font-weight:bold;color:#000;">${pad(g.number || idx + 1)}</td>
-        <td style="border:1px solid #000;padding:5px 8px;text-align:center;font-size:12px;font-family:Arial,Helvetica,sans-serif;font-weight:bold;color:#000;">${palletName}</td>
+        <td class="pallet-code-cell" style="border:1px solid #000;padding:5px 8px;text-align:center;font-size:12px;font-family:monospace,Arial,sans-serif;font-weight:bold;color:#000;word-break:break-all;">${palletName}</td>
         <td style="border:1px solid #000;padding:5px 8px;text-align:center;font-size:11.5px;color:#000;">${summary.model || '—'}</td>
         <td style="border:1px solid #000;padding:5px 6px;text-align:center;font-size:12px;font-weight:bold;color:#92400e;">${boxes} cx</td>
         <td style="border:1px solid #000;padding:5px 8px;text-align:center;font-size:12px;font-weight:bold;color:#000;">${units > 0 ? units : '#N/D'}</td>
@@ -1334,71 +1334,71 @@ function buildRomaneioHtml(lot) {
   `).join('');
 
   return `
-    <div class="romaneio-paper" id="romaneio-paper" style="background:#ffffff;color:#000000;padding:28px 36px;font-family:Arial,Helvetica,sans-serif;border-radius:4px;max-width:640px;margin:0 auto;box-shadow:0 4px 20px rgba(0,0,0,0.35);">
+    <div class="romaneio-paper" id="romaneio-paper" style="background:#ffffff;color:#000000;padding:28px 36px;font-family:Arial,Helvetica,sans-serif;border-radius:4px;max-width:640px;margin:0 auto;box-shadow:0 4px 20px rgba(0,0,0,0.35);text-align:left;">
       <!-- CTDI Logo -->
       <div style="display:flex;justify-content:center;margin-bottom:18px;">
         <img src="${CTDI_LOGO_BASE64}" alt="CTDI" style="max-height:54px;max-width:260px;object-fit:contain;display:block;" />
       </div>
 
       <!-- Fields list -->
-      <div style="font-size:12px;color:#000000;line-height:1.75;font-weight:bold;">
-        <div style="margin-bottom:2px;display:flex;align-items:flex-end;">
-          <span style="white-space:nowrap;margin-right:6px;">RESPONSÁVEL EXPEDIÇÃO:</span>
-          <span style="flex:1;border-bottom:1px solid #000;padding-bottom:1px;min-height:16px;">${exp.responsavel || ''}</span>
+      <div style="font-size:12px;color:#000000;line-height:1.75;font-weight:bold;text-align:left;">
+        <div class="rom-field-row" style="margin-bottom:2px;display:flex;align-items:flex-end;text-align:left;">
+          <span class="rom-label" style="white-space:nowrap;margin-right:6px;text-align:left;">RESPONSÁVEL EXPEDIÇÃO:</span>
+          <span class="rom-val" style="flex:1;border-bottom:1px solid #000;padding-bottom:1px;min-height:16px;text-align:left;">${exp.responsavel || ''}</span>
         </div>
-        <div style="margin-bottom:2px;display:flex;align-items:flex-end;">
-          <span style="white-space:nowrap;margin-right:6px;">DATA E HORA:</span>
-          <span style="flex:1;border-bottom:1px solid #000;padding-bottom:1px;min-height:16px;">${exp.dataHora || ''}</span>
+        <div class="rom-field-row" style="margin-bottom:2px;display:flex;align-items:flex-end;text-align:left;">
+          <span class="rom-label" style="white-space:nowrap;margin-right:6px;text-align:left;">DATA E HORA:</span>
+          <span class="rom-val" style="flex:1;border-bottom:1px solid #000;padding-bottom:1px;min-height:16px;text-align:left;">${exp.dataHora || ''}</span>
         </div>
-        <div style="margin-bottom:2px;display:flex;align-items:flex-end;">
-          <span style="white-space:nowrap;margin-right:6px;">CLIENTE:</span>
-          <span style="flex:1;border-bottom:1px solid #000;padding-bottom:1px;min-height:16px;">${exp.cliente || 'TIM'}</span>
+        <div class="rom-field-row" style="margin-bottom:2px;display:flex;align-items:flex-end;text-align:left;">
+          <span class="rom-label" style="white-space:nowrap;margin-right:6px;text-align:left;">CLIENTE:</span>
+          <span class="rom-val" style="flex:1;border-bottom:1px solid #000;padding-bottom:1px;min-height:16px;text-align:left;">${exp.cliente || 'TIM'}</span>
         </div>
-        <div style="margin-bottom:2px;display:flex;align-items:flex-end;">
-          <span style="white-space:nowrap;margin-right:6px;">DESTINO:</span>
-          <span style="flex:1;border-bottom:1px solid #000;padding-bottom:1px;min-height:16px;">${exp.destino || ''}</span>
+        <div class="rom-field-row" style="margin-bottom:2px;display:flex;align-items:flex-end;text-align:left;">
+          <span class="rom-label" style="white-space:nowrap;margin-right:6px;text-align:left;">DESTINO:</span>
+          <span class="rom-val" style="flex:1;border-bottom:1px solid #000;padding-bottom:1px;min-height:16px;text-align:left;">${exp.destino || ''}</span>
         </div>
-        <div style="margin-bottom:2px;display:flex;align-items:flex-end;">
-          <span style="white-space:nowrap;margin-right:6px;">NF:</span>
-          <span style="flex:1;border-bottom:1px solid #000;padding-bottom:1px;min-height:16px;">${exp.nf || ''}</span>
-        </div>
-
-        <div style="height:8px;"></div>
-
-        <div style="margin-bottom:2px;display:flex;align-items:flex-end;">
-          <span style="white-space:nowrap;margin-right:6px;">NATUREZA OPERAÇÃO:</span>
-          <span style="flex:1;border-bottom:1px solid #000;padding-bottom:1px;min-height:16px;">${exp.natureza || 'RETORNO DE CONSERTO'}</span>
+        <div class="rom-field-row" style="margin-bottom:2px;display:flex;align-items:flex-end;text-align:left;">
+          <span class="rom-label" style="white-space:nowrap;margin-right:6px;text-align:left;">NF:</span>
+          <span class="rom-val" style="flex:1;border-bottom:1px solid #000;padding-bottom:1px;min-height:16px;text-align:left;">${exp.nf || ''}</span>
         </div>
 
         <div style="height:8px;"></div>
 
-        <div style="margin-bottom:2px;display:flex;align-items:flex-end;">
-          <span style="white-space:nowrap;margin-right:6px;">VOLUME:</span>
-          <span style="flex:1;border-bottom:1px solid #000;padding-bottom:1px;min-height:16px;">${volumeStr}</span>
+        <div class="rom-field-row" style="margin-bottom:2px;display:flex;align-items:flex-end;text-align:left;">
+          <span class="rom-label" style="white-space:nowrap;margin-right:6px;text-align:left;">NATUREZA OPERAÇÃO:</span>
+          <span class="rom-val" style="flex:1;border-bottom:1px solid #000;padding-bottom:1px;min-height:16px;text-align:left;">${exp.natureza || 'RETORNO DE CONSERTO'}</span>
         </div>
-        <div style="margin-bottom:2px;display:flex;align-items:flex-end;">
-          <span style="white-space:nowrap;margin-right:6px;">TRANSPORTADORA:</span>
-          <span style="flex:1;border-bottom:1px solid #000;padding-bottom:1px;min-height:16px;">${exp.transportadora || ''}</span>
+
+        <div style="height:8px;"></div>
+
+        <div class="rom-field-row" style="margin-bottom:2px;display:flex;align-items:flex-end;text-align:left;">
+          <span class="rom-label" style="white-space:nowrap;margin-right:6px;text-align:left;">VOLUME:</span>
+          <span class="rom-val" style="flex:1;border-bottom:1px solid #000;padding-bottom:1px;min-height:16px;text-align:left;">${volumeStr}</span>
         </div>
-        <div style="margin-bottom:2px;display:flex;align-items:flex-end;">
-          <span style="white-space:nowrap;margin-right:6px;">MOTORISTA:</span>
-          <span style="flex:1;border-bottom:1px solid #000;padding-bottom:1px;min-height:16px;">${exp.motorista || ''}</span>
+        <div class="rom-field-row" style="margin-bottom:2px;display:flex;align-items:flex-end;text-align:left;">
+          <span class="rom-label" style="white-space:nowrap;margin-right:6px;text-align:left;">TRANSPORTADORA:</span>
+          <span class="rom-val" style="flex:1;border-bottom:1px solid #000;padding-bottom:1px;min-height:16px;text-align:left;">${exp.transportadora || ''}</span>
         </div>
-        <div style="margin-bottom:2px;display:flex;align-items:flex-end;">
-          <span style="white-space:nowrap;margin-right:6px;">RG/CPF:</span>
-          <span style="flex:1;border-bottom:1px solid #000;padding-bottom:1px;min-height:16px;">${exp.rgCpf || ''}</span>
+        <div class="rom-field-row" style="margin-bottom:2px;display:flex;align-items:flex-end;text-align:left;">
+          <span class="rom-label" style="white-space:nowrap;margin-right:6px;text-align:left;">MOTORISTA:</span>
+          <span class="rom-val" style="flex:1;border-bottom:1px solid #000;padding-bottom:1px;min-height:16px;text-align:left;">${exp.motorista || ''}</span>
         </div>
-        <div style="margin-bottom:2px;display:flex;align-items:flex-end;">
-          <span style="white-space:nowrap;margin-right:6px;">PLACA VEÍCULO:</span>
-          <span style="flex:1;border-bottom:1px solid #000;padding-bottom:1px;min-height:16px;">${exp.placa || ''}</span>
+        <div class="rom-field-row" style="margin-bottom:2px;display:flex;align-items:flex-end;text-align:left;">
+          <span class="rom-label" style="white-space:nowrap;margin-right:6px;text-align:left;">RG/CPF:</span>
+          <span class="rom-val" style="flex:1;border-bottom:1px solid #000;padding-bottom:1px;min-height:16px;text-align:left;">${exp.rgCpf || ''}</span>
         </div>
-        <div style="margin-bottom:2px;display:flex;align-items:flex-end;">
-          <span style="white-space:nowrap;margin-right:6px;">AJUDANTE:</span>
-          <span style="flex:1;border-bottom:1px solid #000;padding-bottom:1px;min-height:16px;">${exp.ajudante || ''}</span>
+        <div class="rom-field-row" style="margin-bottom:2px;display:flex;align-items:flex-end;text-align:left;">
+          <span class="rom-label" style="white-space:nowrap;margin-right:6px;text-align:left;">PLACA VEÍCULO:</span>
+          <span class="rom-val" style="flex:1;border-bottom:1px solid #000;padding-bottom:1px;min-height:16px;text-align:left;">${exp.placa || ''}</span>
         </div>
-        <div style="margin-bottom:2px;display:flex;align-items:flex-end;">
-          <span style="white-space:nowrap;margin-right:6px;">ASSINATURA:</span>
-          <span style="flex:1;border-bottom:1px solid #000;padding-bottom:1px;min-height:16px;"></span>
+        <div class="rom-field-row" style="margin-bottom:2px;display:flex;align-items:flex-end;text-align:left;">
+          <span class="rom-label" style="white-space:nowrap;margin-right:6px;text-align:left;">AJUDANTE:</span>
+          <span class="rom-val" style="flex:1;border-bottom:1px solid #000;padding-bottom:1px;min-height:16px;text-align:left;">${exp.ajudante || ''}</span>
+        </div>
+        <div class="rom-field-row" style="margin-bottom:2px;display:flex;align-items:flex-end;text-align:left;">
+          <span class="rom-label" style="white-space:nowrap;margin-right:6px;text-align:left;">ASSINATURA:</span>
+          <span class="rom-val" style="flex:1;border-bottom:1px solid #000;padding-bottom:1px;min-height:16px;text-align:left;"></span>
         </div>
       </div>
 

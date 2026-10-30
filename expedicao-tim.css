@@ -751,20 +751,99 @@
 /* ============================================================
    ROMANEIO PAPER & PRINT ISOLATION (PAPEL BRANCO A4)
    ============================================================ */
+#modal-romaneio .modal {
+  text-align: left !important;
+}
+
 .romaneio-paper,
 #print-only-container {
   background: #ffffff !important;
   color: #000000 !important;
+  text-align: left !important;
+  box-sizing: border-box;
 }
-.romaneio-paper table,
-#print-only-container table {
+
+.romaneio-paper *,
+#print-only-container * {
+  box-sizing: border-box;
+}
+
+.romaneio-paper .rom-field-row,
+#print-only-container .rom-field-row {
+  margin-bottom: 2px;
+  display: flex;
+  align-items: flex-end;
+  text-align: left !important;
+}
+
+.romaneio-paper .rom-label,
+#print-only-container .rom-label {
+  white-space: nowrap;
+  margin-right: 6px;
   color: #000000 !important;
+  font-weight: bold;
+  text-align: left !important;
 }
+
+.romaneio-paper .rom-val,
+#print-only-container .rom-val {
+  flex: 1;
+  border-bottom: 1px solid #000000;
+  padding-bottom: 1px;
+  min-height: 16px;
+  color: #000000 !important;
+  text-align: left !important;
+  font-weight: bold;
+}
+
+/* Tabela do Romaneio imune a regras escuras e hover do sistema */
+.romaneio-paper table,
+#print-only-container table,
+.exp-modal-scope .romaneio-paper table {
+  width: 100% !important;
+  border-collapse: collapse !important;
+  font-family: Arial, Helvetica, sans-serif !important;
+  font-size: 12px !important;
+  color: #000000 !important;
+  background: transparent !important;
+  margin: 0 !important;
+}
+
+.romaneio-paper tr,
+#print-only-container tr,
+.exp-modal-scope .romaneio-paper tr {
+  background: transparent !important;
+  border: none !important;
+  transition: none !important;
+}
+
+.romaneio-paper tbody tr:hover,
+#print-only-container tbody tr:hover,
+.exp-modal-scope .romaneio-paper tbody tr:hover {
+  background: transparent !important;
+}
+
 .romaneio-paper th,
 .romaneio-paper td,
 #print-only-container th,
-#print-only-container td {
+#print-only-container td,
+.exp-modal-scope .romaneio-paper th,
+.exp-modal-scope .romaneio-paper td {
+  border: 1px solid #000000 !important;
   color: #000000 !important;
+  padding: 5px 8px !important;
+  vertical-align: middle !important;
+  text-transform: none !important;
+  letter-spacing: normal !important;
+}
+
+.romaneio-paper .pallet-code-cell,
+#print-only-container .pallet-code-cell {
+  word-break: break-all !important;
+  font-family: monospace, Arial, sans-serif !important;
+  font-weight: bold !important;
+  font-size: 11.5px !important;
+  text-align: center !important;
 }
 
 @media print {
@@ -773,6 +852,8 @@
     color: #000000 !important;
     overflow: visible !important;
     height: auto !important;
+    padding: 0 !important;
+    margin: 0 !important;
   }
   .app-container,
   .sidebar,
@@ -791,13 +872,20 @@
     margin: 0 !important;
     padding: 0 !important;
   }
+  #print-only-container .romaneio-paper {
+    box-shadow: none !important;
+    max-width: 100% !important;
+    padding: 0 !important;
+    margin: 0 !important;
+    border-radius: 0 !important;
+  }
   #print-only-container table th,
   #print-only-container table td {
     color: #000000 !important;
   }
   @page {
     size: A4 portrait;
-    margin: 12mm 15mm 12mm 15mm;
+    margin: 12mm 15mm;
   }
 }
 
