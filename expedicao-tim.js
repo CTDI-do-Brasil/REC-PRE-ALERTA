@@ -1351,11 +1351,44 @@ function revertExpedicao(lotId) {
   const lot = lotId ? STATE.lots.find(l => l.id === lotId) : getCurrentLot();
   if (!lot) return;
   if (!confirm(`Deseja estornar a expedição do lote #${lot.number}? O status voltará para "Finalizado".`)) return;
+
+  const allPalletIds = (lot.groups || []).flatMap(g => (g.palletIds || []).map(standardizePalletId));
+  const palletSet = new Set(allPalletIds);
+  const lotSerials = new Set();
+  allPalletIds.forEach(pId => {
+    const p = STATE.palletIndex ? STATE.palletIndex[pId] : null;
+    if (p && Array.isArray(p.serials)) {
+      p.serials.forEach(s => { const c = String(s||'').trim(); if (c) lotSerials.add(c); });
+    }
+  });
+  (STATE.reportData || []).forEach(r => {
+    if (palletSet.has(standardizePalletId(r.palletId)) && r.serial) {
+      const c = String(r.serial).trim();
+      if (c) lotSerials.add(c);
+    }
+  });
+
+  const loteIdent = (lot.expeditionData && lot.expeditionData.loteIdent) ? lot.expeditionData.loteIdent : `${lot.number}_${new Date().getFullYear().toString().slice(-2)}`;
+
   lot.status = 'finalizado';
   saveState();
   renderLotDetail();
   renderLotsList();
   renderDashboard();
+
+  fetch(`/api/expedicao-tim/lote/${encodeURIComponent(lot.id)}/estornar`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      loteIdent,
+      serials: Array.from(lotSerials)
+    })
+  }).then(r => r.json()).then(res => {
+    if (res && res.revertedUnits !== undefined) {
+      console.info(`[Estorno] ${res.revertedUnits} unidades retornadas para 'Recebida'.`);
+    }
+  }).catch(err => console.warn('Erro ao notificar backend sobre estorno:', err));
+
   showToast(`Expedição do lote #${lot.number} estornada.`, 'warning');
 }
 
@@ -1447,6 +1480,47 @@ function confirmExpedicao() {
     expedidoEm: new Date().toISOString()
   };
   lot.status = 'expedido';
+
+  // Coletar pallets e seriais de todas as unidades contidas no lote
+  const allPalletIds = (lot.groups || []).flatMap(g => (g.palletIds || []).map(standardizePalletId));
+  const palletSet = new Set(allPalletIds);
+  const lotSerials = new Set();
+
+  allPalletIds.forEach(pId => {
+    const p = STATE.palletIndex ? STATE.palletIndex[pId] : null;
+    if (p && Array.isArray(p.serials)) {
+      p.serials.forEach(s => {
+        const clean = String(s || '').trim();
+        if (clean) lotSerials.add(clean);
+      });
+    }
+  });
+
+  (STATE.reportData || []).forEach(r => {
+    if (palletSet.has(standardizePalletId(r.palletId)) && r.serial) {
+      const clean = String(r.serial).trim();
+      if (clean) lotSerials.add(clean);
+    }
+  });
+
+  const serialsArray = Array.from(lotSerials);
+
+  // Notificar backend para atualizar status das unidades para 'Expedida' no banco de dados
+  fetch(`/api/expedicao-tim/lote/${encodeURIComponent(lot.id)}/expedir`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      expeditionData: lot.expeditionData,
+      serials: serialsArray,
+      pallets: allPalletIds
+    })
+  }).then(r => r.json()).then(res => {
+    if (res && res.updatedUnits !== undefined) {
+      console.info(`[Expedição] ${res.updatedUnits} unidades marcadas com status 'Expedida' no banco de dados.`);
+    }
+  }).catch(err => {
+    console.warn('Erro ao notificar backend sobre unidades expedidas:', err);
+  });
 
   saveState();
   closeModal('modal-expedir-lote');

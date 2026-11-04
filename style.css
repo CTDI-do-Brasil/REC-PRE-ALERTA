@@ -854,6 +854,13 @@ input[type="date"]::-webkit-calendar-picker-indicator {
     box-shadow: 0 0 10px rgba(16, 185, 129, 0.3);
 }
 
+.timeline-step.expedicao .timeline-step-icon,
+.timeline-step.expedicao-tim .timeline-step-icon {
+    border-color: #06b6d4;
+    color: #67e8f9;
+    box-shadow: 0 0 10px rgba(6, 182, 212, 0.35);
+}
+
 .timeline-step-content {
     background: rgba(255, 255, 255, 0.03);
     border: 1px solid rgba(255, 255, 255, 0.06);

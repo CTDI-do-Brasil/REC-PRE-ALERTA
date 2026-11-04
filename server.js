@@ -189,6 +189,10 @@ async function ensureDBAndMinIO() {
 
     // Ensure super_user column in recebimentos
     await client.query(`ALTER TABLE recebimentos ADD COLUMN IF NOT EXISTS super_user TEXT`);
+    await client.query(`ALTER TABLE recebimentos ADD COLUMN IF NOT EXISTS lote_expedicao TEXT`);
+    await client.query(`ALTER TABLE recebimentos ADD COLUMN IF NOT EXISTS data_expedicao TIMESTAMP`);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_recebimentos_serial ON recebimentos(serial_number)`);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_recebimentos_status ON recebimentos(status)`);
 
     // Ensure Expedição TIM tables
     await client.query(`CREATE TABLE IF NOT EXISTS expedicao_tim_relatorio (
@@ -389,20 +393,43 @@ app.get('/api/recebimentos/validate', async (req, res) => {
   const m = sanitizeDataCode(rawM);
 
   try {
-    // 1. Check duplicity in Postgres
+    // 1. Check existing records in Postgres (ordered by most recent first)
     const dupResult = await pool.query(
       `SELECT * FROM recebimentos 
        WHERE (serial_number IS NOT NULL AND serial_number = $1)
           OR (gpon_id IS NOT NULL AND gpon_id = $2)
           OR (mac IS NOT NULL AND mac = $3)
+       ORDER BY data_hora DESC, id DESC
        LIMIT 1`,
       [s || null, p || null, m || null]
     );
 
+    let isDuplicate = false;
+    let duplicateData = null;
+    let isReentry = false;
+    let previousReception = null;
+
     if (dupResult.rows.length > 0) {
+      const latestRec = dupResult.rows[0];
+      const statusUpper = String(latestRec.status || '').trim().toUpperCase();
+
+      if (statusUpper === 'EXPEDIDA') {
+        // A unidade foi expedida no ciclo anterior. Ela já saiu da fábrica!
+        // Portanto, NÃO é duplicidade: permitimos um novo recebimento (reentrada / logística reversa).
+        isDuplicate = false;
+        isReentry = true;
+        previousReception = latestRec;
+      } else {
+        // A unidade ainda está dentro da fábrica em algum processo (Recebida, Em Pallet, Pintura, etc.)
+        isDuplicate = true;
+        duplicateData = latestRec;
+      }
+    }
+
+    if (isDuplicate) {
       return res.json({ 
         duplicate: true, 
-        duplicateData: dupResult.rows[0] 
+        duplicateData 
       });
     }
 
@@ -425,6 +452,8 @@ app.get('/api/recebimentos/validate', async (req, res) => {
 
     res.json({
       duplicate: false,
+      reentry: isReentry,
+      previousReception,
       preAlertaMatch,
       matchedValue
     });
@@ -3000,29 +3029,38 @@ app.get('/api/consulta-unidade/:query', async (req, res) => {
       });
     }
 
-    // Etapa Recebimento
-    if (recebimento) {
-      const senhaInfo = superUserVal === 'Sim' ? ' | Senha: Com senha' : superUserVal === 'Não' ? ' | Senha: Sem senha' : '';
-      let preAlertaStatusDesc = 'Fora do Pré-Alerta';
-      if (recebimento.no_pre_alerta) {
-        if (preAlertaOrigem && preAlertaOrigem.valor) {
-          preAlertaStatusDesc = `No Pré-Alerta via ${preAlertaOrigem.tipo}: ${preAlertaOrigem.valor}`;
-        } else {
-          preAlertaStatusDesc = 'No Pré-Alerta';
-        }
-      }
+    // Etapas de Recebimento e Expedição (Ciclos de Vida da Unidade)
+    const sortedRecs = [...recRes.rows].sort((a, b) => new Date(a.data_hora || 0) - new Date(b.data_hora || 0));
+    sortedRecs.forEach((r, idx) => {
+      const isReentrada = sortedRecs.length > 1 && idx > 0;
+      const senhaInfo = r.super_user === 'Sim' ? ' | Senha: Com senha' : r.super_user === 'Não' ? ' | Senha: Sem senha' : '';
+      let preAlertaStatusDesc = r.no_pre_alerta ? 'No Pré-Alerta' : 'Fora do Pré-Alerta';
 
       history.push({
         etapa: 'Recebimento',
-        titulo: 'Unidade Recebida no Sistema',
-        descricao: `Modelo: ${recebimento.modelo || '---'} | Serial: ${recebimento.serial_number || '---'} | PON: ${recebimento.gpon_id || '---'} | MAC: ${recebimento.mac || '---'} (${preAlertaStatusDesc}${senhaInfo})`,
-        data_hora: recebimento.data_hora,
-        usuario: recebimento.usuario || 'Não registrado',
-        status: recebimento.status || 'Recebida',
+        titulo: isReentrada ? `Reentrada #${idx + 1} no Sistema (Logística Reversa)` : 'Unidade Recebida no Sistema',
+        descricao: `Modelo: ${r.modelo || '---'} | Serial: ${r.serial_number || '---'} | PON: ${r.gpon_id || '---'} | MAC: ${r.mac || '---'} (${preAlertaStatusDesc}${senhaInfo})`,
+        data_hora: r.data_hora,
+        usuario: r.usuario || 'Não registrado',
+        status: r.status || 'Recebida',
         tipo: 'recebimento',
         icone: 'inbox'
       });
-    }
+
+      // Se esse ciclo de recebimento foi expedido
+      if (r.status === 'Expedida' || r.lote_expedicao) {
+        history.push({
+          etapa: 'Expedição',
+          titulo: `Expedida no Lote ${r.lote_expedicao || 'TIM'}`,
+          descricao: `Lote: ${r.lote_expedicao || '---'} | Status: Expedida${r.data_expedicao ? ' | Data: ' + new Date(r.data_expedicao).toLocaleString('pt-BR') : ''}`,
+          data_hora: r.data_expedicao || r.data_hora,
+          usuario: 'Expedição TIM',
+          status: 'Expedida',
+          tipo: 'expedicao',
+          icone: 'truck'
+        });
+      }
+    });
 
     // Etapa Pallet / Expedição Pintura
     palletRes.rows.forEach(palletItem => {
@@ -3053,13 +3091,53 @@ app.get('/api/consulta-unidade/:query', async (req, res) => {
       });
     });
 
-    // Definir Status Atual
-    if (retornoRes.rows.length > 0) {
+    // Etapa Expedição TIM (relatório e lotes)
+    try {
+      const repRes = await pool.query(`SELECT report_data FROM expedicao_tim_relatorio ORDER BY id DESC LIMIT 1`);
+      if (repRes.rows.length > 0 && Array.isArray(repRes.rows[0].report_data)) {
+        const matchingItems = repRes.rows[0].report_data.filter(r => {
+          if (!r.serial) return false;
+          const sUpper = String(r.serial).trim().toUpperCase();
+          return idList.some(id => id.toUpperCase() === sUpper);
+        });
+
+        if (matchingItems.length > 0) {
+          const matchedPallets = new Set(matchingItems.map(m => String(m.palletId || '').trim().toUpperCase()).filter(Boolean));
+          const lotsRes = await pool.query(`SELECT id, number, dest, status, expedition_data, groups FROM expedicao_tim_lotes ORDER BY number ASC`);
+          for (const lot of (lotsRes.rows || [])) {
+            const groups = lot.groups || [];
+            const hasPallet = groups.some(g => (g.palletIds || []).some(pid => matchedPallets.has(String(pid).trim().toUpperCase())));
+            if (hasPallet) {
+              const exp = lot.expedition_data || {};
+              const isExp = lot.status === 'expedido';
+              history.push({
+                etapa: 'Expedição TIM',
+                titulo: `Lote #${lot.number} (${lot.dest || 'Sem destino'}) · ${isExp ? 'Expedido' : 'Em Preparação'}`,
+                descricao: `Pallet: ${Array.from(matchedPallets).join('/')} | Lote: ${exp.loteIdent || lot.number} | NF: ${exp.nf || '---'} | Destino: ${exp.destino || lot.dest || '---'} | Status: ${isExp ? 'Expedida' : 'Em Lote'}`,
+                data_hora: exp.expedidoEm || exp.dataHora || null,
+                usuario: exp.responsavel || lot.usuario || 'Expedição TIM',
+                status: isExp ? 'Expedida' : 'Em Lote',
+                tipo: 'expedicao',
+                icone: 'truck'
+              });
+            }
+          }
+        }
+      }
+    } catch (expTimErr) {
+      console.warn('Aviso ao consultar histórico de Expedição TIM:', expTimErr.message);
+    }
+
+    // Definir Status Atual considerando o ciclo mais recente
+    const latestRec = recRes.rows[0] || null;
+    if (latestRec && String(latestRec.status || '').toUpperCase() === 'EXPEDIDA') {
+      unit.status_atual = 'Expedida' + (latestRec.lote_expedicao ? ` (${latestRec.lote_expedicao})` : '');
+    } else if (retornoRes.rows.length > 0) {
       unit.status_atual = 'Retorno de Pintura';
     } else if (palletRes.rows.length > 0 && palletRes.rows[0].status === 'Em Pallet') {
       unit.status_atual = `Em Pallet (${palletRes.rows[0].codigo_pallet})`;
-    } else if (recebimento) {
-      unit.status_atual = recebimento.status || 'Recebida';
+    } else if (latestRec) {
+      unit.status_atual = latestRec.status || 'Recebida';
     } else if (preAlerta) {
       unit.status_atual = 'No Pré-Alerta (Aguardando Recebimento)';
     }
@@ -3480,6 +3558,124 @@ app.post('/api/expedicao-tim/lote', async (req, res) => {
   }
 });
 
+// 4.1 Expedir Lote e Atualizar Status das Unidades para 'Expedida'
+app.post('/api/expedicao-tim/lote/:id/expedir', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { expeditionData, serials, pallets } = req.body;
+    if (!id) return res.status(400).json({ error: 'ID do lote é obrigatório.' });
+
+    // 1. Atualizar status do lote para expedido
+    await pool.query(
+      `UPDATE expedicao_tim_lotes
+       SET status = 'expedido',
+           expedition_data = $1,
+           updated_at = NOW()
+       WHERE id = $2`,
+      [expeditionData ? JSON.stringify(expeditionData) : null, id]
+    );
+
+    // 2. Coletar seriais para atualizar em recebimentos
+    let targetSerials = Array.isArray(serials) ? serials.map(s => String(s).trim().toUpperCase()).filter(Boolean) : [];
+
+    // Se seriais não foram enviados no body, tenta buscar do report_data associado aos pallets do lote
+    if (targetSerials.length === 0 && Array.isArray(pallets) && pallets.length > 0) {
+      const repRes = await pool.query(`SELECT report_data FROM expedicao_tim_relatorio ORDER BY id DESC LIMIT 1`);
+      if (repRes.rows.length > 0 && Array.isArray(repRes.rows[0].report_data)) {
+        const pSet = new Set(pallets.map(p => String(p).trim().toUpperCase()));
+        repRes.rows[0].report_data.forEach(r => {
+          if (r.palletId && pSet.has(String(r.palletId).trim().toUpperCase()) && r.serial) {
+            targetSerials.push(String(r.serial).trim().toUpperCase());
+          }
+        });
+      }
+    }
+
+    const loteIdent = (expeditionData && expeditionData.loteIdent) ? expeditionData.loteIdent : id;
+    const dataExp = (expeditionData && expeditionData.expedidoEm) ? new Date(expeditionData.expedidoEm) : new Date();
+
+    let updatedCount = 0;
+    if (targetSerials.length > 0) {
+      const updRes = await pool.query(
+        `UPDATE recebimentos
+         SET status = 'Expedida',
+             lote_expedicao = $1,
+             data_expedicao = $2
+         WHERE (
+           (serial_number IS NOT NULL AND serial_number != '' AND UPPER(TRIM(serial_number)) = ANY($3))
+           OR (mac IS NOT NULL AND mac != '' AND UPPER(TRIM(mac)) = ANY($3))
+           OR (gpon_id IS NOT NULL AND gpon_id != '' AND UPPER(TRIM(gpon_id)) = ANY($3))
+         )
+         AND status != 'Expedida'`,
+        [loteIdent, dataExp, targetSerials]
+      );
+      updatedCount = updRes.rowCount;
+    }
+
+    res.json({
+      success: true,
+      message: `Lote expedido com sucesso! ${updatedCount} unidades atualizadas para status 'Expedida'.`,
+      updatedUnits: updatedCount
+    });
+  } catch (err) {
+    console.error('Erro ao expedir lote na Expedição TIM:', err);
+    res.status(500).json({ error: 'Erro ao expedir lote no banco de dados.' });
+  }
+});
+
+// 4.2 Estornar Expedição do Lote e Reverter Status das Unidades para 'Recebida'
+app.post('/api/expedicao-tim/lote/:id/estornar', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { loteIdent, serials } = req.body;
+    if (!id) return res.status(400).json({ error: 'ID do lote é obrigatório.' });
+
+    // 1. Atualizar status do lote de volta para finalizado
+    await pool.query(
+      `UPDATE expedicao_tim_lotes
+       SET status = 'finalizado',
+           updated_at = NOW()
+       WHERE id = $1`,
+      [id]
+    );
+
+    // 2. Reverter status das unidades em recebimentos de 'Expedida' de volta para 'Recebida'
+    const targetIdent = loteIdent || id;
+    let targetSerials = Array.isArray(serials) ? serials.map(s => String(s).trim().toUpperCase()).filter(Boolean) : [];
+
+    let updRes;
+    if (targetSerials.length > 0) {
+      updRes = await pool.query(
+        `UPDATE recebimentos
+         SET status = 'Recebida',
+             lote_expedicao = NULL,
+             data_expedicao = NULL
+         WHERE (lote_expedicao = $1 OR UPPER(TRIM(serial_number)) = ANY($2))
+           AND status = 'Expedida'`,
+        [targetIdent, targetSerials]
+      );
+    } else {
+      updRes = await pool.query(
+        `UPDATE recebimentos
+         SET status = 'Recebida',
+             lote_expedicao = NULL,
+             data_expedicao = NULL
+         WHERE lote_expedicao = $1 AND status = 'Expedida'`,
+        [targetIdent]
+      );
+    }
+
+    res.json({
+      success: true,
+      message: `Expedição do lote estornada! ${updRes.rowCount} unidades retornadas para status 'Recebida'.`,
+      revertedUnits: updRes.rowCount
+    });
+  } catch (err) {
+    console.error('Erro ao estornar expedição do lote:', err);
+    res.status(500).json({ error: 'Erro ao estornar lote no banco de dados.' });
+  }
+});
+
 // 5. Excluir um Lote
 app.delete('/api/expedicao-tim/lote/:id', async (req, res) => {
   try {
@@ -3560,6 +3756,39 @@ app.post('/api/expedicao-tim/sync-all', async (req, res) => {
          ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = NOW()`,
         [JSON.stringify(lastResponsavel)]
       );
+    }
+
+    // Sincroniza status 'Expedida' em recebimentos para todos os lotes marcados como 'expedido'
+    if (Array.isArray(lots) && Array.isArray(reportData) && reportData.length > 0) {
+      const expedidoLots = lots.filter(l => l && l.status === 'expedido');
+      if (expedidoLots.length > 0) {
+        for (const expLot of expedidoLots) {
+          const expPallets = new Set((expLot.groups || []).flatMap(g => (g.palletIds || []).map(p => String(p).trim().toUpperCase())));
+          const expSerials = [];
+          reportData.forEach(r => {
+            if (r.palletId && expPallets.has(String(r.palletId).trim().toUpperCase()) && r.serial) {
+              expSerials.push(String(r.serial).trim().toUpperCase());
+            }
+          });
+          if (expSerials.length > 0) {
+            const loteIdent = (expLot.expeditionData && expLot.expeditionData.loteIdent) ? expLot.expeditionData.loteIdent : (expLot.number ? `Lote #${expLot.number}` : expLot.id);
+            const dataExp = (expLot.expeditionData && expLot.expeditionData.expedidoEm) ? new Date(expLot.expeditionData.expedidoEm) : new Date();
+            await client.query(
+              `UPDATE recebimentos
+               SET status = 'Expedida',
+                   lote_expedicao = COALESCE(lote_expedicao, $1),
+                   data_expedicao = COALESCE(data_expedicao, $2)
+               WHERE (
+                 (serial_number IS NOT NULL AND serial_number != '' AND UPPER(TRIM(serial_number)) = ANY($3))
+                 OR (mac IS NOT NULL AND mac != '' AND UPPER(TRIM(mac)) = ANY($3))
+                 OR (gpon_id IS NOT NULL AND gpon_id != '' AND UPPER(TRIM(gpon_id)) = ANY($3))
+               )
+               AND status != 'Expedida'`,
+              [loteIdent, dataExp, expSerials]
+            );
+          }
+        }
+      }
     }
 
     await client.query('COMMIT');

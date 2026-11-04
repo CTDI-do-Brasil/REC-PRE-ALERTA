@@ -1573,6 +1573,9 @@ async function processRecebimento() {
                 const statusClass = saveRes.destinoTipo || 'laboratorio';
                 showMessage(saveRes.destinoMsg, statusClass);
                 setTimeout(hideMessage, 5000);
+            } else if (validation.reentry) {
+                showMessage('RECEBIDO (REENTRADA)', 'success');
+                setTimeout(hideMessage, 3000);
             } else {
                 showMessage('RECEBIDO', 'success');
                 setTimeout(hideMessage, 2000);
@@ -3833,6 +3836,8 @@ function renderConsultaResultado(data) {
                 iconSvg = `<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="1" y="3" width="15" height="13"></rect><polygon points="16 8 20 8 23 11 23 16 16 16 16 8"></polygon><circle cx="5.5" cy="18.5" r="2.5"></circle><circle cx="18.5" cy="18.5" r="2.5"></circle></svg>`;
             } else if (item.tipo === 'retorno') {
                 iconSvg = `<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="9 14 4 9 9 4"></polyline><path d="M20 20v-7a4 4 0 0 0-4-4H4"></path></svg>`;
+            } else if (item.tipo === 'expedicao' || item.tipo === 'expedicao-tim') {
+                iconSvg = `<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="1" y="3" width="15" height="13"></rect><polygon points="16 8 20 8 23 11 23 16 16 16 16 8"></polygon><circle cx="5.5" cy="18.5" r="2.5"></circle><circle cx="18.5" cy="18.5" r="2.5"></circle></svg>`;
             } else {
                 iconSvg = `<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"></circle><polyline points="12 6 12 12 16 14"></polyline></svg>`;
             }
