@@ -268,6 +268,15 @@ function sanitizeDataCode(val) {
   return val.trim().replace(/[^A-Za-z0-9]/g, '').toUpperCase();
 }
 
+function hasValidPassword(pwd) {
+  if (!pwd || typeof pwd !== 'string') return false;
+  const trimmed = pwd.trim();
+  if (!trimmed) return false;
+  const upper = trimmed.toUpperCase();
+  const invalidValues = ['N/A', 'NA', 'NONE', 'NULL', 'SEM SENHA', 'SEM_SENHA', 'SEM-SENHA', 'PADRAO', 'PADRÃO', 'DEFAULT', '0', '-'];
+  return !invalidValues.includes(upper);
+}
+
 // REST API Endpoints
 
 // MinIO Presign Upload
@@ -463,19 +472,36 @@ app.post('/api/recebimentos', async (req, res) => {
             }
           }
 
-          const checkQuery = `
-            SELECT gpon_sn, cpe_sn, mac, fabricante, modelo, password_router
-            FROM etiquetas_scan_onu
-            WHERE ( $1 != '' AND UPPER(TRIM(gpon_sn)) = UPPER(TRIM($1)) )
-               OR ( $2 != '' AND UPPER(TRIM(gpon_sn)) = UPPER(TRIM($2)) )
-               OR ( $3 != '' AND UPPER(TRIM(cpe_sn)) = UPPER(TRIM($3)) )
-            ORDER BY (CASE WHEN password_router IS NOT NULL AND password_router != '' AND UPPER(password_router) != 'N/A' THEN 1 ELSE 0 END) DESC
-            LIMIT 1
-          `;
-          const checkRes = await secondPool.query(checkQuery, [cleanPon || '', ponAlt || '', cleanSerial || '']);
-          if (checkRes.rows.length > 0) {
+          let checkRes;
+          // 1. Busca estrita pelo GPON primeiro
+          if (cleanPon || ponAlt) {
+            const checkQuery = `
+              SELECT gpon_sn, cpe_sn, mac, fabricante, modelo, password_router
+              FROM etiquetas_scan_onu
+              WHERE UPPER(TRIM(gpon_sn)) = UPPER(TRIM($1))
+                 OR ( $2 != '' AND UPPER(TRIM(gpon_sn)) = UPPER(TRIM($2)) )
+              ORDER BY (CASE WHEN cpe_sn IS NOT NULL AND cpe_sn != '' AND UPPER(cpe_sn) != 'N/A' THEN 1 ELSE 0 END) DESC,
+                       (CASE WHEN mac IS NOT NULL AND mac != '' AND UPPER(mac) != 'N/A' THEN 1 ELSE 0 END) DESC
+              LIMIT 1
+            `;
+            checkRes = await secondPool.query(checkQuery, [cleanPon || '', ponAlt || '']);
+          }
+
+          // 2. Fallback por Serial somente se não encontrou nada pelo GPON
+          if ((!checkRes || checkRes.rows.length === 0) && cleanSerial) {
+            const serialQuery = `
+              SELECT gpon_sn, cpe_sn, mac, fabricante, modelo, password_router
+              FROM etiquetas_scan_onu
+              WHERE UPPER(TRIM(cpe_sn)) = UPPER(TRIM($1))
+              ORDER BY (CASE WHEN mac IS NOT NULL AND mac != '' AND UPPER(mac) != 'N/A' THEN 1 ELSE 0 END) DESC
+              LIMIT 1
+            `;
+            checkRes = await secondPool.query(serialQuery, [cleanSerial]);
+          }
+
+          if (checkRes && checkRes.rows.length > 0) {
             const etiqueta = checkRes.rows[0];
-            const hasPassword = etiqueta.password_router && etiqueta.password_router.trim() !== '' && etiqueta.password_router.trim().toUpperCase() !== 'N/A';
+            const hasPassword = hasValidPassword(etiqueta.password_router);
 
             if (hasPassword) {
               superUserStatus = 'Sim';
@@ -653,7 +679,7 @@ app.get('/api/etiquetas/lookup', async (req, res) => {
           mac: cleanMac,
           fabricante: row.fabricante,
           modelo: row.modelo,
-          has_password: !!(row.password_router && row.password_router.trim() !== '' && row.password_router.trim().toUpperCase() !== 'N/A')
+          has_password: hasValidPassword(row.password_router)
         }
       });
     }
@@ -892,7 +918,7 @@ async function handleSyncUnits(req, res, forcedModelo) {
           etiqueta = etiquetasMap.get('HWTC' + cleanPon.slice(8));
         }
       }
-      const hasPassword = etiqueta && etiqueta.password_router && etiqueta.password_router !== '' && etiqueta.password_router.toUpperCase() !== 'N/A';
+      const hasPassword = etiqueta && hasValidPassword(etiqueta.password_router);
       const newSuperUser = hasPassword ? 'Sim' : 'Não';
 
       if (hasPassword) {
@@ -1560,7 +1586,7 @@ const DEFAULT_MODELS_SEED = [
 
 // App Version Check for Auto-Update
 app.get('/api/version', (req, res) => {
-  res.json({ version: 'v1.5.9' });
+  res.json({ version: 'v1.6.0' });
 });
 
 // GET all models from Postgres
@@ -2798,20 +2824,36 @@ app.get('/api/consulta-unidade/:query', async (req, res) => {
           }
         }
 
-        const chk = await secondPool.query(
-          `SELECT password_router, modelo, fabricante, cpe_sn, mac 
-           FROM etiquetas_scan_onu 
-           WHERE ( $1 != '' AND UPPER(TRIM(gpon_sn)) = UPPER(TRIM($1)) )
-              OR ( $2 != '' AND UPPER(TRIM(gpon_sn)) = UPPER(TRIM($2)) )
-              OR ( $3 != '' AND UPPER(TRIM(cpe_sn)) = UPPER(TRIM($3)) )
-           ORDER BY (CASE WHEN password_router IS NOT NULL AND password_router != '' AND UPPER(password_router) != 'N/A' THEN 1 ELSE 0 END) DESC
-           LIMIT 1`,
-          [searchPon || '', ponAlt || '', searchSerial || '']
-        );
-        if (chk.rows.length > 0) {
+        // 1. Busca estrita pelo GPON primeiro
+        let chk;
+        if (searchPon || ponAlt) {
+          chk = await secondPool.query(
+            `SELECT password_router, modelo, fabricante, cpe_sn, mac 
+             FROM etiquetas_scan_onu 
+             WHERE UPPER(TRIM(gpon_sn)) = UPPER(TRIM($1))
+                OR ( $2 != '' AND UPPER(TRIM(gpon_sn)) = UPPER(TRIM($2)) )
+             ORDER BY (CASE WHEN cpe_sn IS NOT NULL AND cpe_sn != '' AND UPPER(cpe_sn) != 'N/A' THEN 1 ELSE 0 END) DESC,
+                      (CASE WHEN mac IS NOT NULL AND mac != '' AND UPPER(mac) != 'N/A' THEN 1 ELSE 0 END) DESC
+             LIMIT 1`,
+            [searchPon || '', ponAlt || '']
+          );
+        }
+
+        // 2. Fallback por Serial somente se não encontrou nada pelo GPON
+        if ((!chk || chk.rows.length === 0) && searchSerial) {
+          chk = await secondPool.query(
+            `SELECT password_router, modelo, fabricante, cpe_sn, mac 
+             FROM etiquetas_scan_onu 
+             WHERE UPPER(TRIM(cpe_sn)) = UPPER(TRIM($1))
+             ORDER BY (CASE WHEN mac IS NOT NULL AND mac != '' AND UPPER(mac) != 'N/A' THEN 1 ELSE 0 END) DESC
+             LIMIT 1`,
+            [searchSerial]
+          );
+        }
+
+        if (chk && chk.rows.length > 0) {
           const etiq = chk.rows[0];
-          const pwd = etiq.password_router;
-          const hasPassword = !!(pwd && pwd.trim() !== '' && pwd.trim().toUpperCase() !== 'N/A');
+          const hasPassword = hasValidPassword(etiq.password_router);
           superUserVal = hasPassword ? 'Sim' : 'Não';
 
           if (unitModelo === 'Não identificado') {
@@ -3141,17 +3183,29 @@ async function handleEditarSeries(req, res) {
             }
           }
 
-          const chk = await secondPool.query(`
-            SELECT 1 FROM etiquetas_scan_onu 
-            WHERE ( ( $1 != '' AND UPPER(TRIM(gpon_sn)) = UPPER(TRIM($1)) )
+          let chk;
+          if (cleanNewGpon || editPonAlt) {
+            chk = await secondPool.query(`
+              SELECT password_router FROM etiquetas_scan_onu 
+              WHERE UPPER(TRIM(gpon_sn)) = UPPER(TRIM($1))
                  OR ( $2 != '' AND UPPER(TRIM(gpon_sn)) = UPPER(TRIM($2)) )
-                 OR ( $3 != '' AND UPPER(TRIM(cpe_sn)) = UPPER(TRIM($3)) ) )
-              AND password_router IS NOT NULL 
-              AND TRIM(password_router) != '' 
-              AND TRIM(UPPER(password_router)) != 'N/A'
-            LIMIT 1
-          `, [cleanNewGpon || '', editPonAlt || '', cleanNewSerial || '']);
-          superUserEdit = chk.rows.length > 0 ? 'Sim' : 'Não';
+              LIMIT 1
+            `, [cleanNewGpon || '', editPonAlt || '']);
+          }
+
+          if ((!chk || chk.rows.length === 0) && cleanNewSerial) {
+            chk = await secondPool.query(`
+              SELECT password_router FROM etiquetas_scan_onu 
+              WHERE UPPER(TRIM(cpe_sn)) = UPPER(TRIM($1))
+              LIMIT 1
+            `, [cleanNewSerial]);
+          }
+
+          if (chk && chk.rows.length > 0) {
+            superUserEdit = hasValidPassword(chk.rows[0].password_router) ? 'Sim' : 'Não';
+          } else {
+            superUserEdit = 'Não';
+          }
         } catch (e) {
           superUserEdit = 'Não';
         }
