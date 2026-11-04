@@ -194,6 +194,9 @@ async function idbClearState() {
 
 function sanitizeLots() {
   if (!Array.isArray(STATE.lots)) STATE.lots = [];
+  const globalSeenPallets = new Set();
+  let foundAnyDuplicate = false;
+
   STATE.lots.forEach(lot => {
     if (!lot) return;
     if (!Array.isArray(lot.groups)) lot.groups = [];
@@ -201,8 +204,41 @@ function sanitizeLots() {
       if (!g) return;
       if (!Array.isArray(g.palletIds)) g.palletIds = [];
       if (!g.number) g.number = idx + 1;
+
+      const cleanPalletIds = [];
+      g.palletIds.forEach(rawId => {
+        const stdId = standardizePalletId(rawId);
+        if (!stdId) return;
+        if (!globalSeenPallets.has(stdId)) {
+          globalSeenPallets.add(stdId);
+          cleanPalletIds.push(stdId);
+        } else {
+          foundAnyDuplicate = true;
+          console.warn(`[Sanitize] Pallet duplicado purgado: ${stdId} no Grupo #${g.number} do Lote #${lot.number}`);
+        }
+      });
+      g.palletIds = cleanPalletIds;
     });
+
+    lot.groups = lot.groups.filter(g => Array.isArray(g.palletIds) && g.palletIds.length > 0);
+    lot.groups.forEach((g, idx) => { g.number = idx + 1; });
   });
+
+  if (Array.isArray(STATE.selectedForGroup)) {
+    const cleanPending = [];
+    const seenPending = new Set();
+    STATE.selectedForGroup.forEach(rawId => {
+      const stdId = standardizePalletId(rawId);
+      if (!stdId || seenPending.has(stdId) || globalSeenPallets.has(stdId)) return;
+      seenPending.add(stdId);
+      cleanPending.push(stdId);
+    });
+    STATE.selectedForGroup = cleanPending;
+  }
+
+  if (foundAnyDuplicate) {
+    console.info('[Sanitize] Saneamento de pallets duplicados concluído.');
+  }
 }
 
 let syncServerTimer = null;
@@ -583,8 +619,37 @@ function showPage(page) {
 }
 
 // ============================================================
-// TOAST
+// AUDIO FEEDBACK & TOAST
 // ============================================================
+function playBeep(type = 'error') {
+  try {
+    const AudioContextClass = window.AudioContext || window.webkitAudioContext;
+    if (!AudioContextClass) return;
+    const ctx = new AudioContextClass();
+    const osc = ctx.createOscillator();
+    const gain = ctx.createGain();
+    osc.connect(gain);
+    gain.connect(ctx.destination);
+    if (type === 'error') {
+      osc.frequency.setValueAtTime(260, ctx.currentTime);
+      osc.frequency.setValueAtTime(180, ctx.currentTime + 0.12);
+      gain.gain.setValueAtTime(0.25, ctx.currentTime);
+      gain.gain.exponentialRampToValueAtTime(0.01, ctx.currentTime + 0.35);
+      osc.start(ctx.currentTime);
+      osc.stop(ctx.currentTime + 0.35);
+    } else if (type === 'success') {
+      osc.frequency.setValueAtTime(587.33, ctx.currentTime);
+      osc.frequency.setValueAtTime(880, ctx.currentTime + 0.08);
+      gain.gain.setValueAtTime(0.15, ctx.currentTime);
+      gain.gain.exponentialRampToValueAtTime(0.01, ctx.currentTime + 0.25);
+      osc.start(ctx.currentTime);
+      osc.stop(ctx.currentTime + 0.25);
+    }
+  } catch(e) {
+    // AudioContext silenciosamente ignorado se o navegador exigir interação prévia
+  }
+}
+
 function showToast(msg, type = 'success') {
   const icons = { success:'✅', error:'❌', warning:'⚠️', info:'ℹ️' };
   const el = document.createElement('div');
@@ -898,23 +963,72 @@ function renderReportTable() {
         </tr>
       </thead>
       <tbody>${filtered.map(p => {
-        const inLot = isInAnyLot(p.palletId);
-        return `<tr ${inLot ? 'style="opacity:.6"' : ''}>
+        const loc = findPalletGlobalLocation(p.palletId);
+        const statusBadge = loc
+          ? `<span class="badge badge-green font-mono" title="Lote #${loc.lotNumber} (${loc.lotStatus})">Lote #${loc.lotNumber}</span>`
+          : '<span class="badge badge-blue">Disponível</span>';
+        return `<tr ${loc ? 'style="opacity:.65"' : ''}>
           <td><span class="badge badge-blue font-mono">${p.palletId}</span></td>
           <td>${[...p.models].join(', ') || '—'}</td>
           <td><strong style="color:#6ee7b7">${p.unitCount}</strong></td>
           <td><strong style="color:#fcd34d">${p.boxes.size}</strong></td>
           <td>${[...p.destinations].join(', ') || '—'}</td>
-          <td>${inLot ? '<span class="badge badge-green">Em Lote</span>' : '<span class="badge badge-blue">Disponível</span>'}</td>
+          <td>${statusBadge}</td>
         </tr>`;
       }).join('')}</tbody>
     </table>`;
 }
 
+function findPalletGlobalLocation(rawPalletId) {
+  const stdId = standardizePalletId(rawPalletId);
+  if (!stdId) return null;
+
+  // 1. Checa em todos os lotes e grupos (aberto, finalizado ou expedido)
+  for (const lot of (STATE.lots || [])) {
+    if (!lot || !Array.isArray(lot.groups)) continue;
+    for (const grp of lot.groups) {
+      if (!grp || !Array.isArray(grp.palletIds)) continue;
+      const match = grp.palletIds.some(id => standardizePalletId(id) === stdId);
+      if (match) {
+        return {
+          found: true,
+          type: 'group',
+          palletId: stdId,
+          lotId: lot.id,
+          lotNumber: lot.number,
+          lotDest: lot.dest || '',
+          lotStatus: lot.status || 'aberto',
+          groupId: grp.id,
+          groupNumber: grp.number,
+          isCurrentLot: Boolean(STATE.currentLotId && lot.id === STATE.currentLotId)
+        };
+      }
+    }
+  }
+
+  // 2. Checa se está na lista de seleção pendente (área de agrupamento) do lote ativo
+  if (Array.isArray(STATE.selectedForGroup)) {
+    const inPending = STATE.selectedForGroup.some(id => standardizePalletId(id) === stdId);
+    if (inPending) {
+      const curLot = getCurrentLot();
+      return {
+        found: true,
+        type: 'pending',
+        palletId: stdId,
+        lotId: curLot ? curLot.id : null,
+        lotNumber: curLot ? curLot.number : null,
+        lotDest: curLot ? curLot.dest : '',
+        lotStatus: curLot ? curLot.status : 'aberto',
+        isCurrentLot: true
+      };
+    }
+  }
+
+  return null;
+}
+
 function isInAnyLot(palletId) {
-  return STATE.lots.some(lot =>
-    lot.groups.some(g => g.palletIds.includes(palletId))
-  );
+  return findPalletGlobalLocation(palletId) !== null;
 }
 
 function clearReport() {
@@ -1005,56 +1119,96 @@ function handleScanKey(e) {
   }
 }
 
+let isProcessingScan = false;
+
 function processScan() {
   if (scanDebounceTimer) clearTimeout(scanDebounceTimer);
+  if (isProcessingScan) return;
+
   const lot = getCurrentLot();
   if (!lot) return;
-  if (lot.status !== 'aberto') { showToast('Este lote já foi finalizado ou expedido.', 'warning'); return; }
+  if (lot.status !== 'aberto') {
+    playBeep('error');
+    showToast('Este lote já foi finalizado ou expedido.', 'warning');
+    return;
+  }
 
   const input = document.getElementById('scan-input');
   if (!input) return;
   const raw = input.value.trim();
   if (!raw) return;
 
-  const ids = raw.split(/[\s,;]+/).map(s => s.trim()).filter(Boolean);
+  // IMEDIATO: Limpa o input no instante zero para travar disparo duplo de Enter ou leitor rápido
+  input.value = '';
+  isProcessingScan = true;
 
-  let addedAny = false;
-  ids.forEach(rawId => {
-    if (!rawId) return;
-    const palletId = standardizePalletId(rawId);
+  try {
+    const ids = raw.split(/[\s,;]+/).map(s => s.trim()).filter(Boolean);
+    const batchSeen = new Set();
+    let addedAny = false;
 
-    const alreadyInLot = lot.groups.some(g => g.palletIds.some(id => standardizePalletId(id) === palletId));
-    if (alreadyInLot) { showToast(`Pallet ${palletId} já está neste lote.`, 'warning'); return; }
+    for (const rawId of ids) {
+      if (!rawId) continue;
+      const palletId = standardizePalletId(rawId);
+      if (!palletId) continue;
 
-    if (STATE.selectedForGroup.some(id => standardizePalletId(id) === palletId)) { showToast(`Pallet ${palletId} já está na lista para agrupamento.`, 'warning'); return; }
+      if (batchSeen.has(palletId)) {
+        playBeep('error');
+        showToast(`⚠️ Pallet ${palletId} duplicado na mesma leitura.`, 'warning');
+        continue;
+      }
+      batchSeen.add(palletId);
 
-    const p = getPalletSummary(palletId);
-    if (!p && STATE.reportData.length > 0) {
-      showToast(`Pallet ${palletId} não encontrado no relatório importado.`, 'info');
+      // Trava Global de Unicidade: impede duplicar no mesmo lote OU em qualquer outro lote da expedição!
+      const loc = findPalletGlobalLocation(palletId);
+      if (loc) {
+        playBeep('error');
+        if (loc.isCurrentLot) {
+          if (loc.type === 'pending') {
+            showToast(`⚠️ Pallet ${palletId} já está na área de agrupamento deste lote!`, 'warning');
+          } else {
+            showToast(`⚠️ Pallet ${palletId} já está adicionado ao Grupo #${loc.groupNumber} deste lote!`, 'warning');
+          }
+        } else {
+          const stMap = { aberto: 'Em Aberto', finalizado: 'Finalizado', expedido: 'Expedido' };
+          const st = stMap[loc.lotStatus] || loc.lotStatus;
+          showToast(`🚫 Bloqueado: Pallet ${palletId} já foi bipado no Lote #${loc.lotNumber} (${loc.lotDest || 'Sem destino'} · ${st})!`, 'error');
+        }
+        continue;
+      }
+
+      const p = getPalletSummary(palletId);
+      if (!p && STATE.reportData.length > 0) {
+        showToast(`Pallet ${palletId} não encontrado no relatório importado.`, 'info');
+      }
+
+      if (p && p.totalBoxes >= 30) {
+        const group = {
+          id: 'GRP-' + Date.now() + '-' + Math.random().toString(36).substr(2, 4),
+          number: lot.groups.length + 1,
+          palletIds: [palletId],
+          createdAt: new Date().toLocaleString('pt-BR'),
+        };
+        lot.groups.push(group);
+        saveState();
+        playBeep('success');
+        showToast(`✅ Pallet completo ${palletId} (${p.totalBoxes} caixas) adicionado automaticamente ao lote!`, 'success');
+        addedAny = true;
+      } else {
+        STATE.selectedForGroup.push(palletId);
+        saveState();
+        playBeep('success');
+        const bCount = p ? p.totalBoxes : 0;
+        showToast(`📦 Pallet ${palletId} com ${bCount} caixa(s) adicionado à área de agrupamento.`, 'info');
+        addedAny = true;
+      }
     }
 
-    if (p && p.totalBoxes >= 30) {
-      const group = {
-        id: 'GRP-' + Date.now() + '-' + Math.random().toString(36).substr(2, 4),
-        number: lot.groups.length + 1,
-        palletIds: [palletId],
-        createdAt: new Date().toLocaleString('pt-BR'),
-      };
-      lot.groups.push(group);
-      saveState();
-      showToast(`✅ Pallet completo ${palletId} (${p.totalBoxes} caixas) adicionado automaticamente ao lote!`, 'success');
-      addedAny = true;
-    } else {
-      STATE.selectedForGroup.push(palletId);
-      const bCount = p ? p.totalBoxes : 0;
-      showToast(`📦 Pallet ${palletId} com ${bCount} caixa(s) adicionado à área de agrupamento.`, 'info');
-      addedAny = true;
+    if (addedAny) {
+      renderLotDetail();
     }
-  });
-
-  if (addedAny) {
-    input.value = '';
-    renderLotDetail();
+  } finally {
+    isProcessingScan = false;
     setTimeout(() => {
       const inp = document.getElementById('scan-input');
       if (inp) inp.focus();
@@ -1063,22 +1217,58 @@ function processScan() {
 }
 
 function toggleGroupSelection(palletId) {
-  const idx = STATE.selectedForGroup.indexOf(palletId);
-  if (idx >= 0) STATE.selectedForGroup.splice(idx, 1);
-  else STATE.selectedForGroup.push(palletId);
+  const stdId = standardizePalletId(palletId);
+  const idx = STATE.selectedForGroup.findIndex(id => standardizePalletId(id) === stdId);
+  if (idx >= 0) {
+    STATE.selectedForGroup.splice(idx, 1);
+  } else {
+    const loc = findPalletGlobalLocation(stdId);
+    if (loc && loc.type === 'group') {
+      playBeep('error');
+      showToast(`Pallet ${stdId} já está alocado no Grupo #${loc.groupNumber} do Lote #${loc.lotNumber}!`, 'warning');
+      return;
+    }
+    STATE.selectedForGroup.push(stdId);
+  }
+  saveState();
   renderPendingGroup();
 }
 
 function clearSelection() {
   STATE.selectedForGroup = [];
+  saveState();
   renderLotDetail();
 }
 
 function createGroup() {
   const lot = getCurrentLot();
-  if (!lot || STATE.selectedForGroup.length === 0) return;
+  if (!lot || !STATE.selectedForGroup || STATE.selectedForGroup.length === 0) return;
 
-  const sum = getGroupSummary(STATE.selectedForGroup);
+  // Deduplica usando standardizePalletId e valida se nenhum já está alocado
+  const uniqueIds = [];
+  const seenInGroup = new Set();
+  for (const rawId of STATE.selectedForGroup) {
+    const stdId = standardizePalletId(rawId);
+    if (!stdId || seenInGroup.has(stdId)) continue;
+    seenInGroup.add(stdId);
+
+    const loc = findPalletGlobalLocation(stdId);
+    if (loc && loc.type === 'group') {
+      showToast(`Pallet ${stdId} já está alocado em um grupo e foi desconsiderado.`, 'warning');
+      continue;
+    }
+    uniqueIds.push(stdId);
+  }
+
+  if (uniqueIds.length === 0) {
+    STATE.selectedForGroup = [];
+    saveState();
+    renderLotDetail();
+    showToast('Nenhum pallet válido restante para agrupar.', 'warning');
+    return;
+  }
+
+  const sum = getGroupSummary(uniqueIds);
   if (sum.totalBoxes > 30) {
     if (!confirm(`Atenção: A soma das caixas selecionadas (${sum.totalBoxes} caixas) ultrapassa o limite padrão de 30 caixas por pallet físico. Deseja agrupar mesmo assim?`)) {
       return;
@@ -1088,12 +1278,13 @@ function createGroup() {
   const group = {
     id: 'GRP-' + Date.now() + '-' + Math.random().toString(36).substr(2, 4),
     number: lot.groups.length + 1,
-    palletIds: [...STATE.selectedForGroup],
+    palletIds: uniqueIds,
     createdAt: new Date().toLocaleString('pt-BR'),
   };
   lot.groups.push(group);
   STATE.selectedForGroup = [];
   saveState();
+  playBeep('success');
   showToast(`Grupo #${group.number} formado com ${group.palletIds.length} pallet(s) (${sum.totalBoxes} caixas, ${sum.totalUnits} peças).`, 'success');
   renderLotDetail();
 }
@@ -1103,13 +1294,18 @@ function ungroup(groupId) {
   if (!lot) return;
   const grp = lot.groups.find(g => g.id === groupId);
   if (!grp) return;
-  grp.palletIds.forEach(id => {
-    if (!STATE.selectedForGroup.includes(id)) {
-      STATE.selectedForGroup.push(id);
-    }
-  });
+
   lot.groups = lot.groups.filter(g => g.id !== groupId);
   lot.groups.forEach((g, i) => g.number = i + 1);
+
+  grp.palletIds.forEach(id => {
+    const stdId = standardizePalletId(id);
+    if (!stdId) return;
+    if (!STATE.selectedForGroup.some(selId => standardizePalletId(selId) === stdId)) {
+      STATE.selectedForGroup.push(stdId);
+    }
+  });
+
   saveState();
   renderLotDetail();
   showToast(`Grupo #${grp.number} desagrupado! Os pallets voltaram para a seleção pendente.`, 'info');
