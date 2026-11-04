@@ -203,8 +203,27 @@ async function ensureDBAndMinIO() {
       column_map JSONB NOT NULL DEFAULT '{}'::jsonb,
       total_linhas INTEGER DEFAULT 0,
       usuario TEXT,
+      importacao_id TEXT,
+      nome_arquivo TEXT,
       updated_at TIMESTAMP DEFAULT NOW()
     )`);
+    await client.query(`ALTER TABLE expedicao_tim_relatorio ADD COLUMN IF NOT EXISTS importacao_id TEXT`);
+    await client.query(`ALTER TABLE expedicao_tim_relatorio ADD COLUMN IF NOT EXISTS nome_arquivo TEXT`);
+
+    // Tabela histórica de importações de relatórios da Expedição TIM
+    await client.query(`CREATE TABLE IF NOT EXISTS expedicao_tim_importacoes (
+      id TEXT PRIMARY KEY,
+      nome_arquivo TEXT NOT NULL,
+      total_linhas INTEGER DEFAULT 0,
+      total_pallets INTEGER DEFAULT 0,
+      usuario TEXT,
+      created_at TIMESTAMP DEFAULT NOW(),
+      column_map JSONB NOT NULL DEFAULT '{}'::jsonb,
+      raw_headers JSONB NOT NULL DEFAULT '[]'::jsonb,
+      report_data JSONB NOT NULL DEFAULT '[]'::jsonb,
+      raw_data JSONB NOT NULL DEFAULT '[]'::jsonb
+    )`);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_expedicao_importacoes_created ON expedicao_tim_importacoes(created_at DESC)`);
 
     await client.query(`CREATE TABLE IF NOT EXISTS expedicao_tim_lotes (
       id TEXT PRIMARY KEY,
@@ -216,8 +235,13 @@ async function ensureDBAndMinIO() {
       groups JSONB NOT NULL DEFAULT '[]'::jsonb,
       expedition_data JSONB,
       usuario TEXT,
+      importacao_id TEXT,
+      importacao_arquivo TEXT,
       updated_at TIMESTAMP DEFAULT NOW()
     )`);
+    await client.query(`ALTER TABLE expedicao_tim_lotes ADD COLUMN IF NOT EXISTS importacao_id TEXT`);
+    await client.query(`ALTER TABLE expedicao_tim_lotes ADD COLUMN IF NOT EXISTS importacao_arquivo TEXT`);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_expedicao_lotes_importacao ON expedicao_tim_lotes(importacao_id)`);
 
     await client.query(`CREATE TABLE IF NOT EXISTS expedicao_tim_config (
       key TEXT PRIMARY KEY,
@@ -3435,20 +3459,28 @@ app.post('/api/unidades/editar-series', handleEditarSeries);
 app.put('/api/unidades/editar-series', handleEditarSeries);
 
 // ============================================================
-// Expedição TIM - Routes
+// Expedição TIM - Routes & Histórico de Importações
 // ============================================================
 
-// 1. Obter estado completo (Relatório, Lotes, Configurações)
+// Memória de contingência para Expedição TIM caso banco esteja reiniciando ou offline
+const expedicaoTimMemoryStore = {
+  importacoes: [],
+  relatorio: null,
+  lotes: [],
+  config: {}
+};
+
+// 1. Obter estado completo (Relatório, Lotes, Configurações, Histórico de Importações)
 app.get('/api/expedicao-tim/state', async (req, res) => {
   try {
     const repRes = await pool.query(
-      `SELECT report_data, raw_data, raw_headers, column_map, updated_at 
+      `SELECT report_data, raw_data, raw_headers, column_map, importacao_id, nome_arquivo, updated_at 
        FROM expedicao_tim_relatorio ORDER BY id DESC LIMIT 1`
     );
     const reportRow = repRes.rows[0] || {};
 
     const lotsRes = await pool.query(
-      `SELECT id, number, dest, obs, status, created_at, groups, expedition_data 
+      `SELECT id, number, dest, obs, status, created_at, groups, expedition_data, importacao_id, importacao_arquivo 
        FROM expedicao_tim_lotes ORDER BY number ASC`
     );
     const lots = (lotsRes.rows || []).map(r => ({
@@ -3459,12 +3491,39 @@ app.get('/api/expedicao-tim/state', async (req, res) => {
       status: r.status,
       createdAt: r.created_at,
       groups: r.groups || [],
-      expeditionData: r.expedition_data || null
+      expeditionData: r.expedition_data || null,
+      importacaoId: r.importacao_id || null,
+      importacaoArquivo: r.importacao_arquivo || null
     }));
 
     const cfgRes = await pool.query(`SELECT key, value FROM expedicao_tim_config`);
     const config = {};
     (cfgRes.rows || []).forEach(r => { config[r.key] = r.value; });
+
+    let importacoes = [];
+    try {
+      const impRes = await pool.query(
+        `SELECT i.id, i.nome_arquivo, i.total_linhas, i.total_pallets, i.usuario, i.created_at, i.column_map,
+                COALESCE(
+                  (SELECT json_agg(json_build_object(
+                    'id', l.id,
+                    'number', l.number,
+                    'status', l.status,
+                    'dest', l.dest,
+                    'createdAt', l.created_at,
+                    'totalPallets', (SELECT jsonb_array_length(l.groups))
+                  ))
+                   FROM expedicao_tim_lotes l WHERE l.importacao_id = i.id),
+                  '[]'::json
+                ) AS lotes
+         FROM expedicao_tim_importacoes i
+         ORDER BY i.created_at DESC`
+      );
+      importacoes = impRes.rows || [];
+    } catch (impErr) {
+      console.warn('Erro ao consultar tabela de importações (pode estar sendo criada):', impErr.message);
+      importacoes = expedicaoTimMemoryStore.importacoes || [];
+    }
 
     res.json({
       success: true,
@@ -3472,39 +3531,292 @@ app.get('/api/expedicao-tim/state', async (req, res) => {
       rawData: reportRow.raw_data || [],
       rawHeaders: reportRow.raw_headers || [],
       columnMap: reportRow.column_map || {},
+      currentImportId: reportRow.importacao_id || null,
+      currentImportFilename: reportRow.nome_arquivo || null,
       lots: lots,
+      importacoes: importacoes,
       lastResponsavel: config.last_responsavel || ''
     });
   } catch (err) {
     console.error('Error fetching expedicao-tim state:', err);
-    res.status(500).json({ error: 'Erro ao buscar dados da Expedição TIM no banco de dados.' });
+    res.json({
+      success: true,
+      reportData: expedicaoTimMemoryStore.relatorio ? expedicaoTimMemoryStore.relatorio.reportData : [],
+      rawData: expedicaoTimMemoryStore.relatorio ? expedicaoTimMemoryStore.relatorio.rawData : [],
+      rawHeaders: expedicaoTimMemoryStore.relatorio ? expedicaoTimMemoryStore.relatorio.rawHeaders : [],
+      columnMap: expedicaoTimMemoryStore.relatorio ? expedicaoTimMemoryStore.relatorio.columnMap : {},
+      currentImportId: expedicaoTimMemoryStore.relatorio ? expedicaoTimMemoryStore.relatorio.importacaoId : null,
+      currentImportFilename: expedicaoTimMemoryStore.relatorio ? expedicaoTimMemoryStore.relatorio.nomeArquivo : null,
+      lots: expedicaoTimMemoryStore.lotes || [],
+      importacoes: expedicaoTimMemoryStore.importacoes || [],
+      lastResponsavel: expedicaoTimMemoryStore.config.last_responsavel || ''
+    });
   }
 });
 
 // 2. Salvar relatório importado
 app.post('/api/expedicao-tim/report', async (req, res) => {
-  try {
-    const { reportData, rawData, rawHeaders, columnMap, usuario } = req.body;
-    const total = Array.isArray(reportData) ? reportData.length : 0;
+  const { reportData, rawData, rawHeaders, columnMap, usuario, importId, nomeArquivo } = req.body;
+  const total = Array.isArray(reportData) ? reportData.length : 0;
 
+  expedicaoTimMemoryStore.relatorio = {
+    reportData: reportData || [],
+    rawData: rawData || [],
+    rawHeaders: rawHeaders || [],
+    columnMap: columnMap || {},
+    importacaoId: importId || null,
+    nomeArquivo: nomeArquivo || null
+  };
+
+  try {
     await pool.query(`DELETE FROM expedicao_tim_relatorio`);
     await pool.query(
-      `INSERT INTO expedicao_tim_relatorio (report_data, raw_data, raw_headers, column_map, total_linhas, usuario, updated_at)
-       VALUES ($1, $2, $3, $4, $5, $6, NOW())`,
+      `INSERT INTO expedicao_tim_relatorio (report_data, raw_data, raw_headers, column_map, total_linhas, usuario, importacao_id, nome_arquivo, updated_at)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, NOW())`,
       [
         JSON.stringify(reportData || []),
         JSON.stringify(rawData || []),
         JSON.stringify(rawHeaders || []),
         JSON.stringify(columnMap || {}),
         total,
-        usuario || 'ADMIN'
+        usuario || 'ADMIN',
+        importId || null,
+        nomeArquivo || null
       ]
     );
 
     res.json({ success: true, message: 'Relatório salvo com sucesso no banco de dados!' });
   } catch (err) {
-    console.error('Error saving expedicao-tim report:', err);
-    res.status(500).json({ error: 'Erro ao salvar relatório no banco de dados.' });
+    console.warn('Banco offline ao salvar relatório (salvo em contingência):', err.message);
+    res.json({ success: true, message: 'Relatório salvo em contingência!', offline: true });
+  }
+});
+
+// 2.1 Histórico de Importações: Listar todas as importações e lotes vinculados
+app.get('/api/expedicao-tim/importacoes', async (req, res) => {
+  try {
+    const result = await pool.query(
+      `SELECT i.id, i.nome_arquivo, i.total_linhas, i.total_pallets, i.usuario, i.created_at, i.column_map,
+              COALESCE(
+                (SELECT json_agg(json_build_object(
+                  'id', l.id,
+                  'number', l.number,
+                  'status', l.status,
+                  'dest', l.dest,
+                  'createdAt', l.created_at,
+                  'totalPallets', (SELECT jsonb_array_length(l.groups))
+                ))
+                 FROM expedicao_tim_lotes l WHERE l.importacao_id = i.id),
+                '[]'::json
+              ) AS lotes
+       FROM expedicao_tim_importacoes i
+       ORDER BY i.created_at DESC`
+    );
+    res.json({ success: true, importacoes: result.rows || [] });
+  } catch (err) {
+    console.error('Error fetching expedicao-tim importacoes:', err);
+    res.json({ success: true, importacoes: expedicaoTimMemoryStore.importacoes || [] });
+  }
+});
+
+// 2.2 Histórico de Importações: Obter detalhes e dados de uma importação específica
+app.get('/api/expedicao-tim/importacoes/:id', async (req, res) => {
+  const { id } = req.params;
+  try {
+    const result = await pool.query(
+      `SELECT i.*,
+              COALESCE(
+                (SELECT json_agg(json_build_object(
+                  'id', l.id,
+                  'number', l.number,
+                  'status', l.status,
+                  'dest', l.dest,
+                  'createdAt', l.created_at,
+                  'groups', l.groups,
+                  'expeditionData', l.expedition_data
+                ))
+                 FROM expedicao_tim_lotes l WHERE l.importacao_id = i.id),
+                '[]'::json
+              ) AS lotes
+       FROM expedicao_tim_importacoes i
+       WHERE i.id = $1`,
+      [id]
+    );
+
+    if (result.rows.length === 0) {
+      const mem = (expedicaoTimMemoryStore.importacoes || []).find(x => x.id === id);
+      if (mem) return res.json({ success: true, importacao: mem });
+      return res.status(404).json({ error: 'Importação não encontrada.' });
+    }
+
+    res.json({ success: true, importacao: result.rows[0] });
+  } catch (err) {
+    console.warn('Banco offline ao buscar detalhes da importação (consultando memória):', err.message);
+    const mem = (expedicaoTimMemoryStore.importacoes || []).find(x => x.id === id);
+    if (mem) return res.json({ success: true, importacao: mem });
+    res.status(404).json({ error: 'Importação não encontrada.' });
+  }
+});
+
+// 2.3 Histórico de Importações: Salvar nova importação no histórico permanente
+app.post('/api/expedicao-tim/importacoes', async (req, res) => {
+  const { id, nomeArquivo, reportData, rawData, rawHeaders, columnMap, totalLinhas, totalPallets, usuario } = req.body;
+  const importId = id || ('IMP-' + Date.now());
+  const totalLines = totalLinhas !== undefined ? totalLinhas : (Array.isArray(reportData) ? reportData.length : 0);
+  const fileName = nomeArquivo || 'relatorio.xlsx';
+
+  // Salvar em memória de contingência
+  const memRecord = {
+    id: importId,
+    nome_arquivo: fileName,
+    total_linhas: totalLines,
+    total_pallets: totalPallets || 0,
+    usuario: usuario || 'ADMIN',
+    created_at: new Date().toISOString(),
+    column_map: columnMap || {},
+    raw_headers: rawHeaders || [],
+    report_data: reportData || [],
+    rawData: rawData || [],
+    lotes: []
+  };
+  expedicaoTimMemoryStore.importacoes.unshift(memRecord);
+  expedicaoTimMemoryStore.relatorio = {
+    reportData: reportData || [],
+    rawData: rawData || [],
+    rawHeaders: rawHeaders || [],
+    columnMap: columnMap || {},
+    importacaoId: importId,
+    nomeArquivo: fileName
+  };
+
+  try {
+    // 1. Gravar no histórico permanente
+    await pool.query(
+      `INSERT INTO expedicao_tim_importacoes (id, nome_arquivo, total_linhas, total_pallets, usuario, created_at, column_map, raw_headers, report_data, raw_data)
+       VALUES ($1, $2, $3, $4, $5, NOW(), $6, $7, $8, $9)
+       ON CONFLICT (id) DO UPDATE SET
+         nome_arquivo = EXCLUDED.nome_arquivo,
+         total_linhas = EXCLUDED.total_linhas,
+         total_pallets = EXCLUDED.total_pallets,
+         usuario = EXCLUDED.usuario,
+         column_map = EXCLUDED.column_map,
+         raw_headers = EXCLUDED.raw_headers,
+         report_data = EXCLUDED.report_data,
+         raw_data = EXCLUDED.raw_data`,
+      [
+        importId,
+        fileName,
+        totalLines,
+        totalPallets || 0,
+        usuario || 'ADMIN',
+        JSON.stringify(columnMap || {}),
+        JSON.stringify(rawHeaders || []),
+        JSON.stringify(reportData || []),
+        JSON.stringify(rawData || [])
+      ]
+    );
+
+    // 2. Atualizar também expedicao_tim_relatorio como a planilha ativa no momento
+    await pool.query(`DELETE FROM expedicao_tim_relatorio`);
+    await pool.query(
+      `INSERT INTO expedicao_tim_relatorio (report_data, raw_data, raw_headers, column_map, total_linhas, usuario, importacao_id, nome_arquivo, updated_at)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, NOW())`,
+      [
+        JSON.stringify(reportData || []),
+        JSON.stringify(rawData || []),
+        JSON.stringify(rawHeaders || []),
+        JSON.stringify(columnMap || {}),
+        totalLines,
+        usuario || 'ADMIN',
+        importId,
+        fileName
+      ]
+    );
+
+    res.json({ success: true, message: 'Importação salva no histórico permanente com sucesso!', importId });
+  } catch (err) {
+    console.warn('Banco offline ao salvar importação (salvo em contingência):', err.message);
+    res.json({ success: true, message: 'Importação salva em contingência!', importId, offline: true });
+  }
+});
+
+// 2.4 Histórico de Importações: Reativar uma importação anterior como relatório ativo
+app.post('/api/expedicao-tim/importacoes/:id/reativar', async (req, res) => {
+  const { id } = req.params;
+  try {
+    const impRes = await pool.query(`SELECT * FROM expedicao_tim_importacoes WHERE id = $1`, [id]);
+    if (impRes.rows.length === 0) {
+      return res.status(404).json({ error: 'Importação não encontrada.' });
+    }
+    const imp = impRes.rows[0];
+
+    await pool.query(`DELETE FROM expedicao_tim_relatorio`);
+    await pool.query(
+      `INSERT INTO expedicao_tim_relatorio (report_data, raw_data, raw_headers, column_map, total_linhas, usuario, importacao_id, nome_arquivo, updated_at)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, NOW())`,
+      [
+        JSON.stringify(imp.report_data || []),
+        JSON.stringify(imp.raw_data || []),
+        JSON.stringify(imp.raw_headers || []),
+        JSON.stringify(imp.column_map || {}),
+        imp.total_linhas || 0,
+        imp.usuario || 'ADMIN',
+        imp.id,
+        imp.nome_arquivo
+      ]
+    );
+
+    res.json({
+      success: true,
+      message: `Planilha "${imp.nome_arquivo}" reativada com sucesso!`,
+      reportData: imp.report_data || [],
+      rawData: imp.raw_data || [],
+      rawHeaders: imp.raw_headers || [],
+      columnMap: imp.column_map || {},
+      nomeArquivo: imp.nome_arquivo,
+      importId: imp.id
+    });
+  } catch (err) {
+    console.warn('Banco offline ao reativar importação (consultando memória):', err.message);
+    const mem = (expedicaoTimMemoryStore.importacoes || []).find(x => x.id === id);
+    if (mem) {
+      expedicaoTimMemoryStore.relatorio = {
+        reportData: mem.report_data || mem.reportData || [],
+        rawData: mem.raw_data || mem.rawData || [],
+        rawHeaders: mem.raw_headers || mem.rawHeaders || [],
+        columnMap: mem.column_map || mem.columnMap || {},
+        importacaoId: mem.id,
+        nomeArquivo: mem.nome_arquivo || mem.nomeArquivo
+      };
+      return res.json({
+        success: true,
+        message: `Planilha "${mem.nome_arquivo || mem.nomeArquivo}" reativada com sucesso!`,
+        reportData: mem.report_data || mem.reportData || [],
+        rawData: mem.raw_data || mem.rawData || [],
+        rawHeaders: mem.raw_headers || mem.rawHeaders || [],
+        columnMap: mem.column_map || mem.columnMap || {},
+        nomeArquivo: mem.nome_arquivo || mem.nomeArquivo,
+        importId: mem.id
+      });
+    }
+    res.status(404).json({ error: 'Importação não encontrada.' });
+  }
+});
+
+// 2.5 Histórico de Importações: Excluir um registro histórico
+app.delete('/api/expedicao-tim/importacoes/:id', async (req, res) => {
+  const { id } = req.params;
+  const memIdx = (expedicaoTimMemoryStore.importacoes || []).findIndex(x => x.id === id);
+  if (memIdx >= 0) expedicaoTimMemoryStore.importacoes.splice(memIdx, 1);
+
+  try {
+    // Desvincula lotes desta importação
+    await pool.query(`UPDATE expedicao_tim_lotes SET importacao_id = NULL WHERE importacao_id = $1`, [id]);
+    await pool.query(`DELETE FROM expedicao_tim_importacoes WHERE id = $1`, [id]);
+    res.json({ success: true, message: 'Registro de importação excluído do histórico com sucesso.' });
+  } catch (err) {
+    console.warn('Banco offline ao excluir importação (excluído da memória):', err.message);
+    res.json({ success: true, message: 'Registro de importação excluído da memória.', offline: true });
   }
 });
 
@@ -3512,22 +3824,43 @@ app.post('/api/expedicao-tim/report', async (req, res) => {
 app.delete('/api/expedicao-tim/report', async (req, res) => {
   try {
     await pool.query(`DELETE FROM expedicao_tim_relatorio`);
-    res.json({ success: true, message: 'Relatório removido com sucesso do banco de dados.' });
+    res.json({ success: true, message: 'Relatório ativo removido com sucesso do banco de dados.' });
   } catch (err) {
     console.error('Error clearing expedicao-tim report:', err);
     res.status(500).json({ error: 'Erro ao limpar relatório do banco.' });
   }
 });
 
-// 4. Salvar ou atualizar um Lote
+// 4. Salvar ou atualizar um Lote (com vínculo à importação)
 app.post('/api/expedicao-tim/lote', async (req, res) => {
-  try {
-    const { id, number, dest, obs, status, createdAt, groups, expeditionData, usuario } = req.body;
-    if (!id) return res.status(400).json({ error: 'ID do lote é obrigatório.' });
+  const { id, number, dest, obs, status, createdAt, groups, expeditionData, usuario, importacaoId, importacaoArquivo } = req.body;
+  if (!id) return res.status(400).json({ error: 'ID do lote é obrigatório.' });
 
+  // Salvar em memória de contingência
+  const memIdx = (expedicaoTimMemoryStore.lotes || []).findIndex(l => l.id === id);
+  const lotObj = {
+    id,
+    number: number || 1,
+    dest: dest || '',
+    obs: obs || '',
+    status: status || 'aberto',
+    createdAt: createdAt || new Date().toLocaleString('pt-BR'),
+    groups: groups || [],
+    expeditionData: expeditionData || null,
+    usuario: usuario || 'ADMIN',
+    importacaoId: importacaoId || null,
+    importacaoArquivo: importacaoArquivo || null
+  };
+  if (memIdx >= 0) {
+    expedicaoTimMemoryStore.lotes[memIdx] = lotObj;
+  } else {
+    expedicaoTimMemoryStore.lotes.push(lotObj);
+  }
+
+  try {
     await pool.query(
-      `INSERT INTO expedicao_tim_lotes (id, number, dest, obs, status, created_at, groups, expedition_data, usuario, updated_at)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, NOW())
+      `INSERT INTO expedicao_tim_lotes (id, number, dest, obs, status, created_at, groups, expedition_data, usuario, importacao_id, importacao_arquivo, updated_at)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, NOW())
        ON CONFLICT (id) DO UPDATE SET
          number = EXCLUDED.number,
          dest = EXCLUDED.dest,
@@ -3537,6 +3870,8 @@ app.post('/api/expedicao-tim/lote', async (req, res) => {
          groups = EXCLUDED.groups,
          expedition_data = EXCLUDED.expedition_data,
          usuario = EXCLUDED.usuario,
+         importacao_id = COALESCE(EXCLUDED.importacao_id, expedicao_tim_lotes.importacao_id),
+         importacao_arquivo = COALESCE(EXCLUDED.importacao_arquivo, expedicao_tim_lotes.importacao_arquivo),
          updated_at = NOW()`,
       [
         id,
@@ -3547,14 +3882,16 @@ app.post('/api/expedicao-tim/lote', async (req, res) => {
         createdAt || new Date().toLocaleString('pt-BR'),
         JSON.stringify(groups || []),
         expeditionData ? JSON.stringify(expeditionData) : null,
-        usuario || 'ADMIN'
+        usuario || 'ADMIN',
+        importacaoId || null,
+        importacaoArquivo || null
       ]
     );
 
     res.json({ success: true, message: 'Lote salvo com sucesso no banco de dados!' });
   } catch (err) {
-    console.error('Error saving expedicao-tim lote:', err);
-    res.status(500).json({ error: 'Erro ao salvar lote no banco de dados.' });
+    console.warn('Banco offline ao salvar lote (salvo em contingência):', err.message);
+    res.json({ success: true, message: 'Lote salvo em contingência!', offline: true });
   }
 });
 
@@ -3690,23 +4027,47 @@ app.delete('/api/expedicao-tim/lote/:id', async (req, res) => {
 
 // 6. Sincronização completa (sync-all)
 app.post('/api/expedicao-tim/sync-all', async (req, res) => {
-  const client = await pool.connect();
+  const { reportData, rawData, rawHeaders, columnMap, lots, lastResponsavel, usuario, currentImportId, currentImportFilename } = req.body;
+
+  // Atualizar memória de contingência
+  if (Array.isArray(lots)) expedicaoTimMemoryStore.lotes = lots;
+  if (reportData !== undefined) {
+    expedicaoTimMemoryStore.relatorio = {
+      reportData: reportData || [],
+      rawData: rawData || [],
+      rawHeaders: rawHeaders || [],
+      columnMap: columnMap || {},
+      importacaoId: currentImportId || null,
+      nomeArquivo: currentImportFilename || null
+    };
+  }
+  if (lastResponsavel) expedicaoTimMemoryStore.config.last_responsavel = lastResponsavel;
+
+  let client;
   try {
-    const { reportData, rawData, rawHeaders, columnMap, lots, lastResponsavel, usuario } = req.body;
+    client = await pool.connect();
+  } catch (connErr) {
+    console.warn('Banco central offline no sync-all (dados preservados em memória):', connErr.message);
+    return res.json({ success: true, message: 'Dados salvos em contingência!', offline: true });
+  }
+
+  try {
     await client.query('BEGIN');
 
     if (reportData !== undefined) {
       await client.query(`DELETE FROM expedicao_tim_relatorio`);
       await client.query(
-        `INSERT INTO expedicao_tim_relatorio (report_data, raw_data, raw_headers, column_map, total_linhas, usuario, updated_at)
-         VALUES ($1, $2, $3, $4, $5, $6, NOW())`,
+        `INSERT INTO expedicao_tim_relatorio (report_data, raw_data, raw_headers, column_map, total_linhas, usuario, importacao_id, nome_arquivo, updated_at)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, NOW())`,
         [
           JSON.stringify(reportData || []),
           JSON.stringify(rawData || []),
           JSON.stringify(rawHeaders || []),
           JSON.stringify(columnMap || {}),
           Array.isArray(reportData) ? reportData.length : 0,
-          usuario || 'ADMIN'
+          usuario || 'ADMIN',
+          currentImportId || null,
+          currentImportFilename || null
         ]
       );
     }
@@ -3722,8 +4083,8 @@ app.post('/api/expedicao-tim/sync-all', async (req, res) => {
       for (const l of lots) {
         if (!l.id) continue;
         await client.query(
-          `INSERT INTO expedicao_tim_lotes (id, number, dest, obs, status, created_at, groups, expedition_data, usuario, updated_at)
-           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, NOW())
+          `INSERT INTO expedicao_tim_lotes (id, number, dest, obs, status, created_at, groups, expedition_data, usuario, importacao_id, importacao_arquivo, updated_at)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, NOW())
            ON CONFLICT (id) DO UPDATE SET
              number = EXCLUDED.number,
              dest = EXCLUDED.dest,
@@ -3733,6 +4094,8 @@ app.post('/api/expedicao-tim/sync-all', async (req, res) => {
              groups = EXCLUDED.groups,
              expedition_data = EXCLUDED.expedition_data,
              usuario = EXCLUDED.usuario,
+             importacao_id = COALESCE(EXCLUDED.importacao_id, expedicao_tim_lotes.importacao_id),
+             importacao_arquivo = COALESCE(EXCLUDED.importacao_arquivo, expedicao_tim_lotes.importacao_arquivo),
              updated_at = NOW()`,
           [
             l.id,
@@ -3743,7 +4106,9 @@ app.post('/api/expedicao-tim/sync-all', async (req, res) => {
             l.createdAt || new Date().toLocaleString('pt-BR'),
             JSON.stringify(l.groups || []),
             l.expeditionData ? JSON.stringify(l.expeditionData) : null,
-            usuario || 'ADMIN'
+            usuario || 'ADMIN',
+            l.importacaoId || null,
+            l.importacaoArquivo || null
           ]
         );
       }

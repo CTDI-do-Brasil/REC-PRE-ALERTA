@@ -12,6 +12,10 @@ const STATE = {
   selectedForGroup: [],  // pallet IDs pending grouping
   pendingRawData: null,  // raw xlsx before confirming import
   pendingHeaders: [],
+  pendingFilename: '',
+  currentImportId: null,
+  currentImportFilename: '',
+  importHistory: [],     // histórico permanente de planilhas importadas
 };
 
 const COL_KEYS = [
@@ -254,6 +258,8 @@ async function syncStateWithServer(payload) {
         rawHeaders: STATE.rawHeaders || [],
         columnMap: STATE.columnMap || {},
         lots: STATE.lots || [],
+        currentImportId: STATE.currentImportId || null,
+        currentImportFilename: STATE.currentImportFilename || null,
         lastResponsavel: localStorage.getItem('last_exp_responsavel') || '',
         usuario: user
       };
@@ -279,6 +285,8 @@ function saveState() {
   try {
     localStorage.setItem('exp_lots', JSON.stringify(STATE.lots || []));
     localStorage.setItem('exp_colmap', JSON.stringify(STATE.columnMap || {}));
+    localStorage.setItem('exp_cur_imp_id', STATE.currentImportId || '');
+    localStorage.setItem('exp_cur_imp_file', STATE.currentImportFilename || '');
     localStorage.setItem('exp_last_saved', new Date().toISOString());
   } catch(e) {
     console.error('Erro ao salvar lotes no localStorage:', e);
@@ -303,6 +311,19 @@ function saveState() {
     rawData: STATE.rawData || [],
     rawHeaders: STATE.rawHeaders || [],
     currentLotId: STATE.currentLotId || null,
+    currentImportId: STATE.currentImportId || null,
+    currentImportFilename: STATE.currentImportFilename || '',
+    importHistory: (STATE.importHistory || []).map(h => ({
+      id: h.id,
+      nome_arquivo: h.nome_arquivo || h.nomeArquivo,
+      total_linhas: h.total_linhas || h.totalLinhas,
+      total_pallets: h.total_pallets || h.totalPallets,
+      usuario: h.usuario,
+      created_at: h.created_at || h.createdAt,
+      column_map: h.column_map || h.columnMap,
+      raw_headers: h.raw_headers || h.rawHeaders,
+      lotes: h.lotes || []
+    })),
     lastResponsavel: localStorage.getItem('last_exp_responsavel') || '',
     usuario: (typeof currentUser !== 'undefined' && currentUser && currentUser.username) ? currentUser.username : 'ADMIN'
   };
@@ -330,6 +351,13 @@ async function loadStateFromServer() {
     }
 
     let hasServerData = false;
+
+    if (data.currentImportId) STATE.currentImportId = data.currentImportId;
+    if (data.currentImportFilename) STATE.currentImportFilename = data.currentImportFilename;
+
+    if (Array.isArray(data.importacoes)) {
+      STATE.importHistory = data.importacoes;
+    }
 
     if (Array.isArray(data.reportData) && data.reportData.length > 0) {
       STATE.reportData = data.reportData;
@@ -366,6 +394,7 @@ async function loadStateFromServer() {
         if (activePage.id === 'page-lots') renderLotsList();
         else if (activePage.id === 'page-report') renderReportTable();
         else if (activePage.id === 'page-lot-detail' && STATE.currentLotId) renderLotDetail();
+        else if (activePage.id === 'page-import-history') renderImportHistory();
       }
     } else {
       // Se o banco central estiver vazio mas tivermos dados locais, migra automaticamente para o PostgreSQL
@@ -387,6 +416,8 @@ function loadState() {
     STATE.lots       = JSON.parse(localStorage.getItem('exp_lots')   || '[]');
     STATE.columnMap  = JSON.parse(localStorage.getItem('exp_colmap') || '{}');
     STATE.reportData = JSON.parse(localStorage.getItem('exp_report') || '[]');
+    STATE.currentImportId = localStorage.getItem('exp_cur_imp_id') || null;
+    STATE.currentImportFilename = localStorage.getItem('exp_cur_imp_file') || '';
     localStorage.removeItem('exp_rawdata');
     localStorage.removeItem('exp_rawhdrs');
   } catch(e) {
@@ -399,6 +430,16 @@ function loadState() {
   idbLoadState().then(saved => {
     if (!saved) return;
     let needsRefresh = false;
+
+    if (saved.currentImportId) STATE.currentImportId = saved.currentImportId;
+    if (saved.currentImportFilename) STATE.currentImportFilename = saved.currentImportFilename;
+
+    if (Array.isArray(saved.importHistory) && saved.importHistory.length > 0) {
+      if (!STATE.importHistory || STATE.importHistory.length === 0) {
+        STATE.importHistory = saved.importHistory;
+        needsRefresh = true;
+      }
+    }
 
     if (Array.isArray(saved.reportData) && saved.reportData.length > (STATE.reportData ? STATE.reportData.length : 0)) {
       STATE.reportData = saved.reportData;
@@ -436,6 +477,7 @@ function loadState() {
         if (activePage.id === 'page-lots') renderLotsList();
         else if (activePage.id === 'page-report') renderReportTable();
         else if (activePage.id === 'page-lot-detail' && STATE.currentLotId) renderLotDetail();
+        else if (activePage.id === 'page-import-history') renderImportHistory();
       }
     }
   }).catch(err => {
@@ -588,9 +630,10 @@ function importDataBackup(event) {
 const PAGE_TITLES = {
   dashboard:  ['Dashboard', 'Visão geral do sistema de expedição'],
   import:     ['Importar Relatório', 'Carregue o arquivo de embalagem .xlsx'],
-  report:     ['Dados Importados', 'Visão consolidada de pallets do relatório'],
+  report:     ['Dados Importados', 'Visão consolidada de pallets do relatório ativo'],
   lots:       ['Lotes de Expedição', 'Criação e gestão de lotes'],
   'lot-detail': ['Detalhe do Lote', 'Bipagem e agrupamento de pallets'],
+  'import-history': ['Histórico de Importações', 'Histórico permanente de planilhas e lotes vinculados'],
 };
 
 function showPage(page) {
@@ -612,10 +655,11 @@ function showPage(page) {
   if (tEl) tEl.textContent = title;
   if (sEl) sEl.textContent = sub;
 
-  if (page === 'dashboard')   renderDashboard();
-  if (page === 'report')      renderReportTable();
-  if (page === 'lots')        renderLotsList();
-  if (page === 'lot-detail')  renderLotDetail();
+  if (page === 'dashboard')        renderDashboard();
+  if (page === 'report')           renderReportTable();
+  if (page === 'lots')             renderLotsList();
+  if (page === 'lot-detail')       renderLotDetail();
+  if (page === 'import-history')   renderImportHistory();
 }
 
 // ============================================================
@@ -688,6 +732,7 @@ function handleFileUpload(e) {
 }
 
 function processFile(file) {
+  STATE.pendingFilename = file.name;
   const reader = new FileReader();
   reader.onload = function(e) {
     try {
@@ -797,6 +842,22 @@ function cancelImport() {
   if (fInput) fInput.value = '';
 }
 
+async function saveImportToBackend(payload) {
+  try {
+    const res = await fetch('/api/expedicao-tim/importacoes', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload)
+    });
+    const data = await res.json();
+    if (data && data.success) {
+      console.log('Importação salva no histórico central com sucesso:', payload.id);
+    }
+  } catch (err) {
+    console.warn('Erro ao salvar importação no servidor (salvo localmente):', err);
+  }
+}
+
 function confirmImport() {
   const map = {};
   let valid = true;
@@ -809,16 +870,60 @@ function confirmImport() {
   });
   if (!valid) { showToast('Mapeie todas as colunas obrigatórias (*) antes de confirmar.', 'warning'); return; }
 
+  const importId = 'IMP-' + Date.now();
+  const filename = STATE.pendingFilename || ('relatorio_' + new Date().toISOString().slice(0, 10) + '.xlsx');
+  const user = (typeof currentUser !== 'undefined' && currentUser && currentUser.username) ? currentUser.username : (localStorage.getItem('usuario') || 'ADMIN');
+
   STATE.columnMap = map;
   STATE.rawData    = STATE.pendingRawData;
   STATE.rawHeaders = STATE.pendingHeaders;
   STATE.reportData = applyMapToRaw(STATE.rawData, map);
+  STATE.currentImportId = importId;
+  STATE.currentImportFilename = filename;
 
   buildPalletIndex();
-  saveState();
 
   const totalPallets = Object.keys(STATE.palletIndex || {}).length;
-  showToast(`${STATE.reportData.length} peças consolidadas em ${totalPallets} pallets!`, 'success');
+
+  const historyRecord = {
+    id: importId,
+    nome_arquivo: filename,
+    nomeArquivo: filename,
+    total_linhas: STATE.reportData.length,
+    totalLinhas: STATE.reportData.length,
+    total_pallets: totalPallets,
+    totalPallets: totalPallets,
+    usuario: user,
+    created_at: new Date().toISOString(),
+    createdAt: new Date().toISOString(),
+    column_map: STATE.columnMap,
+    columnMap: STATE.columnMap,
+    raw_headers: STATE.rawHeaders,
+    rawHeaders: STATE.rawHeaders,
+    report_data: STATE.reportData,
+    rawData: STATE.rawData,
+    lotes: []
+  };
+
+  if (!Array.isArray(STATE.importHistory)) STATE.importHistory = [];
+  STATE.importHistory.unshift(historyRecord);
+
+  saveState();
+
+  // Enviar para backend salvar permanentemente no histórico
+  saveImportToBackend({
+    id: importId,
+    nomeArquivo: filename,
+    reportData: STATE.reportData,
+    rawData: STATE.rawData,
+    rawHeaders: STATE.rawHeaders,
+    columnMap: STATE.columnMap,
+    totalLinhas: STATE.reportData.length,
+    totalPallets: totalPallets,
+    usuario: user
+  });
+
+  showToast(`Histórico salvo: ${STATE.reportData.length} peças consolidadas em ${totalPallets} pallets!`, 'success');
   cancelImport();
   showPage('report');
 }
@@ -1052,6 +1157,27 @@ function openNewLotModal() {
   const obsEl = document.getElementById('lot-obs');
   if (destEl) destEl.value = '';
   if (obsEl) obsEl.value = '';
+
+  const selEl = document.getElementById('lot-import-select');
+  if (selEl) {
+    selEl.innerHTML = '';
+    if (STATE.currentImportId) {
+      selEl.innerHTML += `<option value="${STATE.currentImportId}" selected>⭐ Atual: ${STATE.currentImportFilename || 'Planilha Ativa'} (${(STATE.reportData || []).length} peças)</option>`;
+    }
+    (STATE.importHistory || []).forEach(imp => {
+      const impId = imp.id;
+      if (impId !== STATE.currentImportId) {
+        const name = imp.nome_arquivo || imp.nomeArquivo || 'relatorio.xlsx';
+        const lines = imp.total_linhas || imp.totalLinhas || 0;
+        const dt = imp.created_at || imp.createdAt ? new Date(imp.created_at || imp.createdAt).toLocaleDateString('pt-BR') : '';
+        selEl.innerHTML += `<option value="${impId}">📄 ${name} (${lines} peças - ${dt})</option>`;
+      }
+    });
+    if (!selEl.children.length) {
+      selEl.innerHTML = `<option value="">Nenhuma planilha importada</option>`;
+    }
+  }
+
   openModal('modal-new-lot');
 }
 
@@ -1061,6 +1187,22 @@ function createNewLot() {
   if (!dest) { showToast('Informe o destino do lote.', 'warning'); return; }
 
   const obsEl = document.getElementById('lot-obs');
+  const selEl = document.getElementById('lot-import-select');
+  let chosenImpId = selEl ? selEl.value : null;
+  let chosenImpName = '';
+
+  if (chosenImpId) {
+    if (chosenImpId === STATE.currentImportId) {
+      chosenImpName = STATE.currentImportFilename;
+    } else {
+      const found = (STATE.importHistory || []).find(h => h.id === chosenImpId);
+      if (found) chosenImpName = found.nome_arquivo || found.nomeArquivo || '';
+    }
+  } else if (STATE.currentImportId) {
+    chosenImpId = STATE.currentImportId;
+    chosenImpName = STATE.currentImportFilename;
+  }
+
   const lot = {
     id: 'LOT-' + Date.now(),
     number: STATE.lots.length + 1,
@@ -1069,6 +1211,8 @@ function createNewLot() {
     createdAt: new Date().toLocaleString('pt-BR'),
     status: 'aberto',
     groups: [],
+    importacaoId: chosenImpId || null,
+    importacaoArquivo: chosenImpName || null
   };
   STATE.lots.unshift(lot);
   saveState();
@@ -1842,7 +1986,8 @@ function renderLotDetail() {
   const titleEl = document.getElementById('lot-detail-title');
   const subEl = document.getElementById('lot-detail-subtitle');
   if (titleEl) titleEl.textContent = `Lote #${lot.number} — ${lot.dest}`;
-  if (subEl) subEl.textContent = `Criado em ${lot.createdAt}${lot.obs ? ' · ' + lot.obs : ''}`;
+  const origInfo = lot.importacaoArquivo ? ` · 📄 Origem: ${lot.importacaoArquivo}` : '';
+  if (subEl) subEl.textContent = `Criado em ${lot.createdAt}${lot.obs ? ' · ' + lot.obs : ''}${origInfo}`;
 
   const isAberto = lot.status === 'aberto';
   const isFinalized = lot.status === 'finalizado';
@@ -2042,7 +2187,10 @@ function renderLotsList() {
       <div class="lot-card mb-4" onclick="openLotDetail('${lot.id}')">
         <div>
           <div class="lot-num">Lote #${lot.number} — ${lot.dest}</div>
-          <div class="lot-date">📅 ${lot.createdAt}${lot.expeditionData && lot.expeditionData.dataHora ? ' · Expedido em ' + lot.expeditionData.dataHora : ''}</div>
+          <div class="lot-date">
+            📅 ${lot.createdAt}${lot.expeditionData && lot.expeditionData.dataHora ? ' · Expedido em ' + lot.expeditionData.dataHora : ''}
+            ${lot.importacaoArquivo ? ` · <span style="color:#60a5fa;font-weight:600;">📄 ${escapeHtml(lot.importacaoArquivo)}</span>` : ''}
+          </div>
           <div class="lot-stats">
             ${lot.groups.length} grupo(s) / pallet(s) físico(s) · ${allPalletIds.length} pallet ID(s) · <strong style="color:#6ee7b7">${lotSummary.totalUnits} peças</strong> · <strong style="color:#fcd34d">${lotSummary.totalBoxes} caixas</strong>
             ${lotSummary.model ? '· ' + lotSummary.model : ''}
@@ -2113,25 +2261,439 @@ function renderDashboard() {
     const repSum = document.getElementById('dash-report-summary');
     if (repSum) {
       if (!STATE.reportData || !STATE.reportData.length) {
-        repSum.innerHTML = `<div class="empty-state" style="padding:20px"><div class="empty-state-icon">📋</div><h3>Nenhum dado</h3><p>Importe o relatório de embalagem.</p></div>`;
+        repSum.innerHTML = `
+          <div class="empty-state" style="padding:20px"><div class="empty-state-icon">📋</div><h3>Nenhum dado ativo</h3><p>Importe o relatório de embalagem ou reative do histórico.</p></div>
+          <div style="margin-top:10px;text-align:center;"><a href="javascript:void(0)" onclick="showPage('import-history')" style="color:#60a5fa;font-size:12px;font-weight:600;text-decoration:underline;">📜 Histórico de Importações (${(STATE.importHistory||[]).length}) →</a></div>`;
       } else {
         const pallets = Object.values(STATE.palletIndex || {});
         const totalBoxesInReport = pallets.reduce((acc, p) => acc + (p && p.boxes ? p.boxes.size : 0), 0);
         const models = [...new Set(pallets.flatMap(p => (p && p.models ? [...p.models] : [])))];
+        const activeFileStr = STATE.currentImportFilename ? `<div style="font-size:12px;color:#93c5fd;margin-bottom:8px;">📄 Planilha Ativa: <strong>${escapeHtml(STATE.currentImportFilename)}</strong></div>` : '';
 
         repSum.innerHTML = `
+          ${activeFileStr}
           <div class="summary-grid" style="grid-template-columns:1fr 1fr;margin-bottom:14px;">
             <div class="summary-card accent-blue"><div class="s-val">${pallets.length}</div><div class="s-label">Pallets Únicos</div></div>
             <div class="summary-card accent-green"><div class="s-val">${STATE.reportData.length}</div><div class="s-label">Peças (Seriais)</div></div>
             <div class="summary-card accent-yellow"><div class="s-val">${totalBoxesInReport}</div><div class="s-label">Caixas Únicas</div></div>
             <div class="summary-card accent-purple"><div class="s-val">${models.length}</div><div class="s-label">Modelos</div></div>
           </div>
-          <div class="text-sm text-muted">Modelos: ${models.slice(0,5).join(', ')}${models.length>5?'...':''}</div>`;
+          <div class="text-sm text-muted">Modelos: ${models.slice(0,5).join(', ')}${models.length>5?'...':''}</div>
+          <div style="margin-top:10px;"><a href="javascript:void(0)" onclick="showPage('import-history')" style="color:#60a5fa;font-size:12px;font-weight:600;text-decoration:underline;">📜 Ver Histórico Completo (${(STATE.importHistory||[]).length} importações) →</a></div>`;
       }
     }
   } catch(err) {
     console.error('Erro na renderização do Dashboard:', err);
   }
+}
+
+// ============================================================
+// AUXILIARES & ESCAPE HTML
+// ============================================================
+function escapeHtml(str) {
+  if (str === null || str === undefined) return '';
+  return String(str)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
+// ============================================================
+// HISTÓRICO PERMANENTE DE IMPORTAÇÕES & LOTES
+// ============================================================
+
+let CURRENT_DETAIL_IMPORT_ID = null;
+
+async function loadImportHistory(showFeedback = false) {
+  try {
+    const res = await fetch('/api/expedicao-tim/importacoes');
+    if (res.ok) {
+      const data = await res.json();
+      if (data && data.success && Array.isArray(data.importacoes)) {
+        STATE.importHistory = data.importacoes;
+        renderImportHistory();
+        if (showFeedback) showToast('Histórico de importações atualizado com sucesso!', 'success');
+        return;
+      }
+    }
+  } catch (err) {
+    console.warn('Erro ao carregar histórico de importações do servidor:', err);
+  }
+  if (showFeedback) showToast('Exibindo histórico salvo localmente.', 'info');
+  renderImportHistory();
+}
+
+function renderImportHistory() {
+  const wrap = document.getElementById('import-history-table-wrap');
+  const metricsWrap = document.getElementById('import-history-metrics');
+  if (!wrap) return;
+
+  const search = (document.getElementById('import-history-search')?.value || '').toLowerCase().trim();
+  const historyList = Array.isArray(STATE.importHistory) ? STATE.importHistory : [];
+
+  // 1. Render Metrics Cards
+  const totalImports = historyList.length;
+  const totalPieces = historyList.reduce((acc, h) => acc + (h.total_linhas || h.totalLinhas || 0), 0);
+  const totalPallets = historyList.reduce((acc, h) => acc + (h.total_pallets || h.totalPallets || 0), 0);
+  
+  // Total unique lots linked across all imports
+  const allLinkedLots = new Set();
+  historyList.forEach(h => {
+    (h.lotes || []).forEach(l => { if (l && l.id) allLinkedLots.add(l.id); });
+  });
+  (STATE.lots || []).forEach(l => {
+    if (l && l.importacaoId) allLinkedLots.add(l.id);
+  });
+
+  if (metricsWrap) {
+    metricsWrap.innerHTML = `
+      <div class="summary-card accent-blue">
+        <div class="s-val">${totalImports}</div>
+        <div class="s-label">Importações Realizadas</div>
+      </div>
+      <div class="summary-card accent-green">
+        <div class="s-val">${totalPieces.toLocaleString('pt-BR')}</div>
+        <div class="s-label">Total de Peças Importadas</div>
+      </div>
+      <div class="summary-card accent-yellow">
+        <div class="s-val">${totalPallets.toLocaleString('pt-BR')}</div>
+        <div class="s-label">Total de Pallets Consolidados</div>
+      </div>
+      <div class="summary-card accent-purple">
+        <div class="s-val">${allLinkedLots.size}</div>
+        <div class="s-label">Lotes Gerados Vinculados</div>
+      </div>
+    `;
+  }
+
+  // 2. Filter list
+  const filtered = search
+    ? historyList.filter(h => {
+        const file = (h.nome_arquivo || h.nomeArquivo || '').toLowerCase();
+        const user = (h.usuario || '').toLowerCase();
+        const id = (h.id || '').toLowerCase();
+        const lotMatch = (h.lotes || []).some(l => String(l.number).includes(search) || (l.dest || '').toLowerCase().includes(search));
+        return file.includes(search) || user.includes(search) || id.includes(search) || lotMatch;
+      })
+    : historyList;
+
+  if (!filtered.length) {
+    wrap.innerHTML = `
+      <div class="empty-state">
+        <div class="empty-state-icon">📜</div>
+        <h3>${search ? 'Nenhuma importação encontrada para a busca' : 'Nenhuma importação registrada ainda'}</h3>
+        <p>${search ? 'Tente buscar por outro termo ou limpe a caixa de pesquisa.' : 'Importe sua primeira planilha de embalagem para iniciar o histórico permanente.'}</p>
+        ${!search ? '<button class="btn btn-primary mt-3" onclick="showPage(\'import\')">📥 Importar Primeira Planilha</button>' : ''}
+      </div>`;
+    return;
+  }
+
+  // 3. Render Table
+  wrap.innerHTML = `
+    <table>
+      <thead>
+        <tr>
+          <th>📅 Data / Hora</th>
+          <th>📄 Arquivo Importado</th>
+          <th>🔢 Qtd. Peças</th>
+          <th>📦 Pallets</th>
+          <th>👤 Usuário</th>
+          <th>🚚 Lotes Vinculados</th>
+          <th style="text-align:right;">Ações</th>
+        </tr>
+      </thead>
+      <tbody>
+        ${filtered.map(imp => {
+          const impId = imp.id;
+          const fileName = imp.nome_arquivo || imp.nomeArquivo || 'relatorio.xlsx';
+          const lines = imp.total_linhas || imp.totalLinhas || 0;
+          const pallets = imp.total_pallets || imp.totalPallets || 0;
+          const user = imp.usuario || 'ADMIN';
+          const dtStr = imp.created_at || imp.createdAt
+            ? new Date(imp.created_at || imp.createdAt).toLocaleString('pt-BR')
+            : '—';
+
+          const isActive = STATE.currentImportId && STATE.currentImportId === impId;
+
+          // Merge lots from imp.lotes and STATE.lots that reference this impId
+          const linkedLotMap = new Map();
+          (imp.lotes || []).forEach(l => { if (l && l.id) linkedLotMap.set(l.id, l); });
+          (STATE.lots || []).forEach(l => {
+            if (l && (l.importacaoId === impId || (l.importacaoArquivo && l.importacaoArquivo === fileName))) {
+              linkedLotMap.set(l.id, {
+                id: l.id,
+                number: l.number,
+                dest: l.dest,
+                status: l.status,
+                createdAt: l.createdAt
+              });
+            }
+          });
+          const lotsArray = Array.from(linkedLotMap.values());
+
+          let lotBadges = '';
+          if (lotsArray.length > 0) {
+            lotBadges = lotsArray.map(l => {
+              let bClass = 'badge-yellow';
+              if (l.status === 'finalizado') bClass = 'badge-finalizado';
+              else if (l.status === 'expedido') bClass = 'badge-expedido';
+              return `<span class="badge ${bClass} font-mono" style="cursor:pointer;margin:2px;" onclick="openLotDetail('${l.id}')" title="Clique para abrir Lote #${l.number} (${l.dest || ''})">Lote #${l.number}</span>`;
+            }).join(' ');
+          } else {
+            lotBadges = `<span style="font-size:11px;color:var(--exp-text-muted);">Nenhum lote criado</span>`;
+          }
+
+          return `
+            <tr ${isActive ? 'style="background:rgba(59,130,246,0.08);border-left:3px solid #3b82f6;"' : ''}>
+              <td style="white-space:nowrap;font-size:12px;">
+                <div style="font-weight:600;">${dtStr}</div>
+                <div style="font-size:10px;color:var(--exp-text-muted);">${impId}</div>
+              </td>
+              <td>
+                <div style="display:flex;align-items:center;gap:6px;">
+                  <strong style="color:var(--exp-text-primary);font-size:13px;">${escapeHtml(fileName)}</strong>
+                  ${isActive ? '<span class="badge badge-green" style="font-size:10px;">⭐ Ativa no Momento</span>' : ''}
+                </div>
+              </td>
+              <td><strong style="color:#6ee7b7;">${lines.toLocaleString('pt-BR')}</strong></td>
+              <td><strong style="color:#fcd34d;">${pallets.toLocaleString('pt-BR')}</strong></td>
+              <td><span class="badge badge-blue" style="font-size:11px;">${escapeHtml(user)}</span></td>
+              <td><div style="display:flex;flex-wrap:wrap;align-items:center;">${lotBadges}</div></td>
+              <td style="text-align:right;white-space:nowrap;">
+                <div class="flex gap-1 justify-end">
+                  <button class="btn btn-ghost btn-sm" onclick="abrirDetalheImportacao('${impId}')" title="Ver detalhes completos e pallets desta importação">👁️ Ver Detalhes</button>
+                  ${!isActive ? `<button class="btn btn-primary btn-sm" onclick="reativarImportacao('${impId}')" style="background:#3b82f6;border-color:#3b82f6;" title="Carregar esta planilha de volta como o relatório ativo atual">📥 Reativar</button>` : ''}
+                  <button class="btn btn-ghost btn-sm" onclick="exportarImportacaoHistorica('${impId}')" title="Baixar planilha original em Excel">⬇️ Excel</button>
+                </div>
+              </td>
+            </tr>`;
+        }).join('')}
+      </tbody>
+    </table>`;
+}
+
+async function abrirDetalheImportacao(impId) {
+  CURRENT_DETAIL_IMPORT_ID = impId;
+  const modal = document.getElementById('modal-import-detail');
+  if (!modal) return;
+
+  // Carregar dados completos do servidor ou da memória
+  let imp = (STATE.importHistory || []).find(h => h.id === impId);
+  try {
+    const res = await fetch(`/api/expedicao-tim/importacoes/${impId}`);
+    if (res.ok) {
+      const data = await res.json();
+      if (data && data.success && data.importacao) {
+        imp = data.importacao;
+      }
+    }
+  } catch (err) {
+    console.warn('Erro ao buscar detalhes da importação:', err);
+  }
+
+  if (!imp) {
+    showToast('Importação não encontrada.', 'error');
+    return;
+  }
+
+  const fileName = imp.nome_arquivo || imp.nomeArquivo || 'relatorio.xlsx';
+  const totalLinhas = imp.total_linhas || imp.totalLinhas || 0;
+  const totalPallets = imp.total_pallets || imp.totalPallets || 0;
+  const dtStr = imp.created_at || imp.createdAt ? new Date(imp.created_at || imp.createdAt).toLocaleString('pt-BR') : '';
+
+  const titleEl = document.getElementById('modal-import-title');
+  const subEl = document.getElementById('modal-import-subtitle');
+  if (titleEl) titleEl.textContent = `📜 Importação: ${fileName}`;
+  if (subEl) subEl.textContent = `ID: ${imp.id} · Importado em ${dtStr} por ${imp.usuario || 'ADMIN'}`;
+
+  // Métricas
+  const metEl = document.getElementById('modal-import-metrics');
+  if (metEl) {
+    metEl.innerHTML = `
+      <div class="summary-card accent-blue"><div class="s-val">${totalPallets}</div><div class="s-label">Pallets Consolidados</div></div>
+      <div class="summary-card accent-green"><div class="s-val">${totalLinhas}</div><div class="s-label">Peças (Seriais)</div></div>
+      <div class="summary-card accent-purple"><div class="s-val">${(imp.lotes || []).length}</div><div class="s-label">Lotes Criados</div></div>
+    `;
+  }
+
+  // Lotes list
+  const lotsListEl = document.getElementById('modal-import-lots-list');
+  if (lotsListEl) {
+    const lots = imp.lotes || [];
+    if (!lots.length) {
+      lotsListEl.innerHTML = `
+        <span style="font-size:12px;color:var(--exp-text-muted);margin-right:12px;">Nenhum lote foi criado a partir desta importação ainda.</span>
+        <button class="btn btn-primary btn-sm" onclick="criarLoteDestaImportacao('${imp.id}')">➕ Criar Lote a partir desta Planilha</button>
+      `;
+    } else {
+      lotsListEl.innerHTML = lots.map(l => {
+        let bClass = 'badge-yellow';
+        if (l.status === 'finalizado') bClass = 'badge-finalizado';
+        else if (l.status === 'expedido') bClass = 'badge-expedido';
+        return `
+          <div style="background:rgba(255,255,255,0.05);border:1px solid var(--exp-border);border-radius:6px;padding:6px 12px;display:flex;align-items:center;gap:8px;">
+            <span class="badge ${bClass} font-mono">Lote #${l.number}</span>
+            <span style="font-size:12px;font-weight:600;">${escapeHtml(l.dest || 'Sem destino')}</span>
+            <span style="font-size:11px;color:var(--exp-text-muted);">(${l.createdAt || ''})</span>
+            <button class="btn btn-ghost btn-sm" style="padding:2px 6px;font-size:11px;" onclick="closeModal('modal-import-detail');openLotDetail('${l.id}')">Abrir</button>
+          </div>
+        `;
+      }).join('');
+    }
+  }
+
+  // Tabela de amostra de pallets
+  const tableWrap = document.getElementById('modal-import-table-wrap');
+  if (tableWrap) {
+    const reportData = imp.report_data || imp.reportData || [];
+    if (!reportData.length) {
+      tableWrap.innerHTML = `<div class="empty-state" style="padding:16px;">Dados detalhados não sincronizados para visualização inline.</div>`;
+    } else {
+      // Agrupar por palletId
+      const pMap = {};
+      reportData.forEach(r => {
+        const pid = standardizePalletId(r.palletId);
+        if (!pid) return;
+        if (!pMap[pid]) pMap[pid] = { palletId: pid, models: new Set(), units: 0, boxes: new Set(), dest: r.dest || '' };
+        if (r.model) pMap[pid].models.add(r.model);
+        if (r.boxId) pMap[pid].boxes.add(r.boxId);
+        pMap[pid].units++;
+      });
+      const palList = Object.values(pMap).slice(0, 50);
+
+      tableWrap.innerHTML = `
+        <table>
+          <thead>
+            <tr>
+              <th>🔖 Pallet ID</th>
+              <th>🏷️ Modelo</th>
+              <th>🔢 Peças</th>
+              <th>📦 Caixas</th>
+              <th>📍 Destino</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${palList.map(p => `
+              <tr>
+                <td><span class="badge badge-blue font-mono">${p.palletId}</span></td>
+                <td>${[...p.models].join(', ') || '—'}</td>
+                <td><strong style="color:#6ee7b7">${p.units}</strong></td>
+                <td><strong style="color:#fcd34d">${p.boxes.size}</strong></td>
+                <td>${p.dest || '—'}</td>
+              </tr>
+            `).join('')}
+          </tbody>
+        </table>
+        ${Object.keys(pMap).length > 50 ? `<div style="font-size:11px;color:var(--exp-text-muted);padding:8px 12px;text-align:center;">Mostrando os primeiros 50 de ${Object.keys(pMap).length} pallets.</div>` : ''}
+      `;
+    }
+  }
+
+  openModal('modal-import-detail');
+}
+
+async function reativarImportacao(impId) {
+  if (!confirm('Deseja definir esta planilha histórica como a planilha ativa para novas bipagens e consultas?')) return;
+
+  try {
+    const res = await fetch(`/api/expedicao-tim/importacoes/${impId}/reativar`, { method: 'POST' });
+    const data = await res.json();
+    if (data && data.success) {
+      STATE.reportData = data.reportData || [];
+      STATE.rawData = data.rawData || [];
+      STATE.rawHeaders = data.rawHeaders || [];
+      STATE.columnMap = data.columnMap || {};
+      STATE.currentImportId = data.importId || impId;
+      STATE.currentImportFilename = data.nomeArquivo || '';
+
+      buildPalletIndex();
+      saveState();
+      renderDashboard();
+      renderReportTable();
+      renderImportHistory();
+      showToast(`Planilha "${STATE.currentImportFilename}" agora está ativa!`, 'success');
+      showPage('report');
+      return;
+    }
+  } catch (err) {
+    console.warn('Erro ao reativar no backend, tentando carregar localmente:', err);
+  }
+
+  // Fallback local
+  const localImp = (STATE.importHistory || []).find(h => h.id === impId);
+  if (localImp && localImp.report_data) {
+    STATE.reportData = localImp.report_data || [];
+    STATE.rawData = localImp.raw_data || localImp.rawData || [];
+    STATE.rawHeaders = localImp.raw_headers || localImp.rawHeaders || [];
+    STATE.columnMap = localImp.column_map || localImp.columnMap || {};
+    STATE.currentImportId = localImp.id;
+    STATE.currentImportFilename = localImp.nome_arquivo || localImp.nomeArquivo || '';
+    buildPalletIndex();
+    saveState();
+    renderDashboard();
+    renderReportTable();
+    renderImportHistory();
+    showToast(`Planilha "${STATE.currentImportFilename}" reativada localmente!`, 'success');
+    showPage('report');
+  } else {
+    showToast('Não foi possível carregar os dados desta importação.', 'error');
+  }
+}
+
+function ativarImportacaoModal() {
+  if (CURRENT_DETAIL_IMPORT_ID) {
+    closeModal('modal-import-detail');
+    reativarImportacao(CURRENT_DETAIL_IMPORT_ID);
+  }
+}
+
+async function exportarImportacaoHistorica(impId) {
+  let imp = (STATE.importHistory || []).find(h => h.id === impId);
+  if (!imp || !imp.report_data || imp.report_data.length === 0) {
+    try {
+      const res = await fetch(`/api/expedicao-tim/importacoes/${impId}`);
+      if (res.ok) {
+        const data = await res.json();
+        if (data && data.success && data.importacao) imp = data.importacao;
+      }
+    } catch(e) {}
+  }
+
+  const rows = (imp && (imp.report_data || imp.reportData)) ? (imp.report_data || imp.reportData) : [];
+  if (!rows.length) {
+    showToast('Nenhum dado encontrado para exportar.', 'warning');
+    return;
+  }
+
+  const exportData = rows.map(r => ({
+    PALLET: r.palletId || '',
+    CAIXA: r.boxId || '',
+    MODELO: r.model || '',
+    SERIAL: r.serial || '',
+    DESTINO: r.dest || ''
+  }));
+
+  const ws = XLSX.utils.json_to_sheet(exportData);
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, ws, 'Dados Importados');
+  const safeName = (imp.nome_arquivo || imp.nomeArquivo || 'importacao').replace(/\.xlsx$/i, '');
+  XLSX.writeFile(wb, `${safeName}_Historico.xlsx`);
+  showToast('Planilha Excel baixada com sucesso!', 'success');
+}
+
+function exportarImportacaoModal() {
+  if (CURRENT_DETAIL_IMPORT_ID) {
+    exportarImportacaoHistorica(CURRENT_DETAIL_IMPORT_ID);
+  }
+}
+
+function criarLoteDestaImportacao(impId) {
+  closeModal('modal-import-detail');
+  openNewLotModal();
+  const sel = document.getElementById('lot-import-select');
+  if (sel) sel.value = impId;
 }
 
 // ============================================================
