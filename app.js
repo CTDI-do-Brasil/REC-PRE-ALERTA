@@ -3218,7 +3218,8 @@ function setupExpedicaoGarantiaListeners() {
                 return;
             }
 
-            if (hasSpecialCharacters(valorScan)) {
+            if (/[^A-Z0-9]/.test(valorScan)) {
+                notifySpecialCharError(inputScan);
                 showGarantiaStatus("🚫 <strong>ERRO</strong>: Caracteres especiais não são permitidos no código da unidade.", true);
                 if (inputScan) {
                     inputScan.select();

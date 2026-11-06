@@ -1867,11 +1867,17 @@ app.post('/api/expedicao-pintura/bipar', async (req, res) => {
 
     // 2. Query recebimentos to check if unit was received
     const searchTerms = [cleanSerial, cleanPon, cleanMac].filter(Boolean);
+    if (cleanSerial && cleanSerial.length === 12 && /^[0-9A-F]{12}$/i.test(cleanSerial)) {
+      searchTerms.push(cleanSerial.match(/.{1,2}/g).join(':'));
+    }
     const recRes = await pool.query(`
       SELECT * FROM recebimentos 
       WHERE (serial_number IS NOT NULL AND serial_number != '' AND UPPER(TRIM(serial_number)) = ANY($1))
          OR (gpon_id IS NOT NULL AND gpon_id != '' AND UPPER(TRIM(gpon_id)) = ANY($1))
-         OR (mac IS NOT NULL AND mac != '' AND UPPER(TRIM(mac)) = ANY($1))
+         OR (mac IS NOT NULL AND mac != '' AND (
+              UPPER(TRIM(mac)) = ANY($1)
+              OR UPPER(REPLACE(REPLACE(mac, ':', ''), '-', '')) = ANY($1)
+            ))
       ORDER BY id DESC LIMIT 1
     `, [searchTerms]);
 
@@ -1891,14 +1897,31 @@ app.post('/api/expedicao-pintura/bipar', async (req, res) => {
     const unitFabricante = unitReceived.fabricante || 'NÃO INFORMADO';
 
     // 3. Check if unit is already in any pallet
-    const unitIdentifiers = [unitSerial, unitPon, unitMac].filter(Boolean);
+    const unitIdentifiers = new Set();
+    if (unitReceived.serial_number) unitIdentifiers.add(unitReceived.serial_number.trim().toUpperCase());
+    if (unitReceived.gpon_id) unitIdentifiers.add(unitReceived.gpon_id.trim().toUpperCase());
+    if (unitReceived.mac) {
+      unitIdentifiers.add(unitReceived.mac.trim().toUpperCase());
+      unitIdentifiers.add(unitReceived.mac.replace(/[^A-Za-z0-9]/g, '').toUpperCase());
+    }
+    if (cleanSerial) {
+      unitIdentifiers.add(cleanSerial);
+      if (cleanSerial.length === 12 && /^[0-9A-F]{12}$/i.test(cleanSerial)) {
+        unitIdentifiers.add(cleanSerial.match(/.{1,2}/g).join(':'));
+      }
+    }
+    const unitIdList = Array.from(unitIdentifiers).filter(Boolean);
+
     const checkItem = await pool.query(`
       SELECT * FROM pallet_pintura_itens
       WHERE (serial_number IS NOT NULL AND serial_number != '' AND UPPER(TRIM(serial_number)) = ANY($1))
          OR (gpon_id IS NOT NULL AND gpon_id != '' AND UPPER(TRIM(gpon_id)) = ANY($1))
-         OR (mac IS NOT NULL AND mac != '' AND UPPER(TRIM(mac)) = ANY($1))
+         OR (mac IS NOT NULL AND mac != '' AND (
+              UPPER(TRIM(mac)) = ANY($1)
+              OR UPPER(REPLACE(REPLACE(mac, ':', ''), '-', '')) = ANY($1)
+            ))
       LIMIT 1
-    `, [unitIdentifiers]);
+    `, [unitIdList]);
 
     if (checkItem.rows.length > 0) {
       const existing = checkItem.rows[0];
@@ -1920,10 +1943,14 @@ app.post('/api/expedicao-pintura/bipar', async (req, res) => {
     await pool.query(`
       UPDATE recebimentos
       SET status = 'Em pallet'
-      WHERE (serial_number IS NOT NULL AND serial_number != '' AND UPPER(TRIM(serial_number)) = ANY($1))
-         OR (gpon_id IS NOT NULL AND gpon_id != '' AND UPPER(TRIM(gpon_id)) = ANY($1))
-         OR (mac IS NOT NULL AND mac != '' AND UPPER(TRIM(mac)) = ANY($1))
-    `, [unitIdentifiers]);
+      WHERE id = $1
+         OR (serial_number IS NOT NULL AND serial_number != '' AND UPPER(TRIM(serial_number)) = ANY($2))
+         OR (gpon_id IS NOT NULL AND gpon_id != '' AND UPPER(TRIM(gpon_id)) = ANY($2))
+         OR (mac IS NOT NULL AND mac != '' AND (
+              UPPER(TRIM(mac)) = ANY($2)
+              OR UPPER(REPLACE(REPLACE(mac, ':', ''), '-', '')) = ANY($2)
+            ))
+    `, [unitReceived.id, unitIdList]);
 
     // 6. Update total_unidades
     await pool.query(`
@@ -2251,11 +2278,17 @@ app.post('/api/expedicao-garantia/bipar', async (req, res) => {
 
     // 2. Query recebimentos to check if unit exists
     const searchTerms = [cleanSerial, cleanPon, cleanMac].filter(Boolean);
+    if (cleanSerial && cleanSerial.length === 12 && /^[0-9A-F]{12}$/i.test(cleanSerial)) {
+      searchTerms.push(cleanSerial.match(/.{1,2}/g).join(':'));
+    }
     const recRes = await pool.query(`
       SELECT * FROM recebimentos 
       WHERE (serial_number IS NOT NULL AND serial_number != '' AND UPPER(TRIM(serial_number)) = ANY($1))
          OR (gpon_id IS NOT NULL AND gpon_id != '' AND UPPER(TRIM(gpon_id)) = ANY($1))
-         OR (mac IS NOT NULL AND mac != '' AND UPPER(TRIM(mac)) = ANY($1))
+         OR (mac IS NOT NULL AND mac != '' AND (
+              UPPER(TRIM(mac)) = ANY($1)
+              OR UPPER(REPLACE(REPLACE(mac, ':', ''), '-', '')) = ANY($1)
+            ))
       ORDER BY id DESC LIMIT 1
     `, [searchTerms]);
 
@@ -2273,16 +2306,33 @@ app.post('/api/expedicao-garantia/bipar', async (req, res) => {
     const unitMac = unitReceived.mac || cleanMac;
     const unitModelo = unitReceived.modelo || 'NÃO INFORMADO';
     const unitFabricante = unitReceived.fabricante || 'NÃO INFORMADO';
-    const unitIdentifiers = [unitSerial, unitPon, unitMac].filter(Boolean);
+
+    const unitIdentifiers = new Set();
+    if (unitReceived.serial_number) unitIdentifiers.add(unitReceived.serial_number.trim().toUpperCase());
+    if (unitReceived.gpon_id) unitIdentifiers.add(unitReceived.gpon_id.trim().toUpperCase());
+    if (unitReceived.mac) {
+      unitIdentifiers.add(unitReceived.mac.trim().toUpperCase());
+      unitIdentifiers.add(unitReceived.mac.replace(/[^A-Za-z0-9]/g, '').toUpperCase());
+    }
+    if (cleanSerial) {
+      unitIdentifiers.add(cleanSerial);
+      if (cleanSerial.length === 12 && /^[0-9A-F]{12}$/i.test(cleanSerial)) {
+        unitIdentifiers.add(cleanSerial.match(/.{1,2}/g).join(':'));
+      }
+    }
+    const unitIdList = Array.from(unitIdentifiers).filter(Boolean);
 
     // 3. MANDATORY RULE: Check if unit passed through "Retorno de Pintura"
     const retornoCheck = await pool.query(`
       SELECT * FROM retorno_pintura_itens
       WHERE (serial_number IS NOT NULL AND serial_number != '' AND UPPER(TRIM(serial_number)) = ANY($1))
          OR (gpon_id IS NOT NULL AND gpon_id != '' AND UPPER(TRIM(gpon_id)) = ANY($1))
-         OR (mac IS NOT NULL AND mac != '' AND UPPER(TRIM(mac)) = ANY($1))
+         OR (mac IS NOT NULL AND mac != '' AND (
+              UPPER(TRIM(mac)) = ANY($1)
+              OR UPPER(REPLACE(REPLACE(mac, ':', ''), '-', '')) = ANY($1)
+            ))
       LIMIT 1
-    `, [unitIdentifiers]);
+    `, [unitIdList]);
 
     const isRetornoStatus = unitReceived.status === 'Retorno de Pintura';
     const hasRetornoRecord = retornoCheck.rows.length > 0;
@@ -2312,15 +2362,26 @@ app.post('/api/expedicao-garantia/bipar', async (req, res) => {
       });
     }
 
+    if (unitReceived.status === 'Em pallet') {
+      return res.status(400).json({
+        success: false,
+        code: 'JA_EM_PALLET',
+        error: `Unidade está em um pallet de expedição normal aberto. Remova-a do pallet normal antes se for enviar como garantia.`
+      });
+    }
+
     // Check if already in this specific pallet
     const checkItemInThisPallet = await pool.query(`
       SELECT * FROM pallet_pintura_itens
       WHERE UPPER(codigo_pallet) = $1
         AND ((serial_number IS NOT NULL AND serial_number != '' AND UPPER(TRIM(serial_number)) = ANY($2))
          OR (gpon_id IS NOT NULL AND gpon_id != '' AND UPPER(TRIM(gpon_id)) = ANY($2))
-         OR (mac IS NOT NULL AND mac != '' AND UPPER(TRIM(mac)) = ANY($2)))
+         OR (mac IS NOT NULL AND mac != '' AND (
+              UPPER(TRIM(mac)) = ANY($2)
+              OR UPPER(REPLACE(REPLACE(mac, ':', ''), '-', '')) = ANY($2)
+            )))
       LIMIT 1
-    `, [codPallet, unitIdentifiers]);
+    `, [codPallet, unitIdList]);
 
     if (checkItemInThisPallet.rows.length > 0) {
       return res.status(400).json({
@@ -2341,10 +2402,14 @@ app.post('/api/expedicao-garantia/bipar', async (req, res) => {
     await pool.query(`
       UPDATE recebimentos
       SET status = 'Em Pallet (Garantia)'
-      WHERE (serial_number IS NOT NULL AND serial_number != '' AND UPPER(TRIM(serial_number)) = ANY($1))
-         OR (gpon_id IS NOT NULL AND gpon_id != '' AND UPPER(TRIM(gpon_id)) = ANY($1))
-         OR (mac IS NOT NULL AND mac != '' AND UPPER(TRIM(mac)) = ANY($1))
-    `, [unitIdentifiers]);
+      WHERE id = $1
+         OR (serial_number IS NOT NULL AND serial_number != '' AND UPPER(TRIM(serial_number)) = ANY($2))
+         OR (gpon_id IS NOT NULL AND gpon_id != '' AND UPPER(TRIM(gpon_id)) = ANY($2))
+         OR (mac IS NOT NULL AND mac != '' AND (
+              UPPER(TRIM(mac)) = ANY($2)
+              OR UPPER(REPLACE(REPLACE(mac, ':', ''), '-', '')) = ANY($2)
+            ))
+    `, [unitReceived.id, unitIdList]);
 
     // 7. Update total_unidades
     await pool.query(`
