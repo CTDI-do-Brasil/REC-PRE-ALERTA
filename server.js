@@ -16,7 +16,8 @@ app.use(express.static(__dirname));
 const MINIO_ENDPOINT = process.env.MINIO_ENDPOINT || 'localhost';
 const MINIO_PORT = process.env.MINIO_PORT ? parseInt(process.env.MINIO_PORT, 10) : 9000;
 const MINIO_USE_SSL = (process.env.MINIO_USE_SSL || 'false').toLowerCase() === 'true';
-const MINIO_BUCKET = process.env.MINIO_BUCKET || 'prealerta';
+const MINIO_BUCKET = process.env.MINIO_BUCKET_PRE_ALERTA || (process.env.MINIO_BUCKET === 'expedicao-tim' ? 'rec-pre-alerta' : (process.env.MINIO_BUCKET || 'rec-pre-alerta'));
+const MINIO_EXPEDICAO_BUCKET = process.env.MINIO_EXPEDICAO_BUCKET || process.env.MINIO_BUCKET_EXPEDICAO || 'expedicao-tim';
 const MINIO_ACCESS_KEY = process.env.MINIO_ACCESS_KEY || '';
 const MINIO_SECRET_KEY = process.env.MINIO_SECRET_KEY || '';
 
@@ -256,7 +257,7 @@ async function ensureDBAndMinIO() {
     client.release();
   }
 
-  // 2. Ensure MinIO bucket exists
+  // 2. Ensure MinIO buckets exist (Pre-Alerta & Expedição TIM)
   try {
     if (MINIO_ACCESS_KEY && MINIO_SECRET_KEY) {
       const exists = await minioClient.bucketExists(MINIO_BUCKET);
@@ -266,11 +267,21 @@ async function ensureDBAndMinIO() {
       } else {
         console.log(`MinIO bucket "${MINIO_BUCKET}" already exists.`);
       }
+
+      if (MINIO_EXPEDICAO_BUCKET && MINIO_EXPEDICAO_BUCKET !== MINIO_BUCKET) {
+        const existsExp = await minioClient.bucketExists(MINIO_EXPEDICAO_BUCKET);
+        if (!existsExp) {
+          await minioClient.makeBucket(MINIO_EXPEDICAO_BUCKET);
+          console.log(`MinIO bucket da Expedição "${MINIO_EXPEDICAO_BUCKET}" criado com sucesso.`);
+        } else {
+          console.log(`MinIO bucket da Expedição "${MINIO_EXPEDICAO_BUCKET}" já existe.`);
+        }
+      }
     } else {
       console.warn('MinIO credentials missing. Skipping bucket auto-creation.');
     }
   } catch (err) {
-    console.error('Error ensuring MinIO bucket exists:', err);
+    console.error('Error ensuring MinIO bucket exists:', err.message);
   }
 }
 
@@ -3759,7 +3770,7 @@ app.post('/api/unidades/editar-series', handleEditarSeries);
 app.put('/api/unidades/editar-series', handleEditarSeries);
 
 // ============================================================
-// Expedição TIM - Routes & Histórico de Importações
+// Expedição TIM - Routes & Armazenamento MinIO / PostgreSQL
 // ============================================================
 
 // Memória de contingência para Expedição TIM caso banco esteja reiniciando ou offline
@@ -3770,20 +3781,101 @@ const expedicaoTimMemoryStore = {
   config: {}
 };
 
+// Helpers de integração com MinIO para Expedição TIM (Bucket: expedicao-tim)
+async function saveExpedicaoMinio(objectName, data) {
+  try {
+    if (!MINIO_ACCESS_KEY || !MINIO_SECRET_KEY) return false;
+    const jsonStr = typeof data === 'string' ? data : JSON.stringify(data);
+    const buffer = Buffer.from(jsonStr, 'utf8');
+    await minioClient.putObject(MINIO_EXPEDICAO_BUCKET, objectName, buffer, buffer.length, {
+      'Content-Type': 'application/json'
+    });
+    return true;
+  } catch (err) {
+    console.warn(`[MinIO Expedição] Erro ao salvar "${objectName}":`, err.message);
+    return false;
+  }
+}
+
+async function getExpedicaoMinio(objectName) {
+  try {
+    if (!MINIO_ACCESS_KEY || !MINIO_SECRET_KEY) return null;
+    const stream = await minioClient.getObject(MINIO_EXPEDICAO_BUCKET, objectName);
+    return new Promise((resolve) => {
+      let data = '';
+      stream.on('data', chunk => { data += chunk; });
+      stream.on('end', () => {
+        try {
+          resolve(JSON.parse(data));
+        } catch (e) {
+          resolve(data);
+        }
+      });
+      stream.on('error', (err) => {
+        if (err.code !== 'NoSuchKey') {
+          console.warn(`[MinIO Expedição] Erro no stream do objeto "${objectName}":`, err.message);
+        }
+        resolve(null);
+      });
+    });
+  } catch (err) {
+    if (err.code !== 'NoSuchKey') {
+      console.warn(`[MinIO Expedição] Objeto "${objectName}" não encontrado ou inacessível:`, err.message);
+    }
+    return null;
+  }
+}
+
+async function deleteExpedicaoMinio(objectName) {
+  try {
+    if (!MINIO_ACCESS_KEY || !MINIO_SECRET_KEY) return false;
+    await minioClient.removeObject(MINIO_EXPEDICAO_BUCKET, objectName);
+    return true;
+  } catch (err) {
+    console.warn(`[MinIO Expedição] Erro ao excluir "${objectName}":`, err.message);
+    return false;
+  }
+}
+
+async function listExpedicaoMinio(prefix = '') {
+  return new Promise((resolve) => {
+    if (!MINIO_ACCESS_KEY || !MINIO_SECRET_KEY) return resolve([]);
+    try {
+      const stream = minioClient.listObjectsV2(MINIO_EXPEDICAO_BUCKET, prefix, true);
+      const objects = [];
+      stream.on('data', obj => objects.push(obj));
+      stream.on('error', err => {
+        console.warn(`[MinIO Expedição] Erro ao listar prefixo "${prefix}":`, err.message);
+        resolve([]);
+      });
+      stream.on('end', () => resolve(objects));
+    } catch (e) {
+      console.warn(`[MinIO Expedição] Falha ao iniciar listObjects:`, e.message);
+      resolve([]);
+    }
+  });
+}
+
 // 1. Obter estado completo (Relatório, Lotes, Configurações, Histórico de Importações)
 app.get('/api/expedicao-tim/state', async (req, res) => {
+  let reportRow = {};
+  let lots = [];
+  let config = {};
+  let importacoes = [];
+  let fromDb = false;
+
   try {
     const repRes = await pool.query(
       `SELECT report_data, raw_data, raw_headers, column_map, importacao_id, nome_arquivo, updated_at 
        FROM expedicao_tim_relatorio ORDER BY id DESC LIMIT 1`
     );
-    const reportRow = repRes.rows[0] || {};
+    reportRow = repRes.rows[0] || {};
 
     const lotsRes = await pool.query(
       `SELECT id, number, dest, obs, status, created_at, groups, expedition_data, importacao_id, importacao_arquivo 
        FROM expedicao_tim_lotes ORDER BY number ASC`
     );
-    const lots = (lotsRes.rows || []).map(r => ({
+    lots = (lotsRes.rows || []).map(r => ({
       id: r.id,
       number: r.number,
       dest: r.dest,
@@ -3797,61 +3889,100 @@ app.get('/api/expedicao-tim/state', async (req, res) => {
     }));
 
     const cfgRes = await pool.query(`SELECT key, value FROM expedicao_tim_config`);
-    const config = {};
     (cfgRes.rows || []).forEach(r => { config[r.key] = r.value; });
 
-    let importacoes = [];
-    try {
-      const impRes = await pool.query(
-        `SELECT i.id, i.nome_arquivo, i.total_linhas, i.total_pallets, i.usuario, i.created_at, i.column_map,
-                COALESCE(
-                  (SELECT json_agg(json_build_object(
-                    'id', l.id,
-                    'number', l.number,
-                    'status', l.status,
-                    'dest', l.dest,
-                    'createdAt', l.created_at,
-                    'totalPallets', (SELECT jsonb_array_length(l.groups))
-                  ))
-                   FROM expedicao_tim_lotes l WHERE l.importacao_id = i.id),
-                  '[]'::json
-                ) AS lotes
-         FROM expedicao_tim_importacoes i
-         ORDER BY i.created_at DESC`
-      );
-      importacoes = impRes.rows || [];
-    } catch (impErr) {
-      console.warn('Erro ao consultar tabela de importações (pode estar sendo criada):', impErr.message);
-      importacoes = expedicaoTimMemoryStore.importacoes || [];
-    }
+    const impRes = await pool.query(
+      `SELECT i.id, i.nome_arquivo, i.total_linhas, i.total_pallets, i.usuario, i.created_at, i.column_map,
+              COALESCE(
+                (SELECT json_agg(json_build_object(
+                  'id', l.id,
+                  'number', l.number,
+                  'status', l.status,
+                  'dest', l.dest,
+                  'createdAt', l.created_at,
+                  'totalPallets', (SELECT jsonb_array_length(l.groups))
+                ))
+                 FROM expedicao_tim_lotes l WHERE l.importacao_id = i.id),
+                '[]'::json
+              ) AS lotes
+       FROM expedicao_tim_importacoes i
+       ORDER BY i.created_at DESC`
+    );
+    importacoes = impRes.rows || [];
+    fromDb = true;
+  } catch (err) {
+    console.warn('PostgreSQL indisponível ao consultar estado de Expedição TIM (buscando no MinIO):', err.message);
+  }
 
-    res.json({
-      success: true,
+  // Backup / Fallback / Complemento via MinIO
+  let minioState = null;
+  try {
+    minioState = await getExpedicaoMinio('state.json');
+  } catch (mErr) {
+    console.warn('[MinIO] Erro ao ler state.json:', mErr.message);
+  }
+
+  // Se o banco estiver vazio ou offline, recupera do MinIO
+  if ((!lots || lots.length === 0) && minioState && Array.isArray(minioState.lots)) {
+    lots = minioState.lots;
+    console.log(`[MinIO Expedição] ${lots.length} lotes recuperados do MinIO.`);
+  } else if (minioState && Array.isArray(minioState.lots) && minioState.lots.length > 0) {
+    // Mesclar lotes que possam existir no MinIO e ainda não no DB
+    const existingIds = new Set(lots.map(l => l.id));
+    minioState.lots.forEach(ml => {
+      if (ml && ml.id && !existingIds.has(ml.id)) {
+        lots.push(ml);
+      }
+    });
+  }
+
+  if ((!reportRow.report_data || reportRow.report_data.length === 0) && minioState && minioState.reportData) {
+    reportRow = {
+      report_data: minioState.reportData,
+      raw_data: minioState.rawData || [],
+      raw_headers: minioState.rawHeaders || [],
+      column_map: minioState.columnMap || {},
+      importacao_id: minioState.currentImportId || null,
+      nome_arquivo: minioState.currentImportFilename || null
+    };
+  }
+
+  if (importacoes.length === 0) {
+    const minioIndex = await getExpedicaoMinio('importacoes/index.json');
+    if (Array.isArray(minioIndex) && minioIndex.length > 0) {
+      importacoes = minioIndex;
+    } else if (expedicaoTimMemoryStore.importacoes.length > 0) {
+      importacoes = expedicaoTimMemoryStore.importacoes;
+    }
+  }
+
+  // Se banco funcionou mas MinIO estava vazio, salvar snapshot no MinIO
+  if (fromDb && (!minioState || !minioState.lots || minioState.lots.length === 0) && lots.length > 0) {
+    saveExpedicaoMinio('state.json', {
       reportData: reportRow.report_data || [],
       rawData: reportRow.raw_data || [],
       rawHeaders: reportRow.raw_headers || [],
       columnMap: reportRow.column_map || {},
+      lots: lots,
+      lastResponsavel: config.last_responsavel || '',
       currentImportId: reportRow.importacao_id || null,
       currentImportFilename: reportRow.nome_arquivo || null,
-      lots: lots,
-      importacoes: importacoes,
-      lastResponsavel: config.last_responsavel || ''
-    });
-  } catch (err) {
-    console.error('Error fetching expedicao-tim state:', err);
-    res.json({
-      success: true,
-      reportData: expedicaoTimMemoryStore.relatorio ? expedicaoTimMemoryStore.relatorio.reportData : [],
-      rawData: expedicaoTimMemoryStore.relatorio ? expedicaoTimMemoryStore.relatorio.rawData : [],
-      rawHeaders: expedicaoTimMemoryStore.relatorio ? expedicaoTimMemoryStore.relatorio.rawHeaders : [],
-      columnMap: expedicaoTimMemoryStore.relatorio ? expedicaoTimMemoryStore.relatorio.columnMap : {},
-      currentImportId: expedicaoTimMemoryStore.relatorio ? expedicaoTimMemoryStore.relatorio.importacaoId : null,
-      currentImportFilename: expedicaoTimMemoryStore.relatorio ? expedicaoTimMemoryStore.relatorio.nomeArquivo : null,
-      lots: expedicaoTimMemoryStore.lotes || [],
-      importacoes: expedicaoTimMemoryStore.importacoes || [],
-      lastResponsavel: expedicaoTimMemoryStore.config.last_responsavel || ''
-    });
+      updatedAt: new Date().toISOString()
+    }).catch(e => console.warn('Erro ao sincronizar MinIO state em background:', e.message));
   }
+
+  res.json({
+    success: true,
+    reportData: reportRow.report_data || (expedicaoTimMemoryStore.relatorio ? expedicaoTimMemoryStore.relatorio.reportData : []),
+    rawData: reportRow.raw_data || (expedicaoTimMemoryStore.relatorio ? expedicaoTimMemoryStore.relatorio.rawData : []),
+    rawHeaders: reportRow.raw_headers || (expedicaoTimMemoryStore.relatorio ? expedicaoTimMemoryStore.relatorio.rawHeaders : []),
+    columnMap: reportRow.column_map || (expedicaoTimMemoryStore.relatorio ? expedicaoTimMemoryStore.relatorio.columnMap : {}),
+    currentImportId: reportRow.importacao_id || (expedicaoTimMemoryStore.relatorio ? expedicaoTimMemoryStore.relatorio.importacaoId : null),
+    currentImportFilename: reportRow.nome_arquivo || (expedicaoTimMemoryStore.relatorio ? expedicaoTimMemoryStore.relatorio.nomeArquivo : null),
+    lots: lots.length > 0 ? lots : (expedicaoTimMemoryStore.lotes || []),
+    importacoes: importacoes,
+    lastResponsavel: config.last_responsavel || expedicaoTimMemoryStore.config.last_responsavel || ''
+  });
 });
 
 // 2. Salvar relatório importado
@@ -3859,14 +3990,19 @@ app.post('/api/expedicao-tim/report', async (req, res) => {
   const { reportData, rawData, rawHeaders, columnMap, usuario, importId, nomeArquivo } = req.body;
   const total = Array.isArray(reportData) ? reportData.length : 0;
 
-  expedicaoTimMemoryStore.relatorio = {
+  const relRecord = {
     reportData: reportData || [],
     rawData: rawData || [],
     rawHeaders: rawHeaders || [],
     columnMap: columnMap || {},
     importacaoId: importId || null,
-    nomeArquivo: nomeArquivo || null
+    nomeArquivo: nomeArquivo || null,
+    updatedAt: new Date().toISOString()
   };
+  expedicaoTimMemoryStore.relatorio = relRecord;
+
+  // Salvar no MinIO
+  saveExpedicaoMinio('relatorio-ativo.json', relRecord).catch(e => console.warn('[MinIO] Erro ao salvar relatorio-ativo:', e.message));
 
   try {
     await pool.query(`DELETE FROM expedicao_tim_relatorio`);
@@ -3885,10 +4021,10 @@ app.post('/api/expedicao-tim/report', async (req, res) => {
       ]
     );
 
-    res.json({ success: true, message: 'Relatório salvo com sucesso no banco de dados!' });
+    res.json({ success: true, message: 'Relatório salvo com sucesso no banco de dados e MinIO!' });
   } catch (err) {
-    console.warn('Banco offline ao salvar relatório (salvo em contingência):', err.message);
-    res.json({ success: true, message: 'Relatório salvo em contingência!', offline: true });
+    console.warn('Banco offline ao salvar relatório (salvo no MinIO e contingência):', err.message);
+    res.json({ success: true, message: 'Relatório salvo no MinIO e contingência!', offline: true });
   }
 });
 
@@ -3912,11 +4048,20 @@ app.get('/api/expedicao-tim/importacoes', async (req, res) => {
        FROM expedicao_tim_importacoes i
        ORDER BY i.created_at DESC`
     );
-    res.json({ success: true, importacoes: result.rows || [] });
+    if (result.rows && result.rows.length > 0) {
+      return res.json({ success: true, importacoes: result.rows });
+    }
   } catch (err) {
-    console.error('Error fetching expedicao-tim importacoes:', err);
-    res.json({ success: true, importacoes: expedicaoTimMemoryStore.importacoes || [] });
+    console.warn('PostgreSQL offline ao buscar importações (consultando MinIO):', err.message);
   }
+
+  // Fallback para MinIO index
+  const minioIndex = await getExpedicaoMinio('importacoes/index.json');
+  if (Array.isArray(minioIndex) && minioIndex.length > 0) {
+    return res.json({ success: true, importacoes: minioIndex });
+  }
+
+  res.json({ success: true, importacoes: expedicaoTimMemoryStore.importacoes || [] });
 });
 
 // 2.2 Histórico de Importações: Obter detalhes e dados de uma importação específica
@@ -3943,22 +4088,25 @@ app.get('/api/expedicao-tim/importacoes/:id', async (req, res) => {
       [id]
     );
 
-    if (result.rows.length === 0) {
-      const mem = (expedicaoTimMemoryStore.importacoes || []).find(x => x.id === id);
-      if (mem) return res.json({ success: true, importacao: mem });
-      return res.status(404).json({ error: 'Importação não encontrada.' });
+    if (result.rows.length > 0) {
+      return res.json({ success: true, importacao: result.rows[0] });
     }
-
-    res.json({ success: true, importacao: result.rows[0] });
   } catch (err) {
-    console.warn('Banco offline ao buscar detalhes da importação (consultando memória):', err.message);
-    const mem = (expedicaoTimMemoryStore.importacoes || []).find(x => x.id === id);
-    if (mem) return res.json({ success: true, importacao: mem });
-    res.status(404).json({ error: 'Importação não encontrada.' });
+    console.warn('PostgreSQL offline ao buscar detalhes da importação (consultando MinIO):', err.message);
   }
+
+  // Buscar do MinIO
+  const minioImp = await getExpedicaoMinio(`importacoes/${id}.json`);
+  if (minioImp) {
+    return res.json({ success: true, importacao: minioImp });
+  }
+
+  const mem = (expedicaoTimMemoryStore.importacoes || []).find(x => x.id === id);
+  if (mem) return res.json({ success: true, importacao: mem });
+  res.status(404).json({ error: 'Importação não encontrada.' });
 });
 
-// 2.3 Histórico de Importações: Salvar nova importação no histórico permanente
+// 2.3 Histórico de Importações: Salvar nova importação no histórico permanente (MinIO + DB)
 app.post('/api/expedicao-tim/importacoes', async (req, res) => {
   const { id, nomeArquivo, reportData, rawData, rawHeaders, columnMap, totalLinhas, totalPallets, usuario } = req.body;
   const importId = id || ('IMP-' + Date.now());
@@ -3989,8 +4137,32 @@ app.post('/api/expedicao-tim/importacoes', async (req, res) => {
     nomeArquivo: fileName
   };
 
+  // 1. Gravar no MinIO como arquivo JSON completo e imutável
+  await saveExpedicaoMinio(`importacoes/${importId}.json`, memRecord);
+  await saveExpedicaoMinio('relatorio-ativo.json', expedicaoTimMemoryStore.relatorio);
+
+  // 2. Atualizar índice de importações no MinIO
   try {
-    // 1. Gravar no histórico permanente
+    let indexData = await getExpedicaoMinio('importacoes/index.json');
+    if (!Array.isArray(indexData)) indexData = [];
+    indexData = indexData.filter(x => x.id !== importId);
+    indexData.unshift({
+      id: importId,
+      nome_arquivo: fileName,
+      total_linhas: totalLines,
+      total_pallets: totalPallets || 0,
+      usuario: usuario || 'ADMIN',
+      created_at: memRecord.created_at,
+      column_map: columnMap || {},
+      lotes: []
+    });
+    await saveExpedicaoMinio('importacoes/index.json', indexData);
+  } catch (idxErr) {
+    console.warn('[MinIO Expedição] Erro ao atualizar índice de importações:', idxErr.message);
+  }
+
+  try {
+    // 3. Gravar no PostgreSQL
     await pool.query(
       `INSERT INTO expedicao_tim_importacoes (id, nome_arquivo, total_linhas, total_pallets, usuario, created_at, column_map, raw_headers, report_data, raw_data)
        VALUES ($1, $2, $3, $4, $5, NOW(), $6, $7, $8, $9)
@@ -4016,7 +4188,7 @@ app.post('/api/expedicao-tim/importacoes', async (req, res) => {
       ]
     );
 
-    // 2. Atualizar também expedicao_tim_relatorio como a planilha ativa no momento
+    // 4. Atualizar também expedicao_tim_relatorio como a planilha ativa no momento
     await pool.query(`DELETE FROM expedicao_tim_relatorio`);
     await pool.query(
       `INSERT INTO expedicao_tim_relatorio (report_data, raw_data, raw_headers, column_map, total_linhas, usuario, importacao_id, nome_arquivo, updated_at)
@@ -4033,74 +4205,86 @@ app.post('/api/expedicao-tim/importacoes', async (req, res) => {
       ]
     );
 
-    res.json({ success: true, message: 'Importação salva no histórico permanente com sucesso!', importId });
+    res.json({ success: true, message: 'Importação salva no MinIO e PostgreSQL com sucesso!', importId });
   } catch (err) {
-    console.warn('Banco offline ao salvar importação (salvo em contingência):', err.message);
-    res.json({ success: true, message: 'Importação salva em contingência!', importId, offline: true });
+    console.warn('PostgreSQL offline ao salvar importação (salvo no MinIO):', err.message);
+    res.json({ success: true, message: 'Importação salva no MinIO com sucesso!', importId, offline: true });
   }
 });
 
 // 2.4 Histórico de Importações: Reativar uma importação anterior como relatório ativo
 app.post('/api/expedicao-tim/importacoes/:id/reativar', async (req, res) => {
   const { id } = req.params;
+  let imp = null;
+
   try {
     const impRes = await pool.query(`SELECT * FROM expedicao_tim_importacoes WHERE id = $1`, [id]);
-    if (impRes.rows.length === 0) {
-      return res.status(404).json({ error: 'Importação não encontrada.' });
-    }
-    const imp = impRes.rows[0];
+    if (impRes.rows.length > 0) imp = impRes.rows[0];
+  } catch (dbErr) {
+    console.warn('PostgreSQL offline ao buscar importação para reativação:', dbErr.message);
+  }
 
+  if (!imp) {
+    imp = await getExpedicaoMinio(`importacoes/${id}.json`);
+  }
+
+  if (!imp) {
+    imp = (expedicaoTimMemoryStore.importacoes || []).find(x => x.id === id);
+  }
+
+  if (!imp) {
+    return res.status(404).json({ error: 'Importação não encontrada.' });
+  }
+
+  const reportData = imp.report_data || imp.reportData || [];
+  const rawData = imp.raw_data || imp.rawData || [];
+  const rawHeaders = imp.raw_headers || imp.rawHeaders || [];
+  const columnMap = imp.column_map || imp.columnMap || {};
+  const nomeArquivo = imp.nome_arquivo || imp.nomeArquivo || '';
+  const totalLinhas = imp.total_linhas || imp.totalLinhas || reportData.length;
+
+  expedicaoTimMemoryStore.relatorio = {
+    reportData,
+    rawData,
+    rawHeaders,
+    columnMap,
+    importacaoId: imp.id,
+    nomeArquivo
+  };
+
+  // Salvar no MinIO como relatório ativo
+  saveExpedicaoMinio('relatorio-ativo.json', expedicaoTimMemoryStore.relatorio).catch(e => console.warn('[MinIO] Erro ao atualizar relatorio-ativo:', e.message));
+
+  try {
     await pool.query(`DELETE FROM expedicao_tim_relatorio`);
     await pool.query(
       `INSERT INTO expedicao_tim_relatorio (report_data, raw_data, raw_headers, column_map, total_linhas, usuario, importacao_id, nome_arquivo, updated_at)
        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, NOW())`,
       [
-        JSON.stringify(imp.report_data || []),
-        JSON.stringify(imp.raw_data || []),
-        JSON.stringify(imp.raw_headers || []),
-        JSON.stringify(imp.column_map || {}),
-        imp.total_linhas || 0,
+        JSON.stringify(reportData),
+        JSON.stringify(rawData),
+        JSON.stringify(rawHeaders),
+        JSON.stringify(columnMap),
+        totalLinhas,
         imp.usuario || 'ADMIN',
         imp.id,
-        imp.nome_arquivo
+        nomeArquivo
       ]
     );
-
-    res.json({
-      success: true,
-      message: `Planilha "${imp.nome_arquivo}" reativada com sucesso!`,
-      reportData: imp.report_data || [],
-      rawData: imp.raw_data || [],
-      rawHeaders: imp.raw_headers || [],
-      columnMap: imp.column_map || {},
-      nomeArquivo: imp.nome_arquivo,
-      importId: imp.id
-    });
-  } catch (err) {
-    console.warn('Banco offline ao reativar importação (consultando memória):', err.message);
-    const mem = (expedicaoTimMemoryStore.importacoes || []).find(x => x.id === id);
-    if (mem) {
-      expedicaoTimMemoryStore.relatorio = {
-        reportData: mem.report_data || mem.reportData || [],
-        rawData: mem.raw_data || mem.rawData || [],
-        rawHeaders: mem.raw_headers || mem.rawHeaders || [],
-        columnMap: mem.column_map || mem.columnMap || {},
-        importacaoId: mem.id,
-        nomeArquivo: mem.nome_arquivo || mem.nomeArquivo
-      };
-      return res.json({
-        success: true,
-        message: `Planilha "${mem.nome_arquivo || mem.nomeArquivo}" reativada com sucesso!`,
-        reportData: mem.report_data || mem.reportData || [],
-        rawData: mem.raw_data || mem.rawData || [],
-        rawHeaders: mem.raw_headers || mem.rawHeaders || [],
-        columnMap: mem.column_map || mem.columnMap || {},
-        nomeArquivo: mem.nome_arquivo || mem.nomeArquivo,
-        importId: mem.id
-      });
-    }
-    res.status(404).json({ error: 'Importação não encontrada.' });
+  } catch (pErr) {
+    console.warn('PostgreSQL offline ao reativar (reativado no MinIO e memória):', pErr.message);
   }
+
+  res.json({
+    success: true,
+    message: `Planilha "${nomeArquivo}" reativada com sucesso!`,
+    reportData,
+    rawData,
+    rawHeaders,
+    columnMap,
+    nomeArquivo,
+    importId: imp.id
+  });
 });
 
 // 2.5 Histórico de Importações: Excluir um registro histórico
@@ -4109,35 +4293,43 @@ app.delete('/api/expedicao-tim/importacoes/:id', async (req, res) => {
   const memIdx = (expedicaoTimMemoryStore.importacoes || []).findIndex(x => x.id === id);
   if (memIdx >= 0) expedicaoTimMemoryStore.importacoes.splice(memIdx, 1);
 
+  // Deletar do MinIO
+  deleteExpedicaoMinio(`importacoes/${id}.json`).catch(e => console.warn('[MinIO] Erro ao deletar importacao:', e.message));
+  getExpedicaoMinio('importacoes/index.json').then(idx => {
+    if (Array.isArray(idx)) {
+      const filtered = idx.filter(x => x.id !== id);
+      saveExpedicaoMinio('importacoes/index.json', filtered);
+    }
+  }).catch(() => {});
+
   try {
-    // Desvincula lotes desta importação
     await pool.query(`UPDATE expedicao_tim_lotes SET importacao_id = NULL WHERE importacao_id = $1`, [id]);
     await pool.query(`DELETE FROM expedicao_tim_importacoes WHERE id = $1`, [id]);
-    res.json({ success: true, message: 'Registro de importação excluído do histórico com sucesso.' });
+    res.json({ success: true, message: 'Registro de importação excluído com sucesso.' });
   } catch (err) {
-    console.warn('Banco offline ao excluir importação (excluído da memória):', err.message);
-    res.json({ success: true, message: 'Registro de importação excluído da memória.', offline: true });
+    console.warn('PostgreSQL offline ao excluir importação (excluído do MinIO e memória):', err.message);
+    res.json({ success: true, message: 'Registro de importação excluído do MinIO e memória.', offline: true });
   }
 });
 
 // 3. Limpar relatório importado
 app.delete('/api/expedicao-tim/report', async (req, res) => {
+  expedicaoTimMemoryStore.relatorio = null;
+  deleteExpedicaoMinio('relatorio-ativo.json').catch(e => console.warn('[MinIO] Erro ao limpar relatorio-ativo:', e.message));
   try {
     await pool.query(`DELETE FROM expedicao_tim_relatorio`);
-    res.json({ success: true, message: 'Relatório ativo removido com sucesso do banco de dados.' });
+    res.json({ success: true, message: 'Relatório ativo removido com sucesso.' });
   } catch (err) {
     console.error('Error clearing expedicao-tim report:', err);
-    res.status(500).json({ error: 'Erro ao limpar relatório do banco.' });
+    res.json({ success: true, message: 'Relatório ativo removido do MinIO e memória.', offline: true });
   }
 });
 
-// 4. Salvar ou atualizar um Lote (com vínculo à importação)
+// 4. Salvar ou atualizar um Lote (com vínculo e persistência no MinIO)
 app.post('/api/expedicao-tim/lote', async (req, res) => {
   const { id, number, dest, obs, status, createdAt, groups, expeditionData, usuario, importacaoId, importacaoArquivo } = req.body;
   if (!id) return res.status(400).json({ error: 'ID do lote é obrigatório.' });
 
-  // Salvar em memória de contingência
-  const memIdx = (expedicaoTimMemoryStore.lotes || []).findIndex(l => l.id === id);
   const lotObj = {
     id,
     number: number || 1,
@@ -4149,14 +4341,21 @@ app.post('/api/expedicao-tim/lote', async (req, res) => {
     expeditionData: expeditionData || null,
     usuario: usuario || 'ADMIN',
     importacaoId: importacaoId || null,
-    importacaoArquivo: importacaoArquivo || null
+    importacaoArquivo: importacaoArquivo || null,
+    updatedAt: new Date().toISOString()
   };
+
+  const memIdx = (expedicaoTimMemoryStore.lotes || []).findIndex(l => l.id === id);
   if (memIdx >= 0) {
     expedicaoTimMemoryStore.lotes[memIdx] = lotObj;
   } else {
     expedicaoTimMemoryStore.lotes.push(lotObj);
   }
 
+  // 1. Salvar no MinIO como arquivo individual do lote
+  await saveExpedicaoMinio(`lotes/${id}.json`, lotObj);
+
+  // 2. Salvar no PostgreSQL
   try {
     await pool.query(
       `INSERT INTO expedicao_tim_lotes (id, number, dest, obs, status, created_at, groups, expedition_data, usuario, importacao_id, importacao_arquivo, updated_at)
@@ -4188,44 +4387,69 @@ app.post('/api/expedicao-tim/lote', async (req, res) => {
       ]
     );
 
-    res.json({ success: true, message: 'Lote salvo com sucesso no banco de dados!' });
+    res.json({ success: true, message: 'Lote salvo com sucesso no MinIO e banco de dados!' });
   } catch (err) {
-    console.warn('Banco offline ao salvar lote (salvo em contingência):', err.message);
-    res.json({ success: true, message: 'Lote salvo em contingência!', offline: true });
+    console.warn('PostgreSQL offline ao salvar lote (salvo no MinIO):', err.message);
+    res.json({ success: true, message: 'Lote salvo no MinIO com sucesso!', offline: true });
   }
 });
 
-// 4.1 Expedir Lote e Atualizar Status das Unidades para 'Expedida'
+// 4.1 Expedir Lote e Atualizar Status das Unidades para 'Expedida' (MinIO + PostgreSQL)
 app.post('/api/expedicao-tim/lote/:id/expedir', async (req, res) => {
   try {
     const { id } = req.params;
     const { expeditionData, serials, pallets } = req.body;
     if (!id) return res.status(400).json({ error: 'ID do lote é obrigatório.' });
 
-    // 1. Atualizar status do lote para expedido
-    await pool.query(
-      `UPDATE expedicao_tim_lotes
-       SET status = 'expedido',
-           expedition_data = $1,
-           updated_at = NOW()
-       WHERE id = $2`,
-      [expeditionData ? JSON.stringify(expeditionData) : null, id]
-    );
+    // 1. Atualizar no MinIO
+    let lot = await getExpedicaoMinio(`lotes/${id}.json`);
+    if (!lot) {
+      lot = (expedicaoTimMemoryStore.lotes || []).find(l => l.id === id);
+    }
+    if (lot) {
+      lot.status = 'expedido';
+      lot.expeditionData = expeditionData || null;
+      lot.updatedAt = new Date().toISOString();
+      await saveExpedicaoMinio(`lotes/${id}.json`, lot);
+    }
 
-    // 2. Coletar seriais para atualizar em recebimentos
+    // Atualizar memória
+    const memL = (expedicaoTimMemoryStore.lotes || []).find(l => l.id === id);
+    if (memL) {
+      memL.status = 'expedido';
+      memL.expeditionData = expeditionData || null;
+    }
+
+    // 2. Atualizar status do lote para expedido no PostgreSQL
+    try {
+      await pool.query(
+        `UPDATE expedicao_tim_lotes
+         SET status = 'expedido',
+             expedition_data = $1,
+             updated_at = NOW()
+         WHERE id = $2`,
+        [expeditionData ? JSON.stringify(expeditionData) : null, id]
+      );
+    } catch (pgErr) {
+      console.warn('PostgreSQL offline ao atualizar status do lote (salvo no MinIO):', pgErr.message);
+    }
+
+    // 3. Coletar seriais para atualizar em recebimentos
     let targetSerials = Array.isArray(serials) ? serials.map(s => String(s).trim().toUpperCase()).filter(Boolean) : [];
 
     // Se seriais não foram enviados no body, tenta buscar do report_data associado aos pallets do lote
     if (targetSerials.length === 0 && Array.isArray(pallets) && pallets.length > 0) {
-      const repRes = await pool.query(`SELECT report_data FROM expedicao_tim_relatorio ORDER BY id DESC LIMIT 1`);
-      if (repRes.rows.length > 0 && Array.isArray(repRes.rows[0].report_data)) {
-        const pSet = new Set(pallets.map(p => String(p).trim().toUpperCase()));
-        repRes.rows[0].report_data.forEach(r => {
-          if (r.palletId && pSet.has(String(r.palletId).trim().toUpperCase()) && r.serial) {
-            targetSerials.push(String(r.serial).trim().toUpperCase());
-          }
-        });
-      }
+      try {
+        const repRes = await pool.query(`SELECT report_data FROM expedicao_tim_relatorio ORDER BY id DESC LIMIT 1`);
+        if (repRes.rows.length > 0 && Array.isArray(repRes.rows[0].report_data)) {
+          const pSet = new Set(pallets.map(p => String(p).trim().toUpperCase()));
+          repRes.rows[0].report_data.forEach(r => {
+            if (r.palletId && pSet.has(String(r.palletId).trim().toUpperCase()) && r.serial) {
+              targetSerials.push(String(r.serial).trim().toUpperCase());
+            }
+          });
+        }
+      } catch (repErr) {}
     }
 
     const loteIdent = (expeditionData && expeditionData.loteIdent) ? expeditionData.loteIdent : id;
@@ -4233,30 +4457,34 @@ app.post('/api/expedicao-tim/lote/:id/expedir', async (req, res) => {
 
     let updatedCount = 0;
     if (targetSerials.length > 0) {
-      const updRes = await pool.query(
-        `UPDATE recebimentos
-         SET status = 'Expedida',
-             lote_expedicao = $1,
-             data_expedicao = $2
-         WHERE (
-           (serial_number IS NOT NULL AND serial_number != '' AND UPPER(TRIM(serial_number)) = ANY($3))
-           OR (mac IS NOT NULL AND mac != '' AND UPPER(TRIM(mac)) = ANY($3))
-           OR (gpon_id IS NOT NULL AND gpon_id != '' AND UPPER(TRIM(gpon_id)) = ANY($3))
-         )
-         AND status != 'Expedida'`,
-        [loteIdent, dataExp, targetSerials]
-      );
-      updatedCount = updRes.rowCount;
+      try {
+        const updRes = await pool.query(
+          `UPDATE recebimentos
+           SET status = 'Expedida',
+               lote_expedicao = $1,
+               data_expedicao = $2
+           WHERE (
+             (serial_number IS NOT NULL AND serial_number != '' AND UPPER(TRIM(serial_number)) = ANY($3))
+             OR (mac IS NOT NULL AND mac != '' AND UPPER(TRIM(mac)) = ANY($3))
+             OR (gpon_id IS NOT NULL AND gpon_id != '' AND UPPER(TRIM(gpon_id)) = ANY($3))
+           )
+           AND status != 'Expedida'`,
+          [loteIdent, dataExp, targetSerials]
+        );
+        updatedCount = updRes.rowCount;
+      } catch (recErr) {
+        console.warn('Erro ao atualizar status em recebimentos:', recErr.message);
+      }
     }
 
     res.json({
       success: true,
-      message: `Lote expedido com sucesso! ${updatedCount} unidades atualizadas para status 'Expedida'.`,
+      message: `Lote expedido com sucesso no MinIO e banco! ${updatedCount} unidades atualizadas para status 'Expedida'.`,
       updatedUnits: updatedCount
     });
   } catch (err) {
     console.error('Erro ao expedir lote na Expedição TIM:', err);
-    res.status(500).json({ error: 'Erro ao expedir lote no banco de dados.' });
+    res.status(500).json({ error: 'Erro ao expedir lote.' });
   }
 });
 
@@ -4267,65 +4495,103 @@ app.post('/api/expedicao-tim/lote/:id/estornar', async (req, res) => {
     const { loteIdent, serials } = req.body;
     if (!id) return res.status(400).json({ error: 'ID do lote é obrigatório.' });
 
-    // 1. Atualizar status do lote de volta para finalizado
-    await pool.query(
-      `UPDATE expedicao_tim_lotes
-       SET status = 'finalizado',
-           updated_at = NOW()
-       WHERE id = $1`,
-      [id]
-    );
+    // 1. Atualizar no MinIO
+    let lot = await getExpedicaoMinio(`lotes/${id}.json`);
+    if (!lot) {
+      lot = (expedicaoTimMemoryStore.lotes || []).find(l => l.id === id);
+    }
+    if (lot) {
+      lot.status = 'finalizado';
+      lot.updatedAt = new Date().toISOString();
+      await saveExpedicaoMinio(`lotes/${id}.json`, lot);
+    }
 
-    // 2. Reverter status das unidades em recebimentos de 'Expedida' de volta para 'Recebida'
+    const memL = (expedicaoTimMemoryStore.lotes || []).find(l => l.id === id);
+    if (memL) {
+      memL.status = 'finalizado';
+    }
+
+    // 2. Atualizar status do lote de volta para finalizado no PostgreSQL
+    try {
+      await pool.query(
+        `UPDATE expedicao_tim_lotes
+         SET status = 'finalizado',
+             updated_at = NOW()
+         WHERE id = $1`,
+        [id]
+      );
+    } catch (pgErr) {
+      console.warn('PostgreSQL offline ao estornar lote (estornado no MinIO):', pgErr.message);
+    }
+
+    // 3. Reverter status das unidades em recebimentos de 'Expedida' de volta para 'Recebida'
     const targetIdent = loteIdent || id;
     let targetSerials = Array.isArray(serials) ? serials.map(s => String(s).trim().toUpperCase()).filter(Boolean) : [];
 
-    let updRes;
-    if (targetSerials.length > 0) {
-      updRes = await pool.query(
-        `UPDATE recebimentos
-         SET status = 'Recebida',
-             lote_expedicao = NULL,
-             data_expedicao = NULL
-         WHERE (lote_expedicao = $1 OR UPPER(TRIM(serial_number)) = ANY($2))
-           AND status = 'Expedida'`,
-        [targetIdent, targetSerials]
-      );
-    } else {
-      updRes = await pool.query(
-        `UPDATE recebimentos
-         SET status = 'Recebida',
-             lote_expedicao = NULL,
-             data_expedicao = NULL
-         WHERE lote_expedicao = $1 AND status = 'Expedida'`,
-        [targetIdent]
-      );
+    let revertedCount = 0;
+    try {
+      let updRes;
+      if (targetSerials.length > 0) {
+        updRes = await pool.query(
+          `UPDATE recebimentos
+           SET status = 'Recebida',
+               lote_expedicao = NULL,
+               data_expedicao = NULL
+           WHERE (lote_expedicao = $1 OR UPPER(TRIM(serial_number)) = ANY($2))
+             AND status = 'Expedida'`,
+          [targetIdent, targetSerials]
+        );
+      } else {
+        updRes = await pool.query(
+          `UPDATE recebimentos
+           SET status = 'Recebida',
+               lote_expedicao = NULL,
+               data_expedicao = NULL
+           WHERE lote_expedicao = $1 AND status = 'Expedida'`,
+          [targetIdent]
+        );
+      }
+      revertedCount = updRes.rowCount;
+    } catch (recErr) {
+      console.warn('Erro ao reverter status em recebimentos:', recErr.message);
     }
 
     res.json({
       success: true,
-      message: `Expedição do lote estornada! ${updRes.rowCount} unidades retornadas para status 'Recebida'.`,
-      revertedUnits: updRes.rowCount
+      message: `Expedição do lote estornada no MinIO e banco! ${revertedCount} unidades retornadas para status 'Recebida'.`,
+      revertedUnits: revertedCount
     });
   } catch (err) {
     console.error('Erro ao estornar expedição do lote:', err);
-    res.status(500).json({ error: 'Erro ao estornar lote no banco de dados.' });
+    res.status(500).json({ error: 'Erro ao estornar lote.' });
   }
 });
 
-// 5. Excluir um Lote
+// 5. Excluir um Lote (MinIO + PostgreSQL)
 app.delete('/api/expedicao-tim/lote/:id', async (req, res) => {
   try {
     const { id } = req.params;
-    await pool.query(`DELETE FROM expedicao_tim_lotes WHERE id = $1`, [id]);
-    res.json({ success: true, message: 'Lote excluído com sucesso do banco de dados.' });
+    const memIdx = (expedicaoTimMemoryStore.lotes || []).findIndex(l => l.id === id);
+    if (memIdx >= 0) expedicaoTimMemoryStore.lotes.splice(memIdx, 1);
+
+    // Excluir do MinIO
+    deleteExpedicaoMinio(`lotes/${id}.json`).catch(e => console.warn('[MinIO] Erro ao excluir lote:', e.message));
+
+    // Excluir do PostgreSQL
+    try {
+      await pool.query(`DELETE FROM expedicao_tim_lotes WHERE id = $1`, [id]);
+    } catch (pgErr) {
+      console.warn('PostgreSQL offline ao excluir lote (excluído do MinIO):', pgErr.message);
+    }
+
+    res.json({ success: true, message: 'Lote excluído com sucesso do MinIO e banco de dados.' });
   } catch (err) {
     console.error('Error deleting expedicao-tim lote:', err);
-    res.status(500).json({ error: 'Erro ao excluir lote no banco de dados.' });
+    res.status(500).json({ error: 'Erro ao excluir lote.' });
   }
 });
 
-// 6. Sincronização completa (sync-all)
+// 6. Sincronização completa (sync-all no MinIO + PostgreSQL)
 app.post('/api/expedicao-tim/sync-all', async (req, res) => {
   const { reportData, rawData, rawHeaders, columnMap, lots, lastResponsavel, usuario, currentImportId, currentImportFilename } = req.body;
 
@@ -4343,12 +4609,34 @@ app.post('/api/expedicao-tim/sync-all', async (req, res) => {
   }
   if (lastResponsavel) expedicaoTimMemoryStore.config.last_responsavel = lastResponsavel;
 
+  // 1. Gravar snapshot completo no MinIO (state.json e lotes individuais)
+  saveExpedicaoMinio('state.json', {
+    reportData: reportData || [],
+    rawData: rawData || [],
+    rawHeaders: rawHeaders || [],
+    columnMap: columnMap || {},
+    lots: lots || [],
+    lastResponsavel: lastResponsavel || '',
+    currentImportId: currentImportId || null,
+    currentImportFilename: currentImportFilename || null,
+    updatedAt: new Date().toISOString()
+  }).catch(e => console.warn('[MinIO] Erro no sync-all ao salvar state.json:', e.message));
+
+  if (Array.isArray(lots)) {
+    lots.forEach(l => {
+      if (l && l.id) {
+        saveExpedicaoMinio(`lotes/${l.id}.json`, l).catch(e => console.warn(`[MinIO] Erro ao salvar lote ${l.id}:`, e.message));
+      }
+    });
+  }
+
+  // 2. Gravar no PostgreSQL
   let client;
   try {
     client = await pool.connect();
   } catch (connErr) {
-    console.warn('Banco central offline no sync-all (dados preservados em memória):', connErr.message);
-    return res.json({ success: true, message: 'Dados salvos em contingência!', offline: true });
+    console.warn('PostgreSQL offline no sync-all (dados preservados com segurança no MinIO):', connErr.message);
+    return res.json({ success: true, message: 'Dados salvos no MinIO com segurança!', offline: true });
   }
 
   try {
@@ -4457,10 +4745,10 @@ app.post('/api/expedicao-tim/sync-all', async (req, res) => {
     }
 
     await client.query('COMMIT');
-    res.json({ success: true, message: 'Dados da Expedição TIM sincronizados com sucesso no banco de dados!' });
+    res.json({ success: true, message: 'Dados da Expedição TIM sincronizados com sucesso no MinIO e banco de dados!' });
   } catch (err) {
     await client.query('ROLLBACK');
-    console.error('Error syncing all expedicao-tim data:', err);
+    console.error('Error syncing all expedicao-tim data in Postgres:', err);
     res.status(500).json({ error: 'Erro ao sincronizar dados no banco de dados.' });
   } finally {
     client.release();

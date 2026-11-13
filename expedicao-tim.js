@@ -46,12 +46,15 @@ function standardizePalletId(id) {
 }
 
 // ============================================================
-// INDEXAÇÃO & CONSOLIDAÇÃO INTELIGENTE
+// INDEXAÇÃO, ARQUIVO HISTÓRICO & CONSOLIDAÇÃO INTELIGENTE
 // ============================================================
 function buildPalletIndex() {
+  if (!STATE.palletArchive) STATE.palletArchive = {};
   const index = {};
-  for (let i = 0; i < STATE.reportData.length; i++) {
-    const r = STATE.reportData[i];
+  const report = Array.isArray(STATE.reportData) ? STATE.reportData : [];
+
+  for (let i = 0; i < report.length; i++) {
+    const r = report[i];
     const rawId = String(r.palletId || '').trim();
     if (!rawId) continue;
     const stdId = standardizePalletId(rawId);
@@ -78,7 +81,50 @@ function buildPalletIndex() {
     if (rawId !== stdId && !index[rawId]) {
       index[rawId] = p;
     }
+
+    // Grava também no arquivo histórico persistente para nunca perder dados de planilhas anteriores
+    STATE.palletArchive[stdId] = {
+      palletId: stdId,
+      rawId: rawId,
+      model: [...p.models].join(', ') || '—',
+      totalUnits: p.unitCount,
+      totalBoxes: p.boxes.size,
+      dest: [...p.destinations].join(', ') || '—',
+      boxesList: [...p.boxes],
+      serials: p.serials
+    };
+    if (rawId !== stdId) {
+      STATE.palletArchive[rawId] = STATE.palletArchive[stdId];
+    }
   }
+
+  // Registra no arquivo histórico todos os pallets de grupos existentes em lotes
+  if (Array.isArray(STATE.lots)) {
+    STATE.lots.forEach(lot => {
+      if (!lot || !Array.isArray(lot.groups)) return;
+      lot.groups.forEach(g => {
+        if (!g) return;
+        if (Array.isArray(g.palletDetails)) {
+          g.palletDetails.forEach(pd => {
+            const sId = standardizePalletId(pd.palletId || pd.rawId);
+            if (sId && !STATE.palletArchive[sId]) {
+              STATE.palletArchive[sId] = {
+                palletId: sId,
+                rawId: pd.rawId || sId,
+                model: pd.model || g.model || '—',
+                totalUnits: pd.totalUnits || 0,
+                totalBoxes: pd.totalBoxes || 0,
+                dest: pd.dest || g.dest || '—',
+                boxesList: pd.boxesList || [],
+                serials: pd.serials || []
+              };
+            }
+          });
+        }
+      });
+    });
+  }
+
   STATE.palletIndex = index;
 }
 
@@ -86,42 +132,150 @@ function getPalletSummary(palletId) {
   if (!STATE.palletIndex) buildPalletIndex();
   const raw = String(palletId || '').trim();
   const std = standardizePalletId(raw);
+
+  // 1. Busca no índice da planilha ativa
   const p = STATE.palletIndex[std] || STATE.palletIndex[raw];
-  if (!p) return null;
-  return {
-    palletId: p.palletId,
-    rawId: p.rawId,
-    model: [...p.models].join(', ') || '—',
-    totalUnits: p.unitCount,
-    totalBoxes: p.boxes.size,
-    dest: [...p.destinations].join(', ') || '—',
-    boxesList: [...p.boxes],
-  };
+  if (p) {
+    return {
+      palletId: p.palletId,
+      rawId: p.rawId,
+      model: [...p.models].join(', ') || '—',
+      totalUnits: p.unitCount,
+      totalBoxes: p.boxes.size,
+      dest: [...p.destinations].join(', ') || '—',
+      boxesList: [...p.boxes],
+      serials: p.serials || []
+    };
+  }
+
+  // 2. Busca no arquivo histórico de pallets (planilhas anteriores)
+  if (STATE.palletArchive) {
+    const arch = STATE.palletArchive[std] || STATE.palletArchive[raw];
+    if (arch) {
+      return {
+        palletId: arch.palletId || std,
+        rawId: arch.rawId || raw,
+        model: arch.model || '—',
+        totalUnits: arch.totalUnits || 0,
+        totalBoxes: arch.totalBoxes || 0,
+        dest: arch.dest || '—',
+        boxesList: arch.boxesList || [],
+        serials: arch.serials || []
+      };
+    }
+  }
+
+  // 3. Busca nos snapshots dos lotes existentes
+  if (Array.isArray(STATE.lots)) {
+    for (const lot of STATE.lots) {
+      if (!lot || !Array.isArray(lot.groups)) continue;
+      for (const g of lot.groups) {
+        if (!g) continue;
+        if (Array.isArray(g.palletDetails)) {
+          const found = g.palletDetails.find(pd => standardizePalletId(pd.palletId || pd.rawId) === std);
+          if (found) {
+            return {
+              palletId: found.palletId || std,
+              rawId: found.rawId || raw,
+              model: found.model || g.model || '—',
+              totalUnits: found.totalUnits || 0,
+              totalBoxes: found.totalBoxes || 0,
+              dest: found.dest || g.dest || '—',
+              boxesList: found.boxesList || [],
+              serials: found.serials || []
+            };
+          }
+        } else if (Array.isArray(g.palletIds) && g.palletIds.some(id => standardizePalletId(id) === std)) {
+          if (g.totalUnits > 0 || g.totalBoxes > 0) {
+            return {
+              palletId: std,
+              rawId: raw,
+              model: g.model || '—',
+              totalUnits: g.palletIds.length === 1 ? g.totalUnits : Math.round(g.totalUnits / g.palletIds.length),
+              totalBoxes: g.palletIds.length === 1 ? g.totalBoxes : Math.max(1, Math.round(g.totalBoxes / g.palletIds.length)),
+              dest: g.dest || '—',
+              boxesList: [],
+              serials: []
+            };
+          }
+        }
+      }
+    }
+  }
+
+  return null;
 }
 
-function getGroupSummary(palletIds) {
+function getGroupSummary(palletIds, groupFallback) {
   if (!STATE.palletIndex) buildPalletIndex();
   const models = new Set();
   const allBoxes = new Set();
   const destinations = new Set();
   let totalUnits = 0;
+
   (palletIds || []).forEach(id => {
-    const raw = String(id || '').trim();
-    const std = standardizePalletId(raw);
-    const p = STATE.palletIndex[std] || STATE.palletIndex[raw];
+    const p = getPalletSummary(id);
     if (p) {
-      totalUnits += p.unitCount;
-      p.boxes.forEach(b => allBoxes.add(b));
-      p.models.forEach(m => models.add(m));
-      p.destinations.forEach(d => destinations.add(d));
+      totalUnits += (p.totalUnits || 0);
+      (p.boxesList || []).forEach(b => allBoxes.add(b));
+      if (p.model && p.model !== '—') {
+        p.model.split(',').forEach(m => models.add(m.trim()));
+      }
+      if (p.dest && p.dest !== '—') {
+        p.dest.split(',').forEach(d => destinations.add(d.trim()));
+      }
     }
   });
+
+  // Fallback seguro: se cálculo dinâmico deu 0 mas o grupo já tinha snapshot salvo
+  if (totalUnits === 0 && groupFallback) {
+    if (groupFallback.totalUnits > 0 || groupFallback.totalBoxes > 0) {
+      return {
+        totalUnits: groupFallback.totalUnits || 0,
+        totalBoxes: groupFallback.totalBoxes || 0,
+        model: groupFallback.model || '—',
+        dest: groupFallback.dest || '—',
+      };
+    }
+  }
+
   return {
     totalUnits,
-    totalBoxes: allBoxes.size,
-    model: [...models].join(', ') || '—',
-    dest: [...destinations].join(', ') || '—',
+    totalBoxes: allBoxes.size || (groupFallback && groupFallback.totalBoxes ? groupFallback.totalBoxes : 0),
+    model: [...models].join(', ') || (groupFallback && groupFallback.model ? groupFallback.model : '—'),
+    dest: [...destinations].join(', ') || (groupFallback && groupFallback.dest ? groupFallback.dest : '—'),
   };
+}
+
+// Consolidação imutável do lote completo
+function getLotConsolidatedSummary(lot) {
+  if (!lot || !Array.isArray(lot.groups)) {
+    return { totalUnits: 0, totalBoxes: 0, model: '—', dest: '—' };
+  }
+  const allPalletIds = lot.groups.flatMap(g => (g && Array.isArray(g.palletIds)) ? g.palletIds : []);
+  let sum = getGroupSummary(allPalletIds);
+
+  if (sum.totalUnits === 0 && lot.groups.length > 0) {
+    let u = 0, b = 0;
+    const models = new Set();
+    const dests = new Set();
+    lot.groups.forEach(g => {
+      const gSum = getGroupSummary(g.palletIds, g);
+      u += (gSum.totalUnits || g.totalUnits || 0);
+      b += (gSum.totalBoxes || g.totalBoxes || 0);
+      if (gSum.model && gSum.model !== '—') models.add(gSum.model);
+      else if (g.model && g.model !== '—') models.add(g.model);
+      if (gSum.dest && gSum.dest !== '—') dests.add(gSum.dest);
+      else if (g.dest && g.dest !== '—') dests.add(g.dest);
+    });
+    sum = {
+      totalUnits: u,
+      totalBoxes: b,
+      model: [...models].join(', ') || '—',
+      dest: [...dests].join(', ') || '—',
+    };
+  }
+  return sum;
 }
 
 // ============================================================
@@ -222,6 +376,31 @@ function sanitizeLots() {
         }
       });
       g.palletIds = cleanPalletIds;
+
+      // Preservar e auto-preencher snapshots imutáveis do grupo para nunca zerar
+      if (g.totalUnits === undefined || g.totalUnits === 0) {
+        const sum = getGroupSummary(g.palletIds, g);
+        if (sum.totalUnits > 0 || sum.totalBoxes > 0) {
+          g.totalUnits = sum.totalUnits || 0;
+          g.totalBoxes = sum.totalBoxes || 0;
+          g.model = sum.model || g.model || '—';
+          g.dest = sum.dest || g.dest || '—';
+        }
+      }
+      if (!Array.isArray(g.palletDetails) || g.palletDetails.length === 0) {
+        g.palletDetails = g.palletIds.map(id => {
+          const p = getPalletSummary(id);
+          return {
+            palletId: id,
+            rawId: id,
+            model: p ? p.model : (g.model || '—'),
+            totalUnits: p ? p.totalUnits : (g.totalUnits || 0),
+            totalBoxes: p ? p.totalBoxes : (g.totalBoxes || 0),
+            dest: p ? p.dest : (g.dest || '—'),
+            boxesList: p ? p.boxesList : []
+          };
+        });
+      }
     });
 
     lot.groups = lot.groups.filter(g => Array.isArray(g.palletIds) && g.palletIds.length > 0);
@@ -1331,6 +1510,19 @@ function processScan() {
           id: 'GRP-' + Date.now() + '-' + Math.random().toString(36).substr(2, 4),
           number: lot.groups.length + 1,
           palletIds: [palletId],
+          totalUnits: p.totalUnits || 0,
+          totalBoxes: p.totalBoxes || 0,
+          model: p.model || '—',
+          dest: p.dest || '—',
+          palletDetails: [{
+            palletId: p.palletId || palletId,
+            rawId: p.rawId || palletId,
+            model: p.model || '—',
+            totalUnits: p.totalUnits || 0,
+            totalBoxes: p.totalBoxes || 0,
+            dest: p.dest || '—',
+            boxesList: p.boxesList || []
+          }],
           createdAt: new Date().toLocaleString('pt-BR'),
         };
         lot.groups.push(group);
@@ -1419,10 +1611,28 @@ function createGroup() {
     }
   }
 
+  const groupPalletDetails = uniqueIds.map(id => {
+    const p = getPalletSummary(id);
+    return {
+      palletId: id,
+      rawId: id,
+      model: p ? p.model : '—',
+      totalUnits: p ? p.totalUnits : 0,
+      totalBoxes: p ? p.totalBoxes : 0,
+      dest: p ? p.dest : '—',
+      boxesList: p ? p.boxesList : []
+    };
+  });
+
   const group = {
     id: 'GRP-' + Date.now() + '-' + Math.random().toString(36).substr(2, 4),
     number: lot.groups.length + 1,
     palletIds: uniqueIds,
+    totalUnits: sum.totalUnits || 0,
+    totalBoxes: sum.totalBoxes || 0,
+    model: sum.model || '—',
+    dest: sum.dest || '—',
+    palletDetails: groupPalletDetails,
     createdAt: new Date().toLocaleString('pt-BR'),
   };
   lot.groups.push(group);
@@ -1708,17 +1918,17 @@ function buildRomaneioHtml(lot) {
   const modelMap = {};
 
   const rowsHtml = lot.groups.map((g, idx) => {
-    const summary = getGroupSummary(g.palletIds);
-    const units = summary.totalUnits || 0;
-    const boxes = summary.totalBoxes || 0;
+    const summary = getGroupSummary(g.palletIds, g);
+    const units = summary.totalUnits || g.totalUnits || 0;
+    const boxes = summary.totalBoxes || g.totalBoxes || 0;
     totalUnits += units;
     totalBoxes += boxes;
 
-    const stdPalletIds = g.palletIds.map(standardizePalletId);
+    const stdPalletIds = (g.palletIds || []).map(standardizePalletId);
     stdPalletIds.forEach(id => allPalletIds.push(id));
     const palletName = stdPalletIds.join('/');
 
-    const mName = summary.model && summary.model !== '—' ? summary.model : 'MODELO NÃO ESPECIFICADO';
+    const mName = (summary.model && summary.model !== '—') ? summary.model : (g.model && g.model !== '—' ? g.model : 'MODELO NÃO ESPECIFICADO');
     if (!modelMap[mName]) {
       modelMap[mName] = { pallets: 0, boxes: 0, units: 0 };
     }
@@ -1730,9 +1940,9 @@ function buildRomaneioHtml(lot) {
       <tr>
         <td style="border:1px solid #000;padding:5px 6px;text-align:center;font-size:12px;font-weight:bold;color:#000;">${pad(g.number || idx + 1)}</td>
         <td class="pallet-code-cell" style="border:1px solid #000;padding:5px 8px;text-align:center;font-size:12px;font-family:monospace,Arial,sans-serif;font-weight:bold;color:#000;word-break:break-all;">${palletName}</td>
-        <td style="border:1px solid #000;padding:5px 8px;text-align:center;font-size:11.5px;color:#000;">${summary.model || '—'}</td>
+        <td style="border:1px solid #000;padding:5px 8px;text-align:center;font-size:11.5px;color:#000;">${mName}</td>
         <td style="border:1px solid #000;padding:5px 6px;text-align:center;font-size:12px;font-weight:bold;color:#92400e;">${boxes} cx</td>
-        <td style="border:1px solid #000;padding:5px 8px;text-align:center;font-size:12px;font-weight:bold;color:#000;">${units > 0 ? units : '#N/D'}</td>
+        <td style="border:1px solid #000;padding:5px 8px;text-align:center;font-size:12px;font-weight:bold;color:#000;">${units > 0 ? units : (g.totalUnits > 0 ? g.totalUnits : '#N/D')}</td>
       </tr>
     `;
   }).join('');
@@ -1939,17 +2149,17 @@ function exportRomaneioXLSX(lotId) {
   const modelMap = {};
 
   lot.groups.forEach((g, idx) => {
-    const summary = getGroupSummary(g.palletIds);
-    const units = summary.totalUnits || 0;
-    const boxes = summary.totalBoxes || 0;
+    const summary = getGroupSummary(g.palletIds, g);
+    const units = summary.totalUnits || g.totalUnits || 0;
+    const boxes = summary.totalBoxes || g.totalBoxes || 0;
     totalUnits += units;
     totalBoxes += boxes;
 
-    const stdPalletIds = g.palletIds.map(standardizePalletId);
+    const stdPalletIds = (g.palletIds || []).map(standardizePalletId);
     const palletName = stdPalletIds.join('/');
-    aoa.push([pad(g.number || idx + 1), palletName, summary.model, boxes, units]);
+    const mName = (summary.model && summary.model !== '—') ? summary.model : (g.model && g.model !== '—' ? g.model : 'MODELO NÃO ESPECIFICADO');
+    aoa.push([pad(g.number || idx + 1), palletName, mName, boxes, units]);
 
-    const mName = summary.model && summary.model !== '—' ? summary.model : 'MODELO NÃO ESPECIFICADO';
     if (!modelMap[mName]) {
       modelMap[mName] = { pallets: 0, boxes: 0, units: 0 };
     }
@@ -2018,7 +2228,7 @@ function renderLotDetail() {
   }
 
   const allPalletIds = lot.groups.flatMap(g => g.palletIds);
-  const lotSummary = getGroupSummary(allPalletIds);
+  const lotSummary = getLotConsolidatedSummary(lot);
 
   let statusLabel = '🟡 Em Aberto';
   let statusColor = '#fcd34d';
@@ -2058,7 +2268,7 @@ function renderLotDetail() {
     }
 
     container.innerHTML = lot.groups.map(group => {
-      const grpSummary = getGroupSummary(group.palletIds);
+      const grpSummary = getGroupSummary(group.palletIds, group);
 
       return `
         <div class="card mb-4">
@@ -2095,14 +2305,20 @@ function renderLotDetail() {
                 <tbody>
                   ${group.palletIds.map(id => {
                     const p = getPalletSummary(id);
+                    const pDetail = Array.isArray(group.palletDetails) ? group.palletDetails.find(pd => standardizePalletId(pd.palletId || pd.rawId) === standardizePalletId(id)) : null;
+                    const pModel = p ? p.model : (pDetail ? pDetail.model : (group.model || '—'));
+                    const pUnits = p ? p.totalUnits : (pDetail ? pDetail.totalUnits : (group.totalUnits || '—'));
+                    const pBoxes = p ? p.totalBoxes : (pDetail ? pDetail.totalBoxes : (group.totalBoxes || '—'));
+                    const pDest = p ? p.dest : (pDetail ? pDetail.dest : (group.dest || '—'));
+                    const isFound = p || (pUnits !== '—' && pUnits > 0);
                     return `
                     <tr>
                       <td><span class="badge badge-blue font-mono">${id}</span></td>
-                      <td>${p ? p.model : '<span class="text-muted">—</span>'}</td>
-                      <td>${p ? `<strong style="color:#6ee7b7">${p.totalUnits}</strong>` : '<span class="text-muted">—</span>'}</td>
-                      <td>${p ? `<strong style="color:#fcd34d">${p.totalBoxes}</strong>` : '<span class="text-muted">—</span>'}</td>
-                      <td>${p ? p.dest : '<span class="text-muted">—</span>'}</td>
-                      <td>${p ? '<span class="badge badge-green">✔ Localizado</span>' : '<span class="badge badge-red">⚠ Não encontrado</span>'}</td>
+                      <td>${pModel}</td>
+                      <td>${isFound ? `<strong style="color:#6ee7b7">${pUnits}</strong>` : '<span class="text-muted">—</span>'}</td>
+                      <td>${isFound ? `<strong style="color:#fcd34d">${pBoxes}</strong>` : '<span class="text-muted">—</span>'}</td>
+                      <td>${pDest}</td>
+                      <td>${isFound ? '<span class="badge badge-green">✔ Localizado</span>' : '<span class="badge badge-red">⚠ Não encontrado</span>'}</td>
                     </tr>`;
                   }).join('')}
                 </tbody>
@@ -2167,7 +2383,7 @@ function renderLotsList() {
 
   container.innerHTML = STATE.lots.map(lot => {
     const allPalletIds = lot.groups.flatMap(g => g.palletIds);
-    const lotSummary = getGroupSummary(allPalletIds);
+    const lotSummary = getLotConsolidatedSummary(lot);
 
     let badgeClass = 'badge-yellow';
     let badgeText = '🟡 Em Aberto';
@@ -2216,8 +2432,11 @@ function renderDashboard() {
     const finLots = lots.filter(l => l && l.status === 'finalizado').length;
     const expLots = lots.filter(l => l && l.status === 'expedido').length;
 
-    const expedidoPalletIds = lots.filter(l => l && l.status === 'expedido').flatMap(l => (l && Array.isArray(l.groups) ? l.groups : []).flatMap(g => (g && Array.isArray(g.palletIds) ? g.palletIds : [])));
-    const expSummary = getGroupSummary(expedidoPalletIds);
+    let expUnitsTotal = 0;
+    lots.filter(l => l && l.status === 'expedido').forEach(el => {
+      const elSum = getLotConsolidatedSummary(el);
+      expUnitsTotal += (elSum.totalUnits || 0);
+    });
 
     const statsGrid = document.getElementById('stats-grid');
     if (statsGrid) {
@@ -2225,7 +2444,7 @@ function renderDashboard() {
         <div class="stat-card blue"><div class="stat-card-icon">🚚</div><div class="stat-card-value">${totalLots}</div><div class="stat-card-label">Lotes Criados</div></div>
         <div class="stat-card yellow"><div class="stat-card-icon">🟡</div><div class="stat-card-value">${openLots}</div><div class="stat-card-label">Lotes em Aberto</div></div>
         <div class="stat-card blue"><div class="stat-card-icon">🔒</div><div class="stat-card-value">${finLots}</div><div class="stat-card-label">Lotes Finalizados</div></div>
-        <div class="stat-card green"><div class="stat-card-icon">🚀</div><div class="stat-card-value">${expLots}</div><div class="stat-card-label">Lotes Expedidos (${expSummary.totalUnits} peças)</div></div>`;
+        <div class="stat-card green"><div class="stat-card-icon">🚀</div><div class="stat-card-value">${expLots}</div><div class="stat-card-label">Lotes Expedidos (${expUnitsTotal} peças)</div></div>`;
     }
 
     const dashLots = document.getElementById('dash-lots');
@@ -2236,7 +2455,7 @@ function renderDashboard() {
       } else {
         dashLots.innerHTML = `<div style="padding:12px;display:flex;flex-direction:column;gap:8px;">${recent.map(lot => {
           const ids = (lot && Array.isArray(lot.groups) ? lot.groups : []).flatMap(g => (g && Array.isArray(g.palletIds) ? g.palletIds : []));
-          const sum = getGroupSummary(ids);
+          const sum = getLotConsolidatedSummary(lot);
           let badgeClass = 'badge-yellow';
           let badgeText = '🟡';
           if (lot.status === 'finalizado') {
