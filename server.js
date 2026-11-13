@@ -2935,15 +2935,21 @@ app.post('/api/retorno-pintura/bipar', async (req, res) => {
       novoStatus
     ]);
 
-    // 6. Get updated recent items and stats
-    const recentRes = await pool.query('SELECT * FROM retorno_pintura_itens ORDER BY id DESC LIMIT 50');
+    const usuarioRetorno = (usuario || 'OPERADOR').trim();
+
+    // 6. Get updated recent items and stats for this user
+    const recentRes = await pool.query(
+      'SELECT * FROM retorno_pintura_itens WHERE UPPER(TRIM(usuario)) = UPPER(TRIM($1)) ORDER BY id DESC LIMIT 50',
+      [usuarioRetorno]
+    );
     const statsRes = await pool.query(`
       SELECT 
         COUNT(*)::int as total,
         COUNT(CASE WHEN data_retorno >= CURRENT_DATE THEN 1 END)::int as total_hoje,
         COUNT(CASE WHEN data_retorno >= CURRENT_DATE AND (UPPER(status) LIKE '%SUCATA%') THEN 1 END)::int as sucata_hoje
       FROM retorno_pintura_itens
-    `);
+      WHERE UPPER(TRIM(usuario)) = UPPER(TRIM($1))
+    `, [usuarioRetorno]);
 
     res.json({
       success: true,
@@ -2964,7 +2970,15 @@ app.post('/api/retorno-pintura/bipar', async (req, res) => {
 // Get recent retorno de pintura items
 app.get('/api/retorno-pintura/recentes', async (req, res) => {
   try {
-    const result = await pool.query('SELECT * FROM retorno_pintura_itens ORDER BY id DESC LIMIT 50');
+    const { usuario } = req.query;
+    let query = 'SELECT * FROM retorno_pintura_itens';
+    const params = [];
+    if (usuario && usuario.trim()) {
+      query += ' WHERE UPPER(TRIM(usuario)) = UPPER(TRIM($1))';
+      params.push(usuario.trim());
+    }
+    query += ' ORDER BY id DESC LIMIT 50';
+    const result = await pool.query(query, params);
     res.json(result.rows);
   } catch (err) {
     console.error('Error fetching recent retorno-pintura items:', err);
@@ -2975,13 +2989,20 @@ app.get('/api/retorno-pintura/recentes', async (req, res) => {
 // Get retorno de pintura stats
 app.get('/api/retorno-pintura/stats', async (req, res) => {
   try {
-    const statsRes = await pool.query(`
+    const { usuario } = req.query;
+    let query = `
       SELECT 
         COUNT(*)::int as total,
         COUNT(CASE WHEN data_retorno >= CURRENT_DATE THEN 1 END)::int as total_hoje,
         COUNT(CASE WHEN data_retorno >= CURRENT_DATE AND (UPPER(status) LIKE '%SUCATA%') THEN 1 END)::int as sucata_hoje
       FROM retorno_pintura_itens
-    `);
+    `;
+    const params = [];
+    if (usuario && usuario.trim()) {
+      query += ' WHERE UPPER(TRIM(usuario)) = UPPER(TRIM($1))';
+      params.push(usuario.trim());
+    }
+    const statsRes = await pool.query(query, params);
     res.json(statsRes.rows[0] || { total: 0, total_hoje: 0, sucata_hoje: 0 });
   } catch (err) {
     console.error('Error fetching retorno-pintura stats:', err);

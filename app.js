@@ -150,6 +150,11 @@ function applyAccessLevel(user) {
         if (btnEditModelo) btnEditModelo.style.display = 'none';
         if (btnNovoModelo) btnNovoModelo.style.display = 'none';
     }
+
+    const activeTab = document.querySelector('.tab-content.active');
+    if (activeTab && activeTab.id === 'retorno-pintura') {
+        loadRetornoPinturaData();
+    }
 }
 
 function escapeHtml(text) {
@@ -3371,9 +3376,10 @@ function playAudioFeedback(isError = false) {
 
 async function loadRetornoPinturaData() {
     try {
+        const userParam = currentUser?.username ? `?usuario=${encodeURIComponent(currentUser.username)}` : '';
         const [statsRes, recentesRes] = await Promise.all([
-            fetch(`${SERVER_URL.replace(/\/$/, '')}/api/retorno-pintura/stats`),
-            fetch(`${SERVER_URL.replace(/\/$/, '')}/api/retorno-pintura/recentes`)
+            fetch(`${SERVER_URL.replace(/\/$/, '')}/api/retorno-pintura/stats${userParam}`),
+            fetch(`${SERVER_URL.replace(/\/$/, '')}/api/retorno-pintura/recentes${userParam}`)
         ]);
 
         if (statsRes.ok) {
