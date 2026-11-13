@@ -212,11 +212,13 @@ function getGroupSummary(palletIds, groupFallback) {
   const allBoxes = new Set();
   const destinations = new Set();
   let totalUnits = 0;
+  let sumBoxesFromP = 0;
 
   (palletIds || []).forEach(id => {
     const p = getPalletSummary(id);
     if (p) {
       totalUnits += (p.totalUnits || 0);
+      sumBoxesFromP += (p.totalBoxes || 0);
       (p.boxesList || []).forEach(b => allBoxes.add(b));
       if (p.model && p.model !== '—') {
         p.model.split(',').forEach(m => models.add(m.trim()));
@@ -239,9 +241,11 @@ function getGroupSummary(palletIds, groupFallback) {
     }
   }
 
+  const effectiveBoxes = allBoxes.size > 0 ? allBoxes.size : sumBoxesFromP;
+
   return {
     totalUnits,
-    totalBoxes: allBoxes.size || (groupFallback && groupFallback.totalBoxes ? groupFallback.totalBoxes : 0),
+    totalBoxes: effectiveBoxes || (groupFallback && groupFallback.totalBoxes ? groupFallback.totalBoxes : 0),
     model: [...models].join(', ') || (groupFallback && groupFallback.model ? groupFallback.model : '—'),
     dest: [...destinations].join(', ') || (groupFallback && groupFallback.dest ? groupFallback.dest : '—'),
   };
@@ -559,6 +563,12 @@ async function loadStateFromServer() {
 
     if (data.lastResponsavel) {
       localStorage.setItem('last_exp_responsavel', data.lastResponsavel);
+    }
+
+    if (data.palletLookup && typeof data.palletLookup === 'object') {
+      if (!STATE.palletArchive) STATE.palletArchive = {};
+      Object.assign(STATE.palletArchive, data.palletLookup);
+      hasServerData = true;
     }
 
     if (hasServerData) {
@@ -1759,10 +1769,16 @@ function openExpedirModal(lotId) {
   const defaultDataHora = `${pad(now.getDate())}/${pad(now.getMonth() + 1)}/${now.getFullYear()}  ${pad(now.getHours())}:${pad(now.getMinutes())}`;
   const yearSuffix = now.getFullYear().toString().slice(-2);
   const defaultLoteIdent = `${lot.number}_${yearSuffix}`;
-  const defaultVolume = `${pad(lot.groups.length)} / PALLETS`;
+  const numG = (lot.groups || []).length;
+  const defaultVolume = `${pad(numG)} ${numG === 1 ? 'PALLET' : 'PALLETS'}`;
 
   const exp = lot.expeditionData || {};
   const lastResp = localStorage.getItem('last_exp_responsavel') || '';
+
+  let currentVolume = exp.volume ? String(exp.volume).trim() : '';
+  if (!currentVolume || currentVolume.includes('___') || currentVolume.endsWith('/ PALLETS') || currentVolume.endsWith('/ _PALLETS')) {
+    currentVolume = defaultVolume;
+  }
 
   const respEl = document.getElementById('exp-responsavel');
   const dtEl = document.getElementById('exp-datahora');
@@ -1784,7 +1800,7 @@ function openExpedirModal(lotId) {
   if (destEl) destEl.value = exp.destino || lot.dest || '';
   if (nfEl) nfEl.value = exp.nf || '';
   if (natEl) natEl.value = exp.natureza || 'RETORNO DE CONSERTO';
-  if (volEl) volEl.value = exp.volume || defaultVolume;
+  if (volEl) volEl.value = currentVolume;
   if (identEl) identEl.value = exp.loteIdent || defaultLoteIdent;
   if (transpEl) transpEl.value = exp.transportadora || '';
   if (motEl) motEl.value = exp.motorista || '';
@@ -1910,7 +1926,12 @@ function buildRomaneioHtml(lot) {
   const yearSuffix = new Date().getFullYear().toString().slice(-2);
   const loteIdent = exp.loteIdent || `${lot.number}_${yearSuffix}`;
   const pad = n => String(n).padStart(2, '0');
-  const volumeStr = exp.volume || `___${pad(lot.groups.length)}___ / _PALLETS`;
+  const numGroups = (lot.groups || []).length;
+  const padNum = pad(numGroups);
+  let volumeStr = exp.volume ? String(exp.volume).trim() : '';
+  if (!volumeStr || volumeStr.includes('___') || volumeStr.endsWith('/ PALLETS') || volumeStr.endsWith('/ _PALLETS') || volumeStr === `${padNum} / PALLETS`) {
+    volumeStr = `${padNum} ${numGroups === 1 ? 'PALLET' : 'PALLETS'}`;
+  }
 
   let totalUnits = 0;
   let totalBoxes = 0;
@@ -1942,7 +1963,7 @@ function buildRomaneioHtml(lot) {
         <td class="pallet-code-cell" style="border:1px solid #000;padding:5px 8px;text-align:center;font-size:12px;font-family:monospace,Arial,sans-serif;font-weight:bold;color:#000;word-break:break-all;">${palletName}</td>
         <td style="border:1px solid #000;padding:5px 8px;text-align:center;font-size:11.5px;color:#000;">${mName}</td>
         <td style="border:1px solid #000;padding:5px 6px;text-align:center;font-size:12px;font-weight:bold;color:#92400e;">${boxes} cx</td>
-        <td style="border:1px solid #000;padding:5px 8px;text-align:center;font-size:12px;font-weight:bold;color:#000;">${units > 0 ? units : (g.totalUnits > 0 ? g.totalUnits : '#N/D')}</td>
+        <td style="border:1px solid #000;padding:5px 8px;text-align:center;font-size:12px;font-weight:bold;color:#000;">${units > 0 ? units : (g.totalUnits > 0 ? g.totalUnits : 0)}</td>
       </tr>
     `;
   }).join('');
@@ -2061,9 +2082,9 @@ function buildRomaneioHtml(lot) {
           <tbody>
             ${rowsHtml}
             <tr style="background:#ffffff;font-weight:bold;">
-              <td colspan="3" style="border:1.5px solid #000;padding:6px 8px;text-align:center;font-size:12px;color:#000;">TOTAL GERAL (${pad(lot.groups.length)} VOLUMES)</td>
+              <td colspan="3" style="border:1.5px solid #000;padding:6px 8px;text-align:center;font-size:12px;color:#000;">TOTAL GERAL (${pad(lot.groups.length)} ${lot.groups.length === 1 ? 'VOLUME' : 'VOLUMES'})</td>
               <td style="border:1.5px solid #000;padding:6px 6px;text-align:center;font-size:12px;color:#92400e;">${totalBoxes} cx</td>
-              <td style="border:1.5px solid #000;padding:6px 8px;text-align:center;font-size:12px;color:#000;">${totalUnits > 0 ? totalUnits : '#N/D'}</td>
+              <td style="border:1.5px solid #000;padding:6px 8px;text-align:center;font-size:12px;color:#000;">${totalUnits > 0 ? totalUnits : 0}</td>
             </tr>
           </tbody>
         </table>
@@ -2121,7 +2142,12 @@ function exportRomaneioXLSX(lotId) {
   const yearSuffix = new Date().getFullYear().toString().slice(-2);
   const loteIdent = exp.loteIdent || `${lot.number}_${yearSuffix}`;
   const pad = n => String(n).padStart(2, '0');
-  const volumeStr = exp.volume || `${pad(lot.groups.length)} / PALLETS`;
+  const numGroups = (lot.groups || []).length;
+  const padNum = pad(numGroups);
+  let volumeStr = exp.volume ? String(exp.volume).trim() : '';
+  if (!volumeStr || volumeStr.includes('___') || volumeStr.endsWith('/ PALLETS') || volumeStr.endsWith('/ _PALLETS') || volumeStr === `${padNum} / PALLETS`) {
+    volumeStr = `${padNum} ${numGroups === 1 ? 'PALLET' : 'PALLETS'}`;
+  }
 
   const aoa = [
     ['CTDI', '', '', '', ''],
