@@ -444,10 +444,12 @@ async function loadModels() {
         window.modelFieldsConfig[name] = fields;
         window.modelRulesConfig[name] = rules;
 
-        const option = document.createElement('option');
-        option.value = name;
-        option.textContent = name;
-        select.appendChild(option);
+        if (select) {
+            const option = document.createElement('option');
+            option.value = name;
+            option.textContent = name;
+            select.appendChild(option);
+        }
 
         if (reportSelect) {
             const optReport = document.createElement('option');
@@ -1166,10 +1168,12 @@ function playErrorBeep() {
 }
 
 function notifySpecialCharError(inputElement, charInfo = '') {
-    // Este aviso visual (toast), aviso sonoro (bip) e destaque são EXCLUSIVOS para o momento de Recebimento de Unidades
+    // Este aviso visual (toast), aviso sonoro (bip) e destaque são para o Recebimento de Unidades
     const activeTab = document.querySelector('.tab-content.active');
     const isRecebimentoTab = activeTab && activeTab.id === 'recebimento';
-    const isRecebimentoInput = inputElement && (inputElement.id === 'serial' || inputElement.id === 'pon' || inputElement.id === 'mac');
+    const isRecebimentoInput = inputElement && (
+        inputElement.id === 'serial' || inputElement.id === 'pon' || inputElement.id === 'mac'
+    );
 
     if (!isRecebimentoTab || !isRecebimentoInput) {
         return;
@@ -1539,7 +1543,13 @@ async function processRecebimento() {
         if (validation.duplicate) {
             const dup = validation.duplicateData;
             const dateStr = new Date(dup.data_hora).toLocaleString('pt-BR');
-            showMessage('UNIDADE JA RECEBIDA (' + dateStr + ')', 'error');
+            const isSucataUnit = validation.isSucata || String(dup.status || '').trim().toUpperCase() === 'SUCATA';
+            playErrorBeep();
+            if (isSucataUnit) {
+                showMessage('🚫 BLOQUEADO: UNIDADE RECEBIDA COMO SUCATA (' + dateStr + ') — Não pode ser recebida no Recebimento Normal!', 'error');
+            } else {
+                showMessage('UNIDADE JA RECEBIDA (' + dateStr + ')', 'error');
+            }
             document.getElementById('serial').value = '';
             if (!isException) document.getElementById('pon').value = '';
             document.getElementById('mac').value = '';
@@ -1653,7 +1663,8 @@ async function updateCounters() {
     const keys = await dbRecebidos.keys();
     for (const key of keys) {
         const item = await dbRecebidos.getItem(key);
-        if (item && item.dataHora && new Date(item.dataHora).toDateString() === todayStr) {
+        const isSucata = item && String(item.status || '').trim().toUpperCase() === 'SUCATA';
+        if (item && !isSucata && item.dataHora && new Date(item.dataHora).toDateString() === todayStr) {
             if (item.noPreAlerta) countPreAlerta++;
             else countFora++;
         }
@@ -1666,7 +1677,10 @@ async function loadRecentRecebimentos() {
     const keys = await dbRecebidos.keys();
     let all = [];
     for (const key of keys) {
-        all.push(await dbRecebidos.getItem(key));
+        const item = await dbRecebidos.getItem(key);
+        if (item && String(item.status || '').trim().toUpperCase() !== 'SUCATA') {
+            all.push(item);
+        }
     }
 
     all.sort((a, b) => new Date(b.dataHora) - new Date(a.dataHora));
@@ -1938,6 +1952,52 @@ function setupReportListeners() {
             } catch (err) {
                 console.error(err);
                 alert('Erro ao carregar dados do relatório de retorno de pintura.');
+            }
+        });
+    }
+
+    const btnExpSucata = document.getElementById('btn-export-sucata');
+    if (btnExpSucata) {
+        btnExpSucata.addEventListener('click', async () => {
+            const startVal = document.getElementById('report-date-start').value;
+            const endVal = document.getElementById('report-date-end').value;
+            const modeloVal = document.getElementById('report-modelo').value;
+
+            let url = `${SERVER_URL.replace(/\/$/, '')}/api/retorno-pintura/report?apenasSucata=true`;
+            if (startVal) url += `&start=${startVal}`;
+            if (endVal) url += `&end=${endVal}`;
+            if (modeloVal) url += `&modelo=${encodeURIComponent(modeloVal)}`;
+
+            try {
+                const res = await fetch(url);
+                if (!res.ok) throw new Error('Failed to fetch sucata report');
+                const rows = await res.json();
+
+                if (rows.length === 0) {
+                    alert("Nenhuma unidade de Sucata de Retorno encontrada para exportar nesse período.");
+                    return;
+                }
+
+                const data = rows.map((item, index) => ({
+                    ID: index + 1,
+                    Fabricante: item.fabricante || '',
+                    Modelo: item.modelo || '',
+                    "Serial Number": item.serial_number || '',
+                    "GPON ID": item.gpon_id || '',
+                    MAC: item.mac || '',
+                    "Pallet Origem": item.codigo_pallet || '',
+                    "Usuário Retorno": item.usuario || '',
+                    "Data Retorno": item.data_retorno ? new Date(item.data_retorno).toLocaleString('pt-BR') : '',
+                    Status: item.status || 'Sucata de Retorno de Pintura'
+                }));
+
+                const worksheet = XLSX.utils.json_to_sheet(data);
+                const workbook = XLSX.utils.book_new();
+                XLSX.utils.book_append_sheet(workbook, worksheet, "Sucata Retorno Pintura");
+                XLSX.writeFile(workbook, "relatorio_sucata_retorno_pintura.xlsx");
+            } catch (err) {
+                console.error(err);
+                alert('Erro ao carregar dados do relatório de sucata de retorno de pintura.');
             }
         });
     }
@@ -3320,8 +3380,10 @@ async function loadRetornoPinturaData() {
             const stats = await statsRes.json();
             const statHoje = document.getElementById('retorno-stat-hoje');
             const statTotal = document.getElementById('retorno-stat-total');
+            const statSucata = document.getElementById('retorno-stat-sucata');
             if (statHoje) statHoje.textContent = stats.total_hoje || 0;
             if (statTotal) statTotal.textContent = stats.total || 0;
+            if (statSucata) statSucata.textContent = stats.sucata_hoje || 0;
         }
 
         if (recentesRes.ok) {
@@ -3355,6 +3417,11 @@ function renderRetornoRecentes(items) {
 
     tbody.innerHTML = items.map((item, index) => {
         const dataHoraStr = item.data_retorno ? new Date(item.data_retorno).toLocaleString('pt-BR') : '---';
+        const isSucata = (item.status || '').toUpperCase().includes('SUCATA');
+        const badgeHtml = isSucata
+            ? `<span class="badge" style="background: rgba(244, 63, 94, 0.2); color: #fda4af; border: 1px solid #f43f5e; padding: 3px 8px; border-radius: 6px; font-size: 0.75rem; font-weight: 700;">SUCATA DE RETORNO</span>`
+            : `<span class="badge" style="background: rgba(16, 185, 129, 0.15); color: #34d399; border: 1px solid rgba(16, 185, 129, 0.3); padding: 3px 8px; border-radius: 6px; font-size: 0.75rem; font-weight: 600;">Retorno de Pintura</span>`;
+
         return `
             <tr style="border-bottom: 1px solid rgba(255,255,255,0.05);">
                 <td style="padding: 10px 14px; color: var(--text-secondary); font-size: 0.8rem;">${index + 1}</td>
@@ -3366,7 +3433,7 @@ function renderRetornoRecentes(items) {
                 <td style="padding: 10px 14px; color: var(--text-secondary); font-size: 0.85rem;">${dataHoraStr}</td>
                 <td style="padding: 10px 14px; color: var(--text-secondary);">${item.usuario || 'OPERADOR'}</td>
                 <td style="padding: 10px 14px; text-align: center;">
-                    <span class="badge" style="background: rgba(16, 185, 129, 0.15); color: #34d399; border: 1px solid rgba(16, 185, 129, 0.3); padding: 3px 8px; border-radius: 6px; font-size: 0.75rem; font-weight: 600;">Retorno de Pintura</span>
+                    ${badgeHtml}
                 </td>
             </tr>
         `;
@@ -3388,6 +3455,48 @@ function setupRetornoPinturaListeners() {
     const form = document.getElementById('form-retorno-pintura');
     const inputScan = document.getElementById('retorno-scan-input');
     const btnLimpar = document.getElementById('btn-retorno-limpar');
+    const checkSucata = document.getElementById('check-retorno-sucata');
+    const badgeModo = document.getElementById('badge-retorno-modo');
+    const btnBipar = document.getElementById('btn-retorno-bipar');
+    const cardBox = document.getElementById('retorno-card-box');
+
+    if (checkSucata) {
+        checkSucata.addEventListener('change', () => {
+            const isSucata = checkSucata.checked;
+            if (isSucata) {
+                if (badgeModo) {
+                    badgeModo.textContent = 'Modo: Sucata de Retorno';
+                    badgeModo.style.background = 'rgba(244, 63, 94, 0.2)';
+                    badgeModo.style.color = '#fda4af';
+                    badgeModo.style.borderColor = '#f43f5e';
+                }
+                if (btnBipar) {
+                    btnBipar.textContent = 'Registrar Sucata';
+                    btnBipar.style.background = '#e11d48';
+                    btnBipar.style.borderColor = '#e11d48';
+                }
+                if (cardBox) {
+                    cardBox.style.borderLeft = '4px solid #f43f5e';
+                }
+            } else {
+                if (badgeModo) {
+                    badgeModo.textContent = 'Modo: Retorno Normal';
+                    badgeModo.style.background = 'rgba(16, 185, 129, 0.2)';
+                    badgeModo.style.color = '#34d399';
+                    badgeModo.style.borderColor = '#10b981';
+                }
+                if (btnBipar) {
+                    btnBipar.textContent = 'Registrar Retorno';
+                    btnBipar.style.background = '#10b981';
+                    btnBipar.style.borderColor = '#10b981';
+                }
+                if (cardBox) {
+                    cardBox.style.borderLeft = '4px solid #10b981';
+                }
+            }
+            if (inputScan) inputScan.focus();
+        });
+    }
 
     if (btnLimpar && inputScan) {
         btnLimpar.addEventListener('click', () => {
@@ -3419,13 +3528,16 @@ function setupRetornoPinturaListeners() {
                 return;
             }
 
+            const isSucata = !!checkSucata?.checked;
+
             try {
                 const res = await fetch(`${SERVER_URL.replace(/\/$/, '')}/api/retorno-pintura/bipar`, {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({
                         codigo: codigo,
-                        usuario: currentUser?.username || 'OPERADOR'
+                        usuario: currentUser?.username || 'OPERADOR',
+                        isSucata: isSucata
                     })
                 });
 
@@ -3435,6 +3547,10 @@ function setupRetornoPinturaListeners() {
                     const errorMsg = data.error || 'Erro ao registrar retorno de pintura.';
                     if (data.code === 'JA_BIPADO') {
                         showRetornoStatus(`⚠️ <strong>UNIDADE JÁ BIPADA</strong>: ${errorMsg}`, true);
+                    } else if (data.code === 'NAO_ENVIADA_PINTURA') {
+                        showRetornoStatus(`🚫 <strong>NÃO ENVIADA PARA PINTURA</strong>: ${errorMsg}`, true);
+                    } else if (data.code === 'SUCATA_INVALIDA') {
+                        showRetornoStatus(`🚫 <strong>SUCATA</strong>: ${errorMsg}`, true);
                     } else if (data.code === 'UNIDADE_NAO_ENCONTRADA') {
                         showRetornoStatus(`⚠️ <strong>NÃO ENCONTRADA</strong>: ${errorMsg}`, true);
                     } else {
@@ -3449,14 +3565,20 @@ function setupRetornoPinturaListeners() {
                 }
 
                 // Sucesso
-                showRetornoStatus(`✅ Unidade <strong>${data.item.serial_number}</strong> (${data.item.modelo}) registrada com sucesso no <strong>Retorno de Pintura</strong>!`, false);
+                if (isSucata) {
+                    showRetornoStatus(`⚠️ Unidade <strong>${data.item.serial_number}</strong> (${data.item.modelo}) registrada com sucesso como <strong>SUCATA DE RETORNO DE PINTURA</strong>!`, false);
+                } else {
+                    showRetornoStatus(`✅ Unidade <strong>${data.item.serial_number}</strong> (${data.item.modelo}) registrada com sucesso no <strong>Retorno de Pintura</strong>!`, false);
+                }
 
                 // Atualiza contadores e lista
                 if (data.stats) {
                     const statHoje = document.getElementById('retorno-stat-hoje');
                     const statTotal = document.getElementById('retorno-stat-total');
+                    const statSucata = document.getElementById('retorno-stat-sucata');
                     if (statHoje) statHoje.textContent = data.stats.total_hoje || 0;
                     if (statTotal) statTotal.textContent = data.stats.total || 0;
+                    if (statSucata) statSucata.textContent = data.stats.sucata_hoje || 0;
                 }
 
                 if (data.recentItems) {
@@ -3685,7 +3807,10 @@ function renderConsultaResultado(data) {
     if (badgeStatus) {
         badgeStatus.className = 'consulta-badge';
         const st = (unit.status_atual || '').toLowerCase();
-        if (st.includes('retorno')) {
+        if (st.includes('sucata')) {
+            badgeStatus.innerHTML = '🗑️ Sucata';
+            badgeStatus.classList.add('badge-danger-custom');
+        } else if (st.includes('retorno')) {
             badgeStatus.textContent = unit.status_atual;
             badgeStatus.classList.add('badge-success-custom');
         } else if (st.includes('pallet')) {

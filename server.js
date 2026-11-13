@@ -432,12 +432,18 @@ app.get('/api/recebimentos/validate', async (req, res) => {
     let duplicateData = null;
     let isReentry = false;
     let previousReception = null;
+    let isSucata = false;
 
     if (dupResult.rows.length > 0) {
       const latestRec = dupResult.rows[0];
       const statusUpper = String(latestRec.status || '').trim().toUpperCase();
 
-      if (statusUpper === 'EXPEDIDA') {
+      if (statusUpper.includes('SUCATA')) {
+        // Unidade com status de Sucata NUNCA pode ser recebida novamente no recebimento normal
+        isDuplicate = true;
+        isSucata = true;
+        duplicateData = latestRec;
+      } else if (statusUpper === 'EXPEDIDA') {
         // A unidade foi expedida no ciclo anterior. Ela já saiu da fábrica!
         // Portanto, NÃO é duplicidade: permitimos um novo recebimento (reentrada / logística reversa).
         isDuplicate = false;
@@ -453,6 +459,7 @@ app.get('/api/recebimentos/validate', async (req, res) => {
     if (isDuplicate) {
       return res.json({ 
         duplicate: true, 
+        isSucata,
         duplicateData 
       });
     }
@@ -607,6 +614,38 @@ app.post('/api/recebimentos', async (req, res) => {
       }
     }
 
+    // Prevent duplicate or Sucata unit from being inserted again in normal or sucata receiving
+    const existingCheck = await pool.query(
+      `SELECT * FROM recebimentos 
+       WHERE (serial_number IS NOT NULL AND serial_number = $1)
+          OR (gpon_id IS NOT NULL AND gpon_id = $2)
+          OR (mac IS NOT NULL AND mac = $3)
+       ORDER BY data_hora DESC, id DESC
+       LIMIT 1`,
+      [cleanSerial || null, cleanPon || null, cleanMac || null]
+    );
+    if (existingCheck.rows.length > 0) {
+      const latestExisting = existingCheck.rows[0];
+      const existingStatusUpper = String(latestExisting.status || '').trim().toUpperCase();
+      if (existingStatusUpper.includes('SUCATA')) {
+        return res.status(400).json({
+          error: 'Esta unidade possui status de SUCATA e não pode ser recebida novamente.',
+          code: 'JA_SUCATA',
+          duplicateData: latestExisting
+        });
+      }
+      if (existingStatusUpper !== 'EXPEDIDA') {
+        return res.status(400).json({
+          error: 'Esta unidade já foi recebida no sistema.',
+          code: 'DUPLICADO',
+          duplicateData: latestExisting
+        });
+      }
+    }
+
+    const isSucataRequest = body.status && String(body.status).trim().toUpperCase() === 'SUCATA';
+    const finalStatus = isSucataRequest ? 'Sucata' : 'Recebida';
+
     const query = `INSERT INTO recebimentos(fabricante, modelo, serial_number, gpon_id, mac, usuario, data_hora, no_pre_alerta, matched_value, codigo, descricao, status, super_user)
       VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)`;
     const params = [
@@ -621,7 +660,7 @@ app.post('/api/recebimentos', async (req, res) => {
       body.matchedValue || null,
       body.codigo || null,
       body.descricao || null,
-      'Recebida',
+      finalStatus,
       superUserStatus
     ];
     await pool.query(query, params);
@@ -659,9 +698,135 @@ app.post('/api/recebimentos', async (req, res) => {
   }
 });
 
+// Convert an already-received unit to Sucata status (ADMIN ONLY)
+app.post('/api/recebimentos/converter-sucata', async (req, res) => {
+  const { id, serial, pon, mac, usuario } = req.body || {};
+  const uName = String(usuario || '').trim().toUpperCase();
+
+  if (!uName) {
+    return res.status(401).json({ ok: false, code: 'NAO_AUTENTICADO', error: 'Usuário não identificado.' });
+  }
+
+  try {
+    const userRes = await pool.query(
+      'SELECT level FROM usuarios WHERE UPPER(TRIM(username)) = $1',
+      [uName]
+    );
+    const isAdmin = (userRes.rows.length > 0 && userRes.rows[0].level === 'admin') || uName === 'RODRIGO.BARRETO';
+
+    if (!isAdmin) {
+      return res.status(403).json({
+        ok: false,
+        code: 'APENAS_ADMIN',
+        error: 'Apenas Administradores podem converter uma unidade já recebida para o status Sucata.'
+      });
+    }
+
+    const cleanS = sanitizeDataCode(String(serial || ''));
+    const cleanP = sanitizeDataCode(String(pon || ''));
+    const cleanM = sanitizeDataCode(String(mac || ''));
+
+    let targetRes;
+    if (id) {
+      targetRes = await pool.query('SELECT * FROM recebimentos WHERE id = $1', [id]);
+    }
+    if (!targetRes || targetRes.rows.length === 0) {
+      targetRes = await pool.query(
+        `SELECT * FROM recebimentos 
+         WHERE (serial_number IS NOT NULL AND serial_number = $1)
+            OR (gpon_id IS NOT NULL AND gpon_id = $2)
+            OR (mac IS NOT NULL AND mac = $3)
+         ORDER BY data_hora DESC, id DESC
+         LIMIT 1`,
+        [cleanS || null, cleanP || null, cleanM || null]
+      );
+    }
+
+    if (!targetRes || targetRes.rows.length === 0) {
+      return res.status(404).json({ ok: false, error: 'Unidade não encontrada na base de recebimentos.' });
+    }
+
+    const targetUnit = targetRes.rows[0];
+    if (String(targetUnit.status || '').trim().toUpperCase() === 'SUCATA') {
+      return res.status(400).json({ ok: false, code: 'JA_SUCATA', error: 'Esta unidade já possui o status Sucata.' });
+    }
+
+    const updateRes = await pool.query(
+      `UPDATE recebimentos
+       SET status = 'Sucata',
+           usuario = COALESCE($2, usuario),
+           data_hora = NOW()
+       WHERE id = $1
+       RETURNING *`,
+      [targetUnit.id, uName]
+    );
+
+    const updatedUnit = updateRes.rows[0];
+
+    // Se a unidade estava em algum pallet aberto, remove do pallet e recalcula total
+    const identifiers = [updatedUnit.serial_number, updatedUnit.gpon_id, updatedUnit.mac].filter(Boolean);
+    if (identifiers.length > 0) {
+      const palletItems = await pool.query(
+        `DELETE FROM pallet_pintura_itens
+         WHERE (serial_number IS NOT NULL AND serial_number != '' AND UPPER(TRIM(serial_number)) = ANY($1))
+            OR (gpon_id IS NOT NULL AND gpon_id != '' AND UPPER(TRIM(gpon_id)) = ANY($1))
+            OR (mac IS NOT NULL AND mac != '' AND UPPER(TRIM(mac)) = ANY($1))
+         RETURNING codigo_pallet`,
+        [identifiers]
+      );
+      for (const row of palletItems.rows) {
+        await pool.query(
+          `UPDATE pallets_pintura
+           SET total_unidades = (SELECT COUNT(*)::int FROM pallet_pintura_itens WHERE UPPER(codigo_pallet) = UPPER($1))
+           WHERE UPPER(codigo_pallet) = UPPER($1)`,
+          [row.codigo_pallet]
+        );
+      }
+    }
+
+    res.json({
+      ok: true,
+      converted: true,
+      unit: updatedUnit
+    });
+  } catch (err) {
+    console.error('Error converting unit to Sucata:', err);
+    res.status(500).json({ ok: false, error: 'Erro no banco de dados ao converter unidade para Sucata.' });
+  }
+});
+
+// Summary of Sucata units (stats for today + recent Sucata units)
+app.get('/api/recebimentos/sucata/summary', async (req, res) => {
+  try {
+    const statsRes = await pool.query(`
+      SELECT
+        COUNT(CASE WHEN data_hora >= CURRENT_DATE AND no_pre_alerta = true THEN 1 END)::int AS pre_alerta_hoje,
+        COUNT(CASE WHEN data_hora >= CURRENT_DATE AND no_pre_alerta = false THEN 1 END)::int AS fora_hoje,
+        COUNT(CASE WHEN data_hora >= CURRENT_DATE THEN 1 END)::int AS total_hoje,
+        COUNT(*)::int AS total_geral
+      FROM recebimentos
+      WHERE UPPER(TRIM(status)) = 'SUCATA'
+    `);
+    const recentRes = await pool.query(`
+      SELECT *
+      FROM recebimentos
+      WHERE UPPER(TRIM(status)) = 'SUCATA'
+      ORDER BY data_hora DESC, id DESC
+      LIMIT 10
+    `);
+    res.json({
+      stats: statsRes.rows[0] || { pre_alerta_hoje: 0, fora_hoje: 0, total_hoje: 0, total_geral: 0 },
+      recent: recentRes.rows
+    });
+  } catch (err) {
+    console.error('Error fetching sucata summary:', err);
+    res.status(500).json({ error: 'Failed to fetch sucata summary.' });
+  }
+});
+
 // Fetch recebimentos report data from Postgres
 app.get('/api/recebimentos/report', async (req, res) => {
-  const { start, end, noPreAlerta, modelo } = req.query;
+  const { start, end, noPreAlerta, modelo, status } = req.query;
   try {
     let query = 'SELECT * FROM recebimentos WHERE 1=1';
     const params = [];
@@ -686,6 +851,11 @@ app.get('/api/recebimentos/report', async (req, res) => {
     if (modelo) {
       query += ` AND modelo = $${paramIndex}`;
       params.push(modelo);
+      paramIndex++;
+    }
+    if (status) {
+      query += ` AND UPPER(TRIM(status)) = UPPER(TRIM($${paramIndex}))`;
+      params.push(status);
       paramIndex++;
     }
 
@@ -1890,6 +2060,13 @@ app.post('/api/expedicao-pintura/bipar', async (req, res) => {
     }
 
     const unitReceived = recRes.rows[0];
+    if (String(unitReceived.status || '').trim().toUpperCase() === 'SUCATA') {
+      return res.status(400).json({
+        success: false,
+        code: 'UNIDADE_SUCATA',
+        error: `A unidade "${unitReceived.serial_number || cleanSerial}" consta com status SUCATA e não pode ser adicionada ao pallet.`
+      });
+    }
     const unitSerial = unitReceived.serial_number || cleanSerial;
     const unitPon = unitReceived.gpon_id || cleanPon;
     const unitMac = unitReceived.mac || cleanMac;
@@ -2301,6 +2478,13 @@ app.post('/api/expedicao-garantia/bipar', async (req, res) => {
     }
 
     const unitReceived = recRes.rows[0];
+    if (String(unitReceived.status || '').trim().toUpperCase() === 'SUCATA') {
+      return res.status(400).json({
+        success: false,
+        code: 'UNIDADE_SUCATA',
+        error: `A unidade "${unitReceived.serial_number || cleanSerial}" consta com status SUCATA e não pode ser adicionada ao pallet.`
+      });
+    }
     const unitSerial = unitReceived.serial_number || cleanSerial;
     const unitPon = unitReceived.gpon_id || cleanPon;
     const unitMac = unitReceived.mac || cleanMac;
@@ -2611,10 +2795,10 @@ app.get('/api/expedicao-garantia/report', async (req, res) => {
 // Retorno de Pintura Routes
 // ============================================================
 
-// Scan/Register unit into Retorno de Pintura
+// Scan/Register unit into Retorno de Pintura (ou Sucata de Retorno)
 app.post('/api/retorno-pintura/bipar', async (req, res) => {
   try {
-    const { codigo, usuario } = req.body;
+    const { codigo, usuario, isSucata } = req.body;
     if (!codigo || !String(codigo).trim()) {
       return res.status(400).json({ error: 'Informe o Serial, GPON ID ou MAC da unidade.' });
     }
@@ -2623,6 +2807,7 @@ app.post('/api/retorno-pintura/bipar', async (req, res) => {
       return res.status(400).json({ success: false, error: 'Caracteres especiais não são permitidos no código da unidade.' });
     }
     const cleanCode = sanitizeDataCode(rawCodigo);
+    const isSucataRetorno = !!isSucata;
 
     // 1. Check if unit exists in recebimentos by Serial, GPON ID or MAC
     const recRes = await pool.query(`
@@ -2642,7 +2827,41 @@ app.post('/api/retorno-pintura/bipar', async (req, res) => {
     }
 
     const unit = recRes.rows[0];
+    const unitStatusUpper = String(unit.status || '').trim().toUpperCase();
+
+    // 1.1 Se já é Sucata, não pode bipar novamente
+    if (unitStatusUpper.includes('SUCATA')) {
+      return res.status(400).json({
+        success: false,
+        code: 'UNIDADE_SUCATA',
+        error: `Unidade "${unit.serial_number || cleanCode}" consta com status ${unit.status} e não pode ser bipada novamente.`
+      });
+    }
+
     const identifiers = [unit.serial_number, unit.gpon_id, unit.mac].filter(Boolean);
+
+    // 1.2 REGRA OBRIGATÓRIA: A unidade precisa estar como ENVIADA para a pintura!
+    // Ou seja: estar em pallet_pintura_itens OU status indicar que está/foi para pintura
+    const checkPallet = await pool.query(`
+      SELECT * FROM pallet_pintura_itens
+      WHERE (serial_number IS NOT NULL AND serial_number != '' AND UPPER(TRIM(serial_number)) = ANY($1))
+         OR (gpon_id IS NOT NULL AND gpon_id != '' AND UPPER(TRIM(gpon_id)) = ANY($1))
+         OR (mac IS NOT NULL AND mac != '' AND UPPER(TRIM(mac)) = ANY($1))
+      ORDER BY id DESC LIMIT 1
+    `, [identifiers]);
+
+    const statusPinturaValido = 
+      unitStatusUpper.includes('PALLET') ||
+      unitStatusUpper.includes('AGUARDANDO RETORNO') ||
+      checkPallet.rows.length > 0;
+
+    if (!statusPinturaValido) {
+      return res.status(400).json({
+        success: false,
+        code: 'NAO_ENVIADA_PINTURA',
+        error: `A unidade "${unit.serial_number || cleanCode}" não foi enviada para a pintura (status atual: "${unit.status || 'Recebida'}"). Para registrar retorno ou sucata de retorno, a unidade precisa ter sido adicionada a um pallet de pintura.`
+      });
+    }
 
     // 2. Check if unit was already scanned into Retorno de Pintura (Allow if returning from Garantia)
     const isReturningFromGarantia = (unit.status === 'Aguardando retorno de pintura (Garantia)' || unit.status === 'Em Pallet (Garantia)');
@@ -2661,36 +2880,38 @@ app.post('/api/retorno-pintura/bipar', async (req, res) => {
       return res.status(400).json({
         success: false,
         code: 'JA_BIPADO',
-        error: `Unidade "${unit.serial_number || cleanCode}" já foi bipada no Retorno de Pintura${dataHoraStr ? ` em ${dataHoraStr}` : ''} por ${dup.usuario || 'Operador'}.`,
+        error: `Unidade "${unit.serial_number || cleanCode}" já foi bipada no Retorno de Pintura${dataHoraStr ? ` em ${dataHoraStr}` : ''} por ${dup.usuario || 'Operador'} (Status: ${dup.status || 'Retorno de Pintura'}).`,
         item: dup
       });
     }
 
-    // 3. Update status in recebimentos to "Retorno de Pintura"
+    const novoStatus = isSucataRetorno ? 'Sucata de Retorno de Pintura' : 'Retorno de Pintura';
+
+    // 3. Update status in recebimentos
     await pool.query(`
       UPDATE recebimentos
-      SET status = 'Retorno de Pintura'
-      WHERE id = $1 
-         OR (serial_number IS NOT NULL AND serial_number != '' AND UPPER(TRIM(serial_number)) = ANY($2))
-         OR (gpon_id IS NOT NULL AND gpon_id != '' AND UPPER(TRIM(gpon_id)) = ANY($2))
-         OR (mac IS NOT NULL AND mac != '' AND UPPER(TRIM(mac)) = ANY($2))
-    `, [unit.id, identifiers]);
+      SET status = $1
+      WHERE id = $2 
+         OR (serial_number IS NOT NULL AND serial_number != '' AND UPPER(TRIM(serial_number)) = ANY($3))
+         OR (gpon_id IS NOT NULL AND gpon_id != '' AND UPPER(TRIM(gpon_id)) = ANY($3))
+         OR (mac IS NOT NULL AND mac != '' AND UPPER(TRIM(mac)) = ANY($3))
+    `, [novoStatus, unit.id, identifiers]);
 
     // 4. Update status in pallet_pintura_itens if it exists
     if (identifiers.length > 0) {
       await pool.query(`
         UPDATE pallet_pintura_itens
-        SET status = 'Retorno de Pintura'
-        WHERE (serial_number IS NOT NULL AND serial_number != '' AND UPPER(TRIM(serial_number)) = ANY($1))
-           OR (gpon_id IS NOT NULL AND gpon_id != '' AND UPPER(TRIM(gpon_id)) = ANY($1))
-           OR (mac IS NOT NULL AND mac != '' AND UPPER(TRIM(mac)) = ANY($1))
-      `, [identifiers]);
+        SET status = $1
+        WHERE (serial_number IS NOT NULL AND serial_number != '' AND UPPER(TRIM(serial_number)) = ANY($2))
+           OR (gpon_id IS NOT NULL AND gpon_id != '' AND UPPER(TRIM(gpon_id)) = ANY($2))
+           OR (mac IS NOT NULL AND mac != '' AND UPPER(TRIM(mac)) = ANY($2))
+      `, [novoStatus, identifiers]);
     }
 
     // 5. Insert into retorno_pintura_itens
     const insertRes = await pool.query(`
       INSERT INTO retorno_pintura_itens (recebimento_id, serial_number, gpon_id, mac, modelo, fabricante, data_retorno, usuario, status)
-      VALUES ($1, $2, $3, $4, $5, $6, NOW(), $7, 'Retorno de Pintura')
+      VALUES ($1, $2, $3, $4, $5, $6, NOW(), $7, $8)
       RETURNING *
     `, [
       unit.id,
@@ -2699,7 +2920,8 @@ app.post('/api/retorno-pintura/bipar', async (req, res) => {
       unit.mac || '',
       unit.modelo || 'NÃO INFORMADO',
       unit.fabricante || 'NÃO INFORMADO',
-      usuario || 'OPERADOR'
+      usuario || 'OPERADOR',
+      novoStatus
     ]);
 
     // 6. Get updated recent items and stats
@@ -2707,14 +2929,18 @@ app.post('/api/retorno-pintura/bipar', async (req, res) => {
     const statsRes = await pool.query(`
       SELECT 
         COUNT(*)::int as total,
-        COUNT(CASE WHEN data_retorno >= CURRENT_DATE THEN 1 END)::int as total_hoje
+        COUNT(CASE WHEN data_retorno >= CURRENT_DATE THEN 1 END)::int as total_hoje,
+        COUNT(CASE WHEN data_retorno >= CURRENT_DATE AND (UPPER(status) LIKE '%SUCATA%') THEN 1 END)::int as sucata_hoje
       FROM retorno_pintura_itens
     `);
 
     res.json({
       success: true,
       item: insertRes.rows[0],
-      message: `Unidade ${insertRes.rows[0].serial_number} registrada com sucesso no Retorno de Pintura!`,
+      isSucata: isSucataRetorno,
+      message: isSucataRetorno 
+        ? `Unidade ${insertRes.rows[0].serial_number} registrada com SUCATA DE RETORNO DE PINTURA!`
+        : `Unidade ${insertRes.rows[0].serial_number} registrada com sucesso no Retorno de Pintura!`,
       recentItems: recentRes.rows,
       stats: statsRes.rows[0]
     });
@@ -2741,10 +2967,11 @@ app.get('/api/retorno-pintura/stats', async (req, res) => {
     const statsRes = await pool.query(`
       SELECT 
         COUNT(*)::int as total,
-        COUNT(CASE WHEN data_retorno >= CURRENT_DATE THEN 1 END)::int as total_hoje
+        COUNT(CASE WHEN data_retorno >= CURRENT_DATE THEN 1 END)::int as total_hoje,
+        COUNT(CASE WHEN data_retorno >= CURRENT_DATE AND (UPPER(status) LIKE '%SUCATA%') THEN 1 END)::int as sucata_hoje
       FROM retorno_pintura_itens
     `);
-    res.json(statsRes.rows[0] || { total: 0, total_hoje: 0 });
+    res.json(statsRes.rows[0] || { total: 0, total_hoje: 0, sucata_hoje: 0 });
   } catch (err) {
     console.error('Error fetching retorno-pintura stats:', err);
     res.status(500).json({ error: 'Database error fetching stats.' });
@@ -2753,7 +2980,7 @@ app.get('/api/retorno-pintura/stats', async (req, res) => {
 
 // Get report data for retorno pintura
 app.get('/api/retorno-pintura/report', async (req, res) => {
-  const { start, end, modelo } = req.query;
+  const { start, end, modelo, apenasSucata } = req.query;
   try {
     let query = 'SELECT * FROM retorno_pintura_itens WHERE 1=1';
     const params = [];
@@ -2773,6 +3000,9 @@ app.get('/api/retorno-pintura/report', async (req, res) => {
       query += ` AND modelo = $${paramIndex}`;
       params.push(modelo);
       paramIndex++;
+    }
+    if (apenasSucata === 'true') {
+      query += ` AND UPPER(status) LIKE '%SUCATA%'`;
     }
 
     query += ' ORDER BY id DESC';
@@ -3122,17 +3352,20 @@ app.get('/api/consulta-unidade/:query', async (req, res) => {
     const sortedRecs = [...recRes.rows].sort((a, b) => new Date(a.data_hora || 0) - new Date(b.data_hora || 0));
     sortedRecs.forEach((r, idx) => {
       const isReentrada = sortedRecs.length > 1 && idx > 0;
+      const isSucataRec = String(r.status || '').trim().toUpperCase() === 'SUCATA';
       const senhaInfo = r.super_user === 'Sim' ? ' | Senha: Com senha' : r.super_user === 'Não' ? ' | Senha: Sem senha' : '';
       let preAlertaStatusDesc = r.no_pre_alerta ? 'No Pré-Alerta' : 'Fora do Pré-Alerta';
 
       history.push({
-        etapa: 'Recebimento',
-        titulo: isReentrada ? `Reentrada #${idx + 1} no Sistema (Logística Reversa)` : 'Unidade Recebida no Sistema',
+        etapa: isSucataRec ? 'Sucata' : 'Recebimento',
+        titulo: isSucataRec
+          ? 'Unidade Recebida / Classificada como SUCATA'
+          : (isReentrada ? `Reentrada #${idx + 1} no Sistema (Logística Reversa)` : 'Unidade Recebida no Sistema'),
         descricao: `Modelo: ${r.modelo || '---'} | Serial: ${r.serial_number || '---'} | PON: ${r.gpon_id || '---'} | MAC: ${r.mac || '---'} (${preAlertaStatusDesc}${senhaInfo})`,
         data_hora: r.data_hora,
         usuario: r.usuario || 'Não registrado',
         status: r.status || 'Recebida',
-        tipo: 'recebimento',
+        tipo: isSucataRec ? 'sucata' : 'recebimento',
         icone: 'inbox'
       });
 
@@ -3219,7 +3452,9 @@ app.get('/api/consulta-unidade/:query', async (req, res) => {
 
     // Definir Status Atual considerando o ciclo mais recente
     const latestRec = recRes.rows[0] || null;
-    if (latestRec && String(latestRec.status || '').toUpperCase() === 'EXPEDIDA') {
+    if (latestRec && String(latestRec.status || '').trim().toUpperCase() === 'SUCATA') {
+      unit.status_atual = 'Sucata';
+    } else if (latestRec && String(latestRec.status || '').toUpperCase() === 'EXPEDIDA') {
       unit.status_atual = 'Expedida' + (latestRec.lote_expedicao ? ` (${latestRec.lote_expedicao})` : '');
     } else if (retornoRes.rows.length > 0) {
       unit.status_atual = 'Retorno de Pintura';
