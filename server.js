@@ -2108,16 +2108,31 @@ app.post('/api/expedicao-pintura/bipar', async (req, res) => {
               UPPER(TRIM(mac)) = ANY($1)
               OR UPPER(REPLACE(REPLACE(mac, ':', ''), '-', '')) = ANY($1)
             ))
+      ORDER BY id DESC
       LIMIT 1
     `, [unitIdList]);
 
     if (checkItem.rows.length > 0) {
       const existing = checkItem.rows[0];
-      return res.status(400).json({
-        success: false,
-        code: 'JA_BIPADO',
-        error: `Unidade já bipada no pallet ${existing.codigo_pallet}`
-      });
+      const isRetornoPintura = unitStatusUpper === 'RETORNO DE PINTURA';
+
+      // Se já está no mesmo pallet atual, sempre bloqueia
+      if (existing.codigo_pallet && existing.codigo_pallet.trim().toUpperCase() === codPallet) {
+        return res.status(400).json({
+          success: false,
+          code: 'JA_BIPADO',
+          error: `Unidade já bipada no pallet ${existing.codigo_pallet}`
+        });
+      }
+
+      // Se a unidade não retornou da pintura (ainda está em pallet ou aguardando retorno), bloqueia
+      if (!isRetornoPintura) {
+        return res.status(400).json({
+          success: false,
+          code: 'JA_BIPADO',
+          error: `Unidade já bipada no pallet ${existing.codigo_pallet}`
+        });
+      }
     }
 
     // 4. Insert into pallet_pintura_itens
@@ -2874,8 +2889,12 @@ app.post('/api/retorno-pintura/bipar', async (req, res) => {
       });
     }
 
-    // 2. Check if unit was already scanned into Retorno de Pintura (Allow if returning from Garantia)
-    const isReturningFromGarantia = (unit.status === 'Aguardando retorno de pintura (Garantia)' || unit.status === 'Em Pallet (Garantia)');
+    // 2. Check if unit was already scanned into Retorno de Pintura (Allow if returning from a pallet / Garantia)
+    const isReturningFromPallet = 
+      unitStatusUpper === 'AGUARDANDO RETORNO DE PINTURA' || 
+      unitStatusUpper === 'EM PALLET' ||
+      unitStatusUpper === 'AGUARDANDO RETORNO DE PINTURA (GARANTIA)' || 
+      unitStatusUpper === 'EM PALLET (GARANTIA)';
 
     const checkDup = await pool.query(`
       SELECT * FROM retorno_pintura_itens
@@ -2885,7 +2904,7 @@ app.post('/api/retorno-pintura/bipar', async (req, res) => {
       ORDER BY id DESC LIMIT 1
     `, [identifiers]);
 
-    if (checkDup.rows.length > 0 && !isReturningFromGarantia) {
+    if (checkDup.rows.length > 0 && !isReturningFromPallet) {
       const dup = checkDup.rows[0];
       const dataHoraStr = dup.data_retorno ? new Date(dup.data_retorno).toLocaleString('pt-BR') : '';
       return res.status(400).json({
