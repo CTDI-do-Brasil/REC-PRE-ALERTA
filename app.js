@@ -1,4 +1,4 @@
-const CURRENT_APP_VERSION = 'v1.6.0';
+const CURRENT_APP_VERSION = 'v1.6.1';
 
 function startVersionPolling() {
     setInterval(async () => {
@@ -217,6 +217,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     setupRetornoPinturaListeners();
     setupConsultaListeners();
     setupEditarSeriesModal();
+    setupRomaneioLivreListeners();
     setupDataFieldLocks();
     startMidnightLogoutCheck();
     // Clear legacy localStorage session if present
@@ -310,6 +311,11 @@ function setupNavigation() {
                     if (target === 'expedicao-tim') {
                         if (typeof renderDashboard === 'function') {
                             renderDashboard();
+                        }
+                    }
+                    if (target === 'romaneio-livre') {
+                        if (typeof initRomaneioLivreTab === 'function') {
+                            initRomaneioLivreTab();
                         }
                     }
                 }
@@ -4343,3 +4349,861 @@ function handleEditarItemPallet(serial, gpon, mac, modelo) {
         modelo: modelo
     });
 }
+
+// ============================================================
+// ROMANEIO LIVRE - CRIAÇÃO, ADIÇÃO LIVRE DE ITENS, IMPRESSÃO E EXCEL
+// ============================================================
+let romaneioLivreState = {
+    id: null,
+    number: 1,
+    items: [], // Array de { id, palletId, model, boxes, units }
+    history: []
+};
+
+function getRomaneioLivreDefaultDateTime() {
+    const now = new Date();
+    const pad = n => String(n).padStart(2, '0');
+    return `${pad(now.getDate())}/${pad(now.getMonth() + 1)}/${now.getFullYear()}  ${pad(now.getHours())}:${pad(now.getMinutes())}`;
+}
+
+function getRomaneioLivreHeaderFromInputs() {
+    const getVal = id => {
+        const el = document.getElementById(id);
+        return el ? el.value.trim() : '';
+    };
+    const yearSuffix = new Date().getFullYear().toString().slice(-2);
+    return {
+        responsavel: getVal('roml-responsavel'),
+        dataHora: getVal('roml-datahora') || getRomaneioLivreDefaultDateTime(),
+        cliente: getVal('roml-cliente') || 'TIM',
+        destino: getVal('roml-destino'),
+        nf: getVal('roml-nf'),
+        natureza: getVal('roml-natureza') || 'RETORNO DE CONSERTO',
+        volume: getVal('roml-volume'),
+        loteIdent: getVal('roml-lote-ident') || `LIVRE_${yearSuffix}`,
+        transportadora: getVal('roml-transportadora'),
+        motorista: getVal('roml-motorista'),
+        rgCpf: getVal('roml-rgcpf'),
+        placa: getVal('roml-placa'),
+        ajudante: getVal('roml-ajudante')
+    };
+}
+
+function setRomaneioLivreHeaderInputs(data = {}) {
+    const setVal = (id, val) => {
+        const el = document.getElementById(id);
+        if (el) el.value = val !== undefined && val !== null ? val : '';
+    };
+    const yearSuffix = new Date().getFullYear().toString().slice(-2);
+    const lastResp = localStorage.getItem('last_exp_responsavel') || (currentUser ? currentUser.username : '');
+
+    setVal('roml-responsavel', data.responsavel !== undefined ? data.responsavel : lastResp);
+    setVal('roml-datahora', data.dataHora || getRomaneioLivreDefaultDateTime());
+    setVal('roml-cliente', data.cliente !== undefined ? data.cliente : 'TIM');
+    setVal('roml-destino', data.destino || '');
+    setVal('roml-nf', data.nf || '');
+    setVal('roml-natureza', data.natureza !== undefined ? data.natureza : 'RETORNO DE CONSERTO');
+    setVal('roml-volume', data.volume || '');
+    setVal('roml-lote-ident', data.loteIdent || `LIVRE_${yearSuffix}`);
+    setVal('roml-transportadora', data.transportadora || '');
+    setVal('roml-motorista', data.motorista || '');
+    setVal('roml-rgcpf', data.rgCpf || '');
+    setVal('roml-placa', data.placa || '');
+    setVal('roml-ajudante', data.ajudante || '');
+}
+
+async function populateRomaneioLivreModelosDatalist() {
+    const datalist = document.getElementById('roml-modelos-datalist');
+    if (!datalist) return;
+    try {
+        const models = [];
+        const saved = await dbModelos.getItem('lista');
+        if (Array.isArray(saved) && saved.length > 0) {
+            saved.forEach(m => {
+                const name = typeof m === 'object' ? m.name : m;
+                if (name) models.push(name);
+            });
+        }
+        if (models.length === 0) {
+            defaultModels.forEach(m => models.push(m.name));
+        }
+        models.sort();
+        datalist.innerHTML = models.map(m => `<option value="${escapeHtml(m)}"></option>`).join('');
+    } catch (e) {
+        datalist.innerHTML = defaultModels.map(m => `<option value="${escapeHtml(m.name)}"></option>`).join('');
+    }
+}
+
+function saveRomaneioLivreDraftLocal() {
+    try {
+        const draft = {
+            id: romaneioLivreState.id,
+            number: romaneioLivreState.number,
+            headerData: getRomaneioLivreHeaderFromInputs(),
+            items: romaneioLivreState.items
+        };
+        localStorage.setItem('romaneio_livre_draft', JSON.stringify(draft));
+    } catch (e) {}
+}
+
+function loadRomaneioLivreDraftLocal() {
+    try {
+        const raw = localStorage.getItem('romaneio_livre_draft');
+        if (!raw) return false;
+        const draft = JSON.parse(raw);
+        if (draft && (Array.isArray(draft.items) && draft.items.length > 0 || (draft.headerData && draft.headerData.destino))) {
+            romaneioLivreState.id = draft.id || null;
+            romaneioLivreState.number = draft.number || 1;
+            romaneioLivreState.items = Array.isArray(draft.items) ? draft.items : [];
+            setRomaneioLivreHeaderInputs(draft.headerData || {});
+            updateRomaneioLivreEditingBadge();
+            return true;
+        }
+    } catch (e) {}
+    return false;
+}
+
+function updateRomaneioLivreEditingBadge() {
+    const badge = document.getElementById('roml-badge-editing');
+    if (!badge) return;
+    if (romaneioLivreState.id) {
+        badge.textContent = `Editando Romaneio Salvo (#${romaneioLivreState.number || 1})`;
+        badge.style.background = 'rgba(59, 130, 246, 0.2)';
+        badge.style.color = '#60a5fa';
+        badge.style.borderColor = 'rgba(59, 130, 246, 0.4)';
+    } else {
+        badge.textContent = 'Novo Romaneio Livre';
+        badge.style.background = 'rgba(16, 185, 129, 0.15)';
+        badge.style.color = '#34d399';
+        badge.style.borderColor = 'rgba(16, 185, 129, 0.35)';
+    }
+}
+
+function initRomaneioLivreTab() {
+    populateRomaneioLivreModelosDatalist();
+    const dtInput = document.getElementById('roml-datahora');
+    if (dtInput && !dtInput.value.trim()) {
+        if (!loadRomaneioLivreDraftLocal()) {
+            setRomaneioLivreHeaderInputs({});
+        }
+    }
+    renderRomaneioLivreItemsTable();
+    renderRomaneioLivrePreview();
+    loadRomaneioLivreHistory();
+}
+
+function setupRomaneioLivreListeners() {
+    const headerInputIds = [
+        'roml-responsavel', 'roml-datahora', 'roml-cliente', 'roml-destino',
+        'roml-nf', 'roml-natureza', 'roml-volume', 'roml-lote-ident',
+        'roml-transportadora', 'roml-motorista', 'roml-rgcpf', 'roml-placa', 'roml-ajudante'
+    ];
+
+    headerInputIds.forEach(id => {
+        const el = document.getElementById(id);
+        if (el) {
+            el.addEventListener('input', () => {
+                saveRomaneioLivreDraftLocal();
+                renderRomaneioLivrePreview();
+            });
+        }
+    });
+
+    const formAddItem = document.getElementById('form-roml-add-item');
+    if (formAddItem) {
+        formAddItem.addEventListener('submit', (e) => {
+            e.preventDefault();
+            handleAddOrUpdateRomaneioLivreItem();
+        });
+    }
+
+    const btnCancelEdit = document.getElementById('btn-roml-cancel-edit-item');
+    if (btnCancelEdit) {
+        btnCancelEdit.addEventListener('click', () => {
+            resetRomaneioLivreItemForm();
+        });
+    }
+
+    const btnLimparItens = document.getElementById('btn-roml-limpar-itens');
+    if (btnLimparItens) {
+        btnLimparItens.addEventListener('click', () => {
+            if (romaneioLivreState.items.length === 0) return;
+            if (!confirm('Deseja remover todos os itens deste romaneio?')) return;
+            romaneioLivreState.items = [];
+            resetRomaneioLivreItemForm();
+            saveRomaneioLivreDraftLocal();
+            renderRomaneioLivreItemsTable();
+            renderRomaneioLivrePreview();
+        });
+    }
+
+    const btnNovo = document.getElementById('btn-roml-novo');
+    if (btnNovo) {
+        btnNovo.addEventListener('click', () => {
+            if (romaneioLivreState.items.length > 0 && !confirm('Deseja iniciar um novo romaneio livre em branco?')) {
+                return;
+            }
+            romaneioLivreState.id = null;
+            romaneioLivreState.number = (romaneioLivreState.history.length || 0) + 1;
+            romaneioLivreState.items = [];
+            setRomaneioLivreHeaderInputs({});
+            resetRomaneioLivreItemForm();
+            updateRomaneioLivreEditingBadge();
+            localStorage.removeItem('romaneio_livre_draft');
+            renderRomaneioLivreItemsTable();
+            renderRomaneioLivrePreview();
+            if (typeof showToast === 'function') showToast('Novo romaneio livre iniciado.', 'info');
+        });
+    }
+
+    const btnSalvar = document.getElementById('btn-roml-salvar');
+    if (btnSalvar) {
+        btnSalvar.addEventListener('click', () => {
+            salvarRomaneioLivreNoServidor();
+        });
+    }
+
+    const btnExcel = document.getElementById('btn-roml-excel');
+    if (btnExcel) {
+        btnExcel.addEventListener('click', () => {
+            exportRomaneioLivreXLSX();
+        });
+    }
+
+    const btnImprimir = document.getElementById('btn-roml-imprimir');
+    if (btnImprimir) {
+        btnImprimir.addEventListener('click', () => {
+            printRomaneioLivre();
+        });
+    }
+
+    const btnRefreshHist = document.getElementById('btn-roml-refresh-history');
+    if (btnRefreshHist) {
+        btnRefreshHist.addEventListener('click', () => {
+            loadRomaneioLivreHistory();
+        });
+    }
+}
+
+function handleAddOrUpdateRomaneioLivreItem() {
+    const palletEl = document.getElementById('roml-item-pallet');
+    const modeloEl = document.getElementById('roml-item-modelo');
+    const caixasEl = document.getElementById('roml-item-caixas');
+    const qtdEl = document.getElementById('roml-item-qtd');
+    const editIdxEl = document.getElementById('roml-edit-item-index');
+
+    const rawPallet = palletEl ? palletEl.value.trim().toUpperCase() : '';
+    const model = modeloEl ? modeloEl.value.trim().toUpperCase() : '';
+    const boxes = caixasEl && caixasEl.value !== '' ? Math.max(0, parseInt(caixasEl.value, 10) || 0) : 0;
+    const units = qtdEl && qtdEl.value !== '' ? Math.max(1, parseInt(qtdEl.value, 10) || 1) : 1;
+
+    if (!rawPallet) {
+        if (typeof showToast === 'function') showToast('Informe o Pallet / Código ou Identificação do item.', 'warning');
+        if (palletEl) palletEl.focus();
+        return;
+    }
+    if (!model) {
+        if (typeof showToast === 'function') showToast('Informe o Modelo ou Descrição do item.', 'warning');
+        if (modeloEl) modeloEl.focus();
+        return;
+    }
+
+    const editIndex = editIdxEl ? parseInt(editIdxEl.value, 10) : -1;
+
+    if (editIndex >= 0 && editIndex < romaneioLivreState.items.length) {
+        romaneioLivreState.items[editIndex] = {
+            ...romaneioLivreState.items[editIndex],
+            palletId: rawPallet,
+            model,
+            boxes,
+            units
+        };
+        if (typeof showToast === 'function') showToast(`Item #${editIndex + 1} atualizado!`, 'success');
+    } else {
+        romaneioLivreState.items.push({
+            id: 'ITEM-' + Date.now() + '-' + Math.random().toString(36).substr(2, 4),
+            palletId: rawPallet,
+            model,
+            boxes,
+            units
+        });
+        if (typeof showToast === 'function') showToast(`Item "${rawPallet}" adicionado ao romaneio!`, 'success');
+    }
+
+    resetRomaneioLivreItemForm();
+    saveRomaneioLivreDraftLocal();
+    renderRomaneioLivreItemsTable();
+    renderRomaneioLivrePreview();
+
+    if (palletEl) palletEl.focus();
+}
+
+function resetRomaneioLivreItemForm() {
+    const palletEl = document.getElementById('roml-item-pallet');
+    const editIdxEl = document.getElementById('roml-edit-item-index');
+    const btnSubmit = document.getElementById('btn-roml-submit-item');
+    const btnCancel = document.getElementById('btn-roml-cancel-edit-item');
+
+    if (palletEl) palletEl.value = '';
+    if (editIdxEl) editIdxEl.value = '-1';
+    if (btnSubmit) {
+        btnSubmit.innerHTML = '➕ Adicionar Item';
+        btnSubmit.style.background = '#10b981';
+        btnSubmit.style.borderColor = '#10b981';
+    }
+    if (btnCancel) btnCancel.classList.add('hidden');
+}
+
+function editarItemRomaneioLivre(index) {
+    const item = romaneioLivreState.items[index];
+    if (!item) return;
+
+    const palletEl = document.getElementById('roml-item-pallet');
+    const modeloEl = document.getElementById('roml-item-modelo');
+    const caixasEl = document.getElementById('roml-item-caixas');
+    const qtdEl = document.getElementById('roml-item-qtd');
+    const editIdxEl = document.getElementById('roml-edit-item-index');
+    const btnSubmit = document.getElementById('btn-roml-submit-item');
+    const btnCancel = document.getElementById('btn-roml-cancel-edit-item');
+
+    if (palletEl) palletEl.value = item.palletId || '';
+    if (modeloEl) modeloEl.value = item.model || '';
+    if (caixasEl) caixasEl.value = item.boxes !== undefined ? item.boxes : 1;
+    if (qtdEl) qtdEl.value = item.units !== undefined ? item.units : 1;
+    if (editIdxEl) editIdxEl.value = String(index);
+
+    if (btnSubmit) {
+        btnSubmit.innerHTML = `💾 Salvar Item #${index + 1}`;
+        btnSubmit.style.background = '#3b82f6';
+        btnSubmit.style.borderColor = '#3b82f6';
+    }
+    if (btnCancel) btnCancel.classList.remove('hidden');
+    if (palletEl) palletEl.focus();
+}
+
+function removerItemRomaneioLivre(index) {
+    if (index < 0 || index >= romaneioLivreState.items.length) return;
+    romaneioLivreState.items.splice(index, 1);
+    resetRomaneioLivreItemForm();
+    saveRomaneioLivreDraftLocal();
+    renderRomaneioLivreItemsTable();
+    renderRomaneioLivrePreview();
+}
+
+function duplicarItemRomaneioLivre(index) {
+    const item = romaneioLivreState.items[index];
+    if (!item) return;
+    romaneioLivreState.items.splice(index + 1, 0, {
+        id: 'ITEM-' + Date.now() + '-' + Math.random().toString(36).substr(2, 4),
+        palletId: item.palletId,
+        model: item.model,
+        boxes: item.boxes,
+        units: item.units
+    });
+    saveRomaneioLivreDraftLocal();
+    renderRomaneioLivreItemsTable();
+    renderRomaneioLivrePreview();
+}
+
+function renderRomaneioLivreItemsTable() {
+    const tbody = document.getElementById('roml-items-tbody');
+    const resumoBar = document.getElementById('roml-resumo-bar');
+    if (!tbody) return;
+
+    const items = romaneioLivreState.items || [];
+    const totalBoxes = items.reduce((acc, it) => acc + (Number(it.boxes) || 0), 0);
+    const totalUnits = items.reduce((acc, it) => acc + (Number(it.units) || 0), 0);
+
+    if (resumoBar) {
+        resumoBar.textContent = `${items.length} ${items.length === 1 ? 'volume' : 'volumes'} · ${totalBoxes} ${totalBoxes === 1 ? 'caixa' : 'caixas'} · ${totalUnits} ${totalUnits === 1 ? 'peça' : 'peças'}`;
+    }
+
+    if (items.length === 0) {
+        tbody.innerHTML = `
+            <tr>
+                <td colspan="6" style="padding: 22px; text-align: center; color: var(--text-secondary);">
+                    Nenhum item adicionado ainda. Preencha os campos acima e clique em <strong>"Adicionar Item"</strong>.
+                </td>
+            </tr>
+        `;
+        return;
+    }
+
+    const pad = n => String(n).padStart(2, '0');
+    tbody.innerHTML = items.map((item, idx) => `
+        <tr style="border-bottom: 1px solid rgba(255,255,255,0.06);">
+            <td style="padding: 8px 10px; font-weight: 700; color: var(--text-secondary);">${pad(idx + 1)}</td>
+            <td style="padding: 8px 10px; font-family: monospace; font-weight: 700; color: #60a5fa;">${escapeHtml(item.palletId)}</td>
+            <td style="padding: 8px 10px; font-weight: 600;">${escapeHtml(item.model)}</td>
+            <td style="padding: 8px 10px; text-align: center; color: #fcd34d; font-weight: 700;">${item.boxes} cx</td>
+            <td style="padding: 8px 10px; text-align: center; color: #6ee7b7; font-weight: 700;">${item.units}</td>
+            <td style="padding: 8px 10px; text-align: right; white-space: nowrap;">
+                <button type="button" onclick="editarItemRomaneioLivre(${idx})" class="btn btn-secondary" style="padding: 3px 8px; font-size: 0.75rem; margin-right: 4px;" title="Editar linha">✏️</button>
+                <button type="button" onclick="duplicarItemRomaneioLivre(${idx})" class="btn btn-secondary" style="padding: 3px 8px; font-size: 0.75rem; margin-right: 4px;" title="Duplicar linha">📋</button>
+                <button type="button" onclick="removerItemRomaneioLivre(${idx})" class="btn btn-danger" style="padding: 3px 8px; font-size: 0.75rem;" title="Remover linha">🗑️</button>
+            </td>
+        </tr>
+    `).join('');
+}
+
+function buildRomaneioLivrePseudoLot() {
+    const header = getRomaneioLivreHeaderFromInputs();
+    const items = romaneioLivreState.items || [];
+    const pad = n => String(n).padStart(2, '0');
+    const autoVolume = `${pad(items.length)} ${items.length === 1 ? 'PALLET' : 'PALLETS'}`;
+
+    return {
+        id: romaneioLivreState.id || 'ROML-PREVIEW',
+        number: romaneioLivreState.number || 1,
+        dest: header.destino || '',
+        status: 'expedido',
+        expeditionData: {
+            ...header,
+            volume: header.volume || autoVolume
+        },
+        groups: items.map((it, idx) => ({
+            id: it.id || (`GRP-${idx + 1}`),
+            number: idx + 1,
+            palletIds: [it.palletId || `VOL-${pad(idx + 1)}`],
+            model: it.model || '—',
+            totalBoxes: Number(it.boxes) || 0,
+            totalUnits: Number(it.units) || 0,
+            dest: header.destino || '—',
+            palletDetails: [{
+                palletId: it.palletId || `VOL-${pad(idx + 1)}`,
+                rawId: it.palletId || `VOL-${pad(idx + 1)}`,
+                model: it.model || '—',
+                totalBoxes: Number(it.boxes) || 0,
+                totalUnits: Number(it.units) || 0,
+                dest: header.destino || '—'
+            }]
+        }))
+    };
+}
+
+function buildRomaneioLivreHtml() {
+    const header = getRomaneioLivreHeaderFromInputs();
+    const items = romaneioLivreState.items || [];
+    const pad = n => String(n).padStart(2, '0');
+    const numItems = items.length;
+    const volumeStr = header.volume ? header.volume : `${pad(numItems)} ${numItems === 1 ? 'PALLET' : 'PALLETS'}`;
+    const loteIdent = header.loteIdent || `LIVRE_${new Date().getFullYear().toString().slice(-2)}`;
+
+    let totalUnits = 0;
+    let totalBoxes = 0;
+    const modelMap = {};
+
+    const rowsHtml = items.length > 0 ? items.map((it, idx) => {
+        const boxes = Number(it.boxes) || 0;
+        const units = Number(it.units) || 0;
+        totalBoxes += boxes;
+        totalUnits += units;
+
+        const mName = (it.model || 'MODELO NÃO ESPECIFICADO').trim();
+        if (!modelMap[mName]) {
+            modelMap[mName] = { pallets: 0, boxes: 0, units: 0 };
+        }
+        modelMap[mName].pallets += 1;
+        modelMap[mName].boxes += boxes;
+        modelMap[mName].units += units;
+
+        return `
+            <tr>
+                <td style="border:1px solid #000;padding:5px 6px;text-align:center;font-size:12px;font-weight:bold;color:#000;">${pad(idx + 1)}</td>
+                <td class="pallet-code-cell" style="border:1px solid #000;padding:5px 8px;text-align:center;font-size:12px;font-family:monospace,Arial,sans-serif;font-weight:bold;color:#000;word-break:break-all;">${escapeHtml(it.palletId)}</td>
+                <td style="border:1px solid #000;padding:5px 8px;text-align:center;font-size:11.5px;color:#000;">${escapeHtml(mName)}</td>
+                <td style="border:1px solid #000;padding:5px 6px;text-align:center;font-size:12px;font-weight:bold;color:#92400e;">${boxes} cx</td>
+                <td style="border:1px solid #000;padding:5px 8px;text-align:center;font-size:12px;font-weight:bold;color:#000;">${units}</td>
+            </tr>
+        `;
+    }).join('') : `
+        <tr>
+            <td colspan="5" style="border:1px solid #000;padding:14px;text-align:center;font-size:12px;color:#64748b;">Nenhum item adicionado ao romaneio ainda.</td>
+        </tr>
+    `;
+
+    const modelEntries = Object.entries(modelMap);
+    const modelRowsHtml = modelEntries.map(([mName, mData]) => `
+        <tr>
+            <td style="border:1px solid #000;padding:5px 8px;font-size:11.5px;font-weight:600;color:#000;">${escapeHtml(mName)}</td>
+            <td style="border:1px solid #000;padding:5px 6px;text-align:center;font-size:11.5px;color:#000;">${mData.pallets}</td>
+            <td style="border:1px solid #000;padding:5px 6px;text-align:center;font-size:11.5px;font-weight:bold;color:#92400e;">${mData.boxes} cx</td>
+            <td style="border:1px solid #000;padding:5px 8px;text-align:center;font-size:11.5px;font-weight:bold;color:#000;">${mData.units}</td>
+        </tr>
+    `).join('');
+
+    return `
+        <div class="romaneio-paper" style="background:#ffffff;color:#000000;padding:28px 36px;font-family:Arial,Helvetica,sans-serif;border-radius:4px;max-width:640px;margin:0 auto;box-shadow:0 4px 20px rgba(0,0,0,0.35);text-align:left;">
+            <div style="display:flex;justify-content:center;margin-bottom:18px;">
+                <img src="logo.png" alt="CTDI" style="max-height:54px;max-width:260px;object-fit:contain;display:block;" />
+            </div>
+
+            <div style="font-size:12px;color:#000000;line-height:1.75;font-weight:bold;text-align:left;">
+                <div class="rom-field-row" style="margin-bottom:2px;display:flex;align-items:flex-end;text-align:left;">
+                    <span class="rom-label" style="white-space:nowrap;margin-right:6px;text-align:left;">RESPONSÁVEL EXPEDIÇÃO:</span>
+                    <span class="rom-val" style="flex:1;border-bottom:1px solid #000;padding-bottom:1px;min-height:16px;text-align:left;">${escapeHtml(header.responsavel)}</span>
+                </div>
+                <div class="rom-field-row" style="margin-bottom:2px;display:flex;align-items:flex-end;text-align:left;">
+                    <span class="rom-label" style="white-space:nowrap;margin-right:6px;text-align:left;">DATA E HORA:</span>
+                    <span class="rom-val" style="flex:1;border-bottom:1px solid #000;padding-bottom:1px;min-height:16px;text-align:left;">${escapeHtml(header.dataHora)}</span>
+                </div>
+                <div class="rom-field-row" style="margin-bottom:2px;display:flex;align-items:flex-end;text-align:left;">
+                    <span class="rom-label" style="white-space:nowrap;margin-right:6px;text-align:left;">CLIENTE:</span>
+                    <span class="rom-val" style="flex:1;border-bottom:1px solid #000;padding-bottom:1px;min-height:16px;text-align:left;">${escapeHtml(header.cliente)}</span>
+                </div>
+                <div class="rom-field-row" style="margin-bottom:2px;display:flex;align-items:flex-end;text-align:left;">
+                    <span class="rom-label" style="white-space:nowrap;margin-right:6px;text-align:left;">DESTINO:</span>
+                    <span class="rom-val" style="flex:1;border-bottom:1px solid #000;padding-bottom:1px;min-height:16px;text-align:left;">${escapeHtml(header.destino)}</span>
+                </div>
+                <div class="rom-field-row" style="margin-bottom:2px;display:flex;align-items:flex-end;text-align:left;">
+                    <span class="rom-label" style="white-space:nowrap;margin-right:6px;text-align:left;">NF:</span>
+                    <span class="rom-val" style="flex:1;border-bottom:1px solid #000;padding-bottom:1px;min-height:16px;text-align:left;">${escapeHtml(header.nf)}</span>
+                </div>
+
+                <div style="height:8px;"></div>
+
+                <div class="rom-field-row" style="margin-bottom:2px;display:flex;align-items:flex-end;text-align:left;">
+                    <span class="rom-label" style="white-space:nowrap;margin-right:6px;text-align:left;">NATUREZA OPERAÇÃO:</span>
+                    <span class="rom-val" style="flex:1;border-bottom:1px solid #000;padding-bottom:1px;min-height:16px;text-align:left;">${escapeHtml(header.natureza)}</span>
+                </div>
+
+                <div style="height:8px;"></div>
+
+                <div class="rom-field-row" style="margin-bottom:2px;display:flex;align-items:flex-end;text-align:left;">
+                    <span class="rom-label" style="white-space:nowrap;margin-right:6px;text-align:left;">VOLUME:</span>
+                    <span class="rom-val" style="flex:1;border-bottom:1px solid #000;padding-bottom:1px;min-height:16px;text-align:left;">${escapeHtml(volumeStr)}</span>
+                </div>
+                <div class="rom-field-row" style="margin-bottom:2px;display:flex;align-items:flex-end;text-align:left;">
+                    <span class="rom-label" style="white-space:nowrap;margin-right:6px;text-align:left;">TRANSPORTADORA:</span>
+                    <span class="rom-val" style="flex:1;border-bottom:1px solid #000;padding-bottom:1px;min-height:16px;text-align:left;">${escapeHtml(header.transportadora)}</span>
+                </div>
+                <div class="rom-field-row" style="margin-bottom:2px;display:flex;align-items:flex-end;text-align:left;">
+                    <span class="rom-label" style="white-space:nowrap;margin-right:6px;text-align:left;">MOTORISTA:</span>
+                    <span class="rom-val" style="flex:1;border-bottom:1px solid #000;padding-bottom:1px;min-height:16px;text-align:left;">${escapeHtml(header.motorista)}</span>
+                </div>
+                <div class="rom-field-row" style="margin-bottom:2px;display:flex;align-items:flex-end;text-align:left;">
+                    <span class="rom-label" style="white-space:nowrap;margin-right:6px;text-align:left;">RG/CPF:</span>
+                    <span class="rom-val" style="flex:1;border-bottom:1px solid #000;padding-bottom:1px;min-height:16px;text-align:left;">${escapeHtml(header.rgCpf)}</span>
+                </div>
+                <div class="rom-field-row" style="margin-bottom:2px;display:flex;align-items:flex-end;text-align:left;">
+                    <span class="rom-label" style="white-space:nowrap;margin-right:6px;text-align:left;">PLACA VEÍCULO:</span>
+                    <span class="rom-val" style="flex:1;border-bottom:1px solid #000;padding-bottom:1px;min-height:16px;text-align:left;">${escapeHtml(header.placa)}</span>
+                </div>
+                <div class="rom-field-row" style="margin-bottom:2px;display:flex;align-items:flex-end;text-align:left;">
+                    <span class="rom-label" style="white-space:nowrap;margin-right:6px;text-align:left;">AJUDANTE:</span>
+                    <span class="rom-val" style="flex:1;border-bottom:1px solid #000;padding-bottom:1px;min-height:16px;text-align:left;">${escapeHtml(header.ajudante)}</span>
+                </div>
+                <div class="rom-field-row" style="margin-bottom:2px;display:flex;align-items:flex-end;text-align:left;">
+                    <span class="rom-label" style="white-space:nowrap;margin-right:6px;text-align:left;">ASSINATURA:</span>
+                    <span class="rom-val" style="flex:1;border-bottom:1px solid #000;padding-bottom:1px;min-height:16px;text-align:left;"></span>
+                </div>
+            </div>
+
+            <!-- Cards Resumo -->
+            <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin-top:16px;margin-bottom:12px;">
+                <div style="border:1px solid #000;padding:5px;text-align:center;background:#f8fafc;border-radius:3px;">
+                    <div style="font-size:9.5px;font-weight:bold;text-transform:uppercase;color:#475569;">Pallets Físicos</div>
+                    <div style="font-size:15px;font-weight:900;color:#1e3a8a;">${pad(numItems)}</div>
+                </div>
+                <div style="border:1px solid #000;padding:5px;text-align:center;background:#f8fafc;border-radius:3px;">
+                    <div style="font-size:9.5px;font-weight:bold;text-transform:uppercase;color:#475569;">Itens / Volumes</div>
+                    <div style="font-size:15px;font-weight:900;color:#581c87;">${pad(numItems)}</div>
+                </div>
+                <div style="border:1px solid #000;padding:5px;text-align:center;background:#f8fafc;border-radius:3px;">
+                    <div style="font-size:9.5px;font-weight:bold;text-transform:uppercase;color:#475569;">Total Caixas</div>
+                    <div style="font-size:15px;font-weight:900;color:#92400e;">${totalBoxes}</div>
+                </div>
+                <div style="border:1px solid #000;padding:5px;text-align:center;background:#f8fafc;border-radius:3px;">
+                    <div style="font-size:9.5px;font-weight:bold;text-transform:uppercase;color:#475569;">Total Peças</div>
+                    <div style="font-size:15px;font-weight:900;color:#065f46;">${totalUnits}</div>
+                </div>
+            </div>
+
+            <!-- Tabela Principal -->
+            <div style="margin-top:8px;">
+                <table style="width:100%;border-collapse:collapse;border:1.5px solid #000;font-family:Arial,Helvetica,sans-serif;">
+                    <thead>
+                        <tr style="background:#D9E1F2;">
+                            <th style="border:1px solid #000;padding:5px 4px;text-align:center;font-size:11.5px;font-weight:bold;color:#000;width:38px;">PLT</th>
+                            <th style="border:1px solid #000;padding:5px 8px;text-align:center;font-size:11.5px;font-weight:bold;color:#000;">PALLETS LOTE ${escapeHtml(loteIdent)}</th>
+                            <th style="border:1px solid #000;padding:5px 8px;text-align:center;font-size:11.5px;font-weight:bold;color:#000;">MODELO</th>
+                            <th style="border:1px solid #000;padding:5px 6px;text-align:center;font-size:11.5px;font-weight:bold;color:#000;width:55px;">CXS</th>
+                            <th style="border:1px solid #000;padding:5px 8px;text-align:center;font-size:11.5px;font-weight:bold;color:#000;width:65px;">QTD</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        ${rowsHtml}
+                        <tr style="background:#ffffff;font-weight:bold;">
+                            <td colspan="3" style="border:1.5px solid #000;padding:6px 8px;text-align:center;font-size:12px;color:#000;">TOTAL GERAL (${pad(numItems)} ${numItems === 1 ? 'VOLUME' : 'VOLUMES'})</td>
+                            <td style="border:1.5px solid #000;padding:6px 6px;text-align:center;font-size:12px;color:#92400e;">${totalBoxes} cx</td>
+                            <td style="border:1.5px solid #000;padding:6px 8px;text-align:center;font-size:12px;color:#000;">${totalUnits}</td>
+                        </tr>
+                    </tbody>
+                </table>
+            </div>
+
+            ${modelEntries.length > 0 ? `
+            <div style="margin-top:14px;border:1.5px solid #000;border-radius:3px;overflow:hidden;">
+                <div style="background:#E2E8F0;padding:5px 10px;font-size:11px;font-weight:bold;color:#000;border-bottom:1px solid #000;">
+                    📋 RESUMO CONSOLIDADO POR MODELO DE EQUIPAMENTO (AUDITORIA / NOTA FISCAL):
+                </div>
+                <table style="width:100%;border-collapse:collapse;font-size:11.5px;color:#000;font-family:Arial,Helvetica,sans-serif;">
+                    <thead>
+                        <tr style="background:#f8fafc;border-bottom:1px solid #000;">
+                            <th style="border:1px solid #000;padding:5px 8px;text-align:left;font-weight:bold;color:#000;">MODELO / EQUIPAMENTO</th>
+                            <th style="border:1px solid #000;padding:5px 6px;text-align:center;font-weight:bold;width:75px;color:#000;">PALLETS</th>
+                            <th style="border:1px solid #000;padding:5px 6px;text-align:center;font-weight:bold;width:75px;color:#000;">CAIXAS</th>
+                            <th style="border:1px solid #000;padding:5px 8px;text-align:center;font-weight:bold;width:85px;color:#000;">TOTAL PEÇAS</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        ${modelRowsHtml}
+                        <tr style="font-weight:bold;background:#ffffff;border-top:1.5px solid #000;">
+                            <td style="border:1px solid #000;padding:5px 8px;color:#000;">TOTAL GERAL DO LOTE</td>
+                            <td style="border:1px solid #000;padding:5px 6px;text-align:center;color:#000;">${pad(numItems)}</td>
+                            <td style="border:1px solid #000;padding:5px 6px;text-align:center;color:#92400e;">${totalBoxes} cx</td>
+                            <td style="border:1px solid #000;padding:5px 8px;text-align:center;color:#000;">${totalUnits}</td>
+                        </tr>
+                    </tbody>
+                </table>
+            </div>
+            ` : ''}
+        </div>
+    `;
+}
+
+function renderRomaneioLivrePreview() {
+    const previewEl = document.getElementById('roml-paper-preview');
+    if (!previewEl) return;
+    previewEl.innerHTML = buildRomaneioLivreHtml();
+}
+
+function printRomaneioLivre() {
+    if (romaneioLivreState.items.length === 0) {
+        if (typeof showToast === 'function') showToast('Adicione pelo menos 1 item antes de imprimir o romaneio.', 'warning');
+        return;
+    }
+    const html = buildRomaneioLivreHtml();
+    const printEl = document.getElementById('print-only-container');
+    if (printEl) {
+        printEl.innerHTML = html;
+    }
+    window.print();
+}
+
+function exportRomaneioLivreXLSX() {
+    if (romaneioLivreState.items.length === 0) {
+        if (typeof showToast === 'function') showToast('Adicione pelo menos 1 item antes de exportar para Excel.', 'warning');
+        return;
+    }
+    const header = getRomaneioLivreHeaderFromInputs();
+    const items = romaneioLivreState.items || [];
+    const pad = n => String(n).padStart(2, '0');
+    const numItems = items.length;
+    const volumeStr = header.volume ? header.volume : `${pad(numItems)} ${numItems === 1 ? 'PALLET' : 'PALLETS'}`;
+    const loteIdent = header.loteIdent || `LIVRE_${new Date().getFullYear().toString().slice(-2)}`;
+
+    const aoa = [
+        ['CTDI', '', '', '', ''],
+        ['RESPONSÁVEL EXPEDIÇÃO:', header.responsavel || '', '', '', ''],
+        ['DATA E HORA:', header.dataHora || '', '', '', ''],
+        ['CLIENTE:', header.cliente || 'TIM', '', '', ''],
+        ['DESTINO:', header.destino || '', '', '', ''],
+        ['NF:', header.nf || '', '', '', ''],
+        ['', '', '', '', ''],
+        ['NATUREZA OPERAÇÃO:', header.natureza || 'RETORNO DE CONSERTO', '', '', ''],
+        ['', '', '', '', ''],
+        ['VOLUME:', volumeStr, '', '', ''],
+        ['TRANSPORTADORA:', header.transportadora || '', '', '', ''],
+        ['MOTORISTA:', header.motorista || '', '', '', ''],
+        ['RG/CPF:', header.rgCpf || '', '', '', ''],
+        ['PLACA VEÍCULO:', header.placa || '', '', '', ''],
+        ['AJUDANTE:', header.ajudante || '', '', '', ''],
+        ['ASSINATURA:', '', '', '', ''],
+        ['', '', '', '', ''],
+        ['PLT', 'PALLETS LOTE ' + loteIdent, 'MODELO', 'CAIXAS', 'QTD']
+    ];
+
+    let totalUnits = 0;
+    let totalBoxes = 0;
+    const modelMap = {};
+
+    items.forEach((it, idx) => {
+        const boxes = Number(it.boxes) || 0;
+        const units = Number(it.units) || 0;
+        totalBoxes += boxes;
+        totalUnits += units;
+        const mName = (it.model || 'MODELO NÃO ESPECIFICADO').trim();
+
+        aoa.push([pad(idx + 1), it.palletId || '', mName, boxes, units]);
+
+        if (!modelMap[mName]) {
+            modelMap[mName] = { pallets: 0, boxes: 0, units: 0 };
+        }
+        modelMap[mName].pallets += 1;
+        modelMap[mName].boxes += boxes;
+        modelMap[mName].units += units;
+    });
+
+    aoa.push(['TOTAL GERAL', `${pad(numItems)} VOLUMES`, '', totalBoxes, totalUnits]);
+    aoa.push(['', '', '', '', '']);
+    aoa.push(['RESUMO CONSOLIDADO POR MODELO (AUDITORIA / NOTA FISCAL)', '', '', '', '']);
+    aoa.push(['MODELO / EQUIPAMENTO', '', 'PALLETS', 'CAIXAS', 'TOTAL PEÇAS']);
+
+    Object.entries(modelMap).forEach(([mName, mData]) => {
+        aoa.push([mName, '', mData.pallets, mData.boxes, mData.units]);
+    });
+    aoa.push(['TOTAL GERAL DO LOTE', '', pad(numItems), totalBoxes, totalUnits]);
+
+    const ws = XLSX.utils.aoa_to_sheet(aoa);
+    ws['!cols'] = [{ wch: 10 }, { wch: 38 }, { wch: 28 }, { wch: 12 }, { wch: 14 }];
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, 'Romaneio Livre');
+    const cleanIdent = String(loteIdent).replace(/[^a-zA-Z0-9_-]/g, '_');
+    XLSX.writeFile(wb, `Romaneio_Livre_${cleanIdent}.xlsx`);
+    if (typeof showToast === 'function') showToast('Romaneio Livre exportado para Excel com sucesso!', 'success');
+}
+
+async function salvarRomaneioLivreNoServidor() {
+    if (romaneioLivreState.items.length === 0) {
+        if (typeof showToast === 'function') showToast('Adicione pelo menos 1 item antes de salvar o romaneio.', 'warning');
+        return;
+    }
+
+    const headerData = getRomaneioLivreHeaderFromInputs();
+    if (headerData.responsavel) {
+        localStorage.setItem('last_exp_responsavel', headerData.responsavel);
+    }
+
+    const romId = romaneioLivreState.id || ('ROML-' + Date.now());
+    const nextNumber = romaneioLivreState.id
+        ? (romaneioLivreState.number || 1)
+        : ((romaneioLivreState.history.length || 0) + 1);
+
+    const payload = {
+        id: romId,
+        number: nextNumber,
+        headerData,
+        items: romaneioLivreState.items,
+        usuario: currentUser ? currentUser.username : 'OPERADOR'
+    };
+
+    try {
+        const res = await fetch(`${SERVER_URL.replace(/\/$/, '')}/api/romaneios-livres`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload)
+        });
+        const data = await res.json();
+        if (res.ok && data.success) {
+            romaneioLivreState.id = romId;
+            romaneioLivreState.number = nextNumber;
+            updateRomaneioLivreEditingBadge();
+            saveRomaneioLivreDraftLocal();
+            await loadRomaneioLivreHistory();
+            if (typeof showToast === 'function') showToast('Romaneio Livre salvo com sucesso no histórico!', 'success');
+        } else {
+            if (typeof showToast === 'function') showToast('Erro ao salvar romaneio no servidor.', 'error');
+        }
+    } catch (err) {
+        console.warn('Erro ao salvar romaneio livre no servidor:', err);
+        if (typeof showToast === 'function') showToast('Erro de conexão ao salvar no servidor.', 'error');
+    }
+}
+
+async function loadRomaneioLivreHistory() {
+    const tbody = document.getElementById('roml-history-tbody');
+    if (!tbody) return;
+
+    try {
+        const res = await fetch(`${SERVER_URL.replace(/\/$/, '')}/api/romaneios-livres`);
+        if (res.ok) {
+            const data = await res.json();
+            if (data && Array.isArray(data.romaneios)) {
+                romaneioLivreState.history = data.romaneios;
+            }
+        }
+    } catch (err) {
+        console.warn('Erro ao carregar histórico de romaneios livres:', err);
+    }
+
+    const list = romaneioLivreState.history || [];
+    if (list.length === 0) {
+        tbody.innerHTML = `
+            <tr>
+                <td colspan="5" style="padding: 18px; text-align: center; color: var(--text-secondary);">
+                    Nenhum romaneio livre salvo ainda.
+                </td>
+            </tr>
+        `;
+        return;
+    }
+
+    tbody.innerHTML = list.map((rom) => {
+        const h = rom.headerData || {};
+        const items = Array.isArray(rom.items) ? rom.items : [];
+        const totalUnits = items.reduce((acc, it) => acc + (Number(it.units) || 0), 0);
+        const totalBoxes = items.reduce((acc, it) => acc + (Number(it.boxes) || 0), 0);
+        const isCurrent = romaneioLivreState.id === rom.id;
+
+        return `
+            <tr style="border-bottom: 1px solid rgba(255,255,255,0.06); ${isCurrent ? 'background: rgba(59, 130, 246, 0.12);' : ''}">
+                <td style="padding: 8px 10px;">
+                    <strong style="color: #60a5fa;">${escapeHtml(h.loteIdent || `#${rom.number || 1}`)}</strong>
+                    <div style="font-size: 0.73rem; color: var(--text-secondary);">${escapeHtml(h.dataHora || '')}</div>
+                </td>
+                <td style="padding: 8px 10px;">
+                    <strong>${escapeHtml(h.cliente || 'TIM')}</strong>
+                    <div style="font-size: 0.75rem; color: var(--text-secondary);">${escapeHtml(h.destino || 'Sem destino')}</div>
+                </td>
+                <td style="padding: 8px 10px; font-family: monospace;">${escapeHtml(h.nf || '—')}</td>
+                <td style="padding: 8px 10px; text-align: center;">
+                    <span style="color: #fcd34d; font-weight: 700;">${items.length} vol</span> ·
+                    <span style="color: #93c5fd;">${totalBoxes} cx</span> ·
+                    <span style="color: #6ee7b7; font-weight: 700;">${totalUnits} pçs</span>
+                </td>
+                <td style="padding: 8px 10px; text-align: right; white-space: nowrap;">
+                    <button type="button" onclick="carregarRomaneioLivreSalvo('${escapeHtml(rom.id)}')" class="btn btn-primary" style="padding: 4px 10px; font-size: 0.75rem; background: #3b82f6; border-color: #3b82f6; margin-right: 4px;" title="Abrir para visualizar, editar ou imprimir">📂 Abrir</button>
+                    <button type="button" onclick="excluirRomaneioLivreSalvo('${escapeHtml(rom.id)}')" class="btn btn-danger" style="padding: 4px 8px; font-size: 0.75rem;" title="Excluir do histórico">🗑️</button>
+                </td>
+            </tr>
+        `;
+    }).join('');
+}
+
+function carregarRomaneioLivreSalvo(id) {
+    const found = (romaneioLivreState.history || []).find(r => r.id === id);
+    if (!found) return;
+
+    romaneioLivreState.id = found.id;
+    romaneioLivreState.number = found.number || 1;
+    romaneioLivreState.items = Array.isArray(found.items) ? JSON.parse(JSON.stringify(found.items)) : [];
+
+    setRomaneioLivreHeaderInputs(found.headerData || {});
+    resetRomaneioLivreItemForm();
+    updateRomaneioLivreEditingBadge();
+    saveRomaneioLivreDraftLocal();
+    renderRomaneioLivreItemsTable();
+    renderRomaneioLivrePreview();
+    loadRomaneioLivreHistory();
+
+    if (typeof showToast === 'function') showToast(`Romaneio "${(found.headerData && found.headerData.loteIdent) || found.id}" carregado!`, 'info');
+}
+
+async function excluirRomaneioLivreSalvo(id) {
+    if (!confirm('Tem certeza que deseja excluir este romaneio livre do histórico?')) return;
+    try {
+        await fetch(`${SERVER_URL.replace(/\/$/, '')}/api/romaneios-livres/${encodeURIComponent(id)}`, {
+            method: 'DELETE'
+        });
+        if (romaneioLivreState.id === id) {
+            romaneioLivreState.id = null;
+            updateRomaneioLivreEditingBadge();
+        }
+        await loadRomaneioLivreHistory();
+        if (typeof showToast === 'function') showToast('Romaneio excluído do histórico.', 'warning');
+    } catch (err) {
+        console.warn('Erro ao excluir romaneio livre:', err);
+    }
+}
+

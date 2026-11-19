@@ -250,6 +250,17 @@ async function ensureDBAndMinIO() {
       updated_at TIMESTAMP DEFAULT NOW()
     )`);
 
+    await client.query(`CREATE TABLE IF NOT EXISTS romaneios_livres (
+      id TEXT PRIMARY KEY,
+      number INTEGER,
+      header_data JSONB NOT NULL DEFAULT '{}'::jsonb,
+      items JSONB NOT NULL DEFAULT '[]'::jsonb,
+      usuario TEXT,
+      created_at TIMESTAMP DEFAULT NOW(),
+      updated_at TIMESTAMP DEFAULT NOW()
+    )`);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_romaneios_livres_created ON romaneios_livres(created_at DESC)`);
+
     console.log('Postgres tables verified/created successfully.');
   } catch (err) {
     console.error('Error establishing database tables:', err);
@@ -544,27 +555,42 @@ app.post('/api/recebimentos', async (req, res) => {
           }
 
           let checkRes;
-          // 1. Busca estrita pelo GPON primeiro
-          if (cleanPon || ponAlt) {
-            const checkQuery = `
+          const cleanMacNorm = cleanMac ? cleanMac.replace(/[^A-Za-z0-9]/g, '').toUpperCase() : '';
+
+          // Busca estrita conjunta: os 3 campos (GPON + Serial + MAC) DEVEM coincidir juntos
+          if ((cleanPon || ponAlt) && cleanSerial && cleanMacNorm) {
+            const strict3Query = `
+              SELECT gpon_sn, cpe_sn, mac, fabricante, modelo, password_router
+              FROM etiquetas_scan_onu
+              WHERE ( UPPER(TRIM(gpon_sn)) = UPPER(TRIM($1)) OR ( $2 != '' AND UPPER(TRIM(gpon_sn)) = UPPER(TRIM($2)) ) )
+                AND UPPER(TRIM(cpe_sn)) = UPPER(TRIM($3))
+                AND ( UPPER(REPLACE(REPLACE(TRIM(mac), ':', ''), '-', '')) = $4 OR UPPER(TRIM(mac)) = $4 )
+              LIMIT 1
+            `;
+            checkRes = await secondPool.query(strict3Query, [cleanPon || '', ponAlt || '', cleanSerial, cleanMacNorm]);
+          } else if ((cleanPon || ponAlt) && cleanSerial) {
+            const strict2Query = `
+              SELECT gpon_sn, cpe_sn, mac, fabricante, modelo, password_router
+              FROM etiquetas_scan_onu
+              WHERE ( UPPER(TRIM(gpon_sn)) = UPPER(TRIM($1)) OR ( $2 != '' AND UPPER(TRIM(gpon_sn)) = UPPER(TRIM($2)) ) )
+                AND UPPER(TRIM(cpe_sn)) = UPPER(TRIM($3))
+              LIMIT 1
+            `;
+            checkRes = await secondPool.query(strict2Query, [cleanPon || '', ponAlt || '', cleanSerial]);
+          } else if (cleanPon || ponAlt) {
+            const strict1Query = `
               SELECT gpon_sn, cpe_sn, mac, fabricante, modelo, password_router
               FROM etiquetas_scan_onu
               WHERE UPPER(TRIM(gpon_sn)) = UPPER(TRIM($1))
                  OR ( $2 != '' AND UPPER(TRIM(gpon_sn)) = UPPER(TRIM($2)) )
-              ORDER BY (CASE WHEN cpe_sn IS NOT NULL AND cpe_sn != '' AND UPPER(cpe_sn) != 'N/A' THEN 1 ELSE 0 END) DESC,
-                       (CASE WHEN mac IS NOT NULL AND mac != '' AND UPPER(mac) != 'N/A' THEN 1 ELSE 0 END) DESC
               LIMIT 1
             `;
-            checkRes = await secondPool.query(checkQuery, [cleanPon || '', ponAlt || '']);
-          }
-
-          // 2. Fallback por Serial somente se não encontrou nada pelo GPON
-          if ((!checkRes || checkRes.rows.length === 0) && cleanSerial) {
+            checkRes = await secondPool.query(strict1Query, [cleanPon || '', ponAlt || '']);
+          } else if (cleanSerial) {
             const serialQuery = `
               SELECT gpon_sn, cpe_sn, mac, fabricante, modelo, password_router
               FROM etiquetas_scan_onu
               WHERE UPPER(TRIM(cpe_sn)) = UPPER(TRIM($1))
-              ORDER BY (CASE WHEN mac IS NOT NULL AND mac != '' AND UPPER(mac) != 'N/A' THEN 1 ELSE 0 END) DESC
               LIMIT 1
             `;
             checkRes = await secondPool.query(serialQuery, [cleanSerial]);
@@ -879,28 +905,44 @@ app.get('/api/recebimentos/report', async (req, res) => {
   }
 });
 
-// Lookup unit by GPON in second DB (etiquetas_scan_onu) for autocomplete
+// Lookup unit by GPON, Serial, and/or MAC in second DB (etiquetas_scan_onu) for autocomplete
 app.get('/api/etiquetas/lookup', async (req, res) => {
   if (!secondPool) {
     return res.status(400).json({ error: 'Second database connection is not configured.' });
   }
 
-  const { gpon } = req.query;
-  if (!gpon) {
-    return res.status(400).json({ error: 'Missing gpon parameter.' });
+  const { gpon, serial, mac } = req.query;
+  if (!gpon && !serial && !mac) {
+    return res.status(400).json({ error: 'Missing gpon, serial, or mac parameter.' });
   }
 
-  const cleanPon = sanitizeDataCode(String(gpon));
+  const cleanPon = gpon ? sanitizeDataCode(String(gpon)) : '';
+  const cleanSerial = serial ? sanitizeDataCode(String(serial)) : '';
+  const cleanMac = mac ? sanitizeDataCode(String(mac)) : '';
+
   try {
-    const query = `
-      SELECT gpon_sn, cpe_sn, mac, fabricante, modelo, password_router
-      FROM etiquetas_scan_onu
-      WHERE UPPER(TRIM(gpon_sn)) = UPPER(TRIM($1)) OR UPPER(TRIM(cpe_sn)) = UPPER(TRIM($1))
-      ORDER BY (CASE WHEN cpe_sn IS NOT NULL AND cpe_sn != '' AND UPPER(cpe_sn) != 'N/A' THEN 1 ELSE 0 END) DESC,
-               (CASE WHEN mac IS NOT NULL AND mac != '' AND UPPER(mac) != 'N/A' THEN 1 ELSE 0 END) DESC
-      LIMIT 1
-    `;
-    const result = await secondPool.query(query, [cleanPon]);
+    let result;
+    if (cleanPon && cleanSerial && cleanMac) {
+      const query = `
+        SELECT gpon_sn, cpe_sn, mac, fabricante, modelo, password_router
+        FROM etiquetas_scan_onu
+        WHERE UPPER(TRIM(gpon_sn)) = UPPER(TRIM($1))
+          AND UPPER(TRIM(cpe_sn)) = UPPER(TRIM($2))
+          AND ( UPPER(REPLACE(REPLACE(TRIM(mac), ':', ''), '-', '')) = $3 OR UPPER(TRIM(mac)) = $3 )
+        LIMIT 1
+      `;
+      result = await secondPool.query(query, [cleanPon, cleanSerial, cleanMac]);
+    } else {
+      const query = `
+        SELECT gpon_sn, cpe_sn, mac, fabricante, modelo, password_router
+        FROM etiquetas_scan_onu
+        WHERE UPPER(TRIM(gpon_sn)) = UPPER(TRIM($1)) OR UPPER(TRIM(cpe_sn)) = UPPER(TRIM($1))
+        ORDER BY (CASE WHEN cpe_sn IS NOT NULL AND cpe_sn != '' AND UPPER(cpe_sn) != 'N/A' THEN 1 ELSE 0 END) DESC,
+                 (CASE WHEN mac IS NOT NULL AND mac != '' AND UPPER(mac) != 'N/A' THEN 1 ELSE 0 END) DESC
+        LIMIT 1
+      `;
+      result = await secondPool.query(query, [cleanPon || cleanSerial]);
+    }
     if (result.rows.length > 0) {
       const row = result.rows[0];
       const cleanSerial = (row.cpe_sn && row.cpe_sn.trim().toUpperCase() !== 'N/A') ? row.cpe_sn.trim() : null;
@@ -1114,7 +1156,12 @@ async function handleSyncUnits(req, res, forcedModelo) {
       `;
       const chunkRes = await secondPool.query(secondCheckQuery, [chunk]);
       chunkRes.rows.forEach(r => {
-        etiquetasMap.set(r.gpon_sn, {
+        const key = r.gpon_sn;
+        if (!etiquetasMap.has(key)) {
+          etiquetasMap.set(key, []);
+        }
+        etiquetasMap.get(key).push({
+          gpon_sn: r.gpon_sn,
           cpe_sn: r.cpe_sn ? r.cpe_sn.trim() : null,
           mac: r.mac ? r.mac.trim() : null,
           fabricante: r.fabricante,
@@ -1144,14 +1191,35 @@ async function handleSyncUnits(req, res, forcedModelo) {
         cleanPon = cleanSerial;
       }
 
-      let etiqueta = cleanPon ? etiquetasMap.get(cleanPon) : null;
-      if (!etiqueta && cleanPon) {
+      let candidateList = cleanPon ? (etiquetasMap.get(cleanPon) || []) : [];
+      if (candidateList.length === 0 && cleanPon) {
         if (cleanPon.startsWith('HWTC')) {
-          etiqueta = etiquetasMap.get('48575443' + cleanPon.slice(4));
+          candidateList = etiquetasMap.get('48575443' + cleanPon.slice(4)) || [];
         } else if (cleanPon.startsWith('48575443')) {
-          etiqueta = etiquetasMap.get('HWTC' + cleanPon.slice(8));
+          candidateList = etiquetasMap.get('HWTC' + cleanPon.slice(8)) || [];
         }
       }
+
+      let etiqueta = null;
+      if (candidateList.length > 0) {
+        const cleanMacNorm = cleanMac ? cleanMac.replace(/[^A-Za-z0-9]/g, '') : '';
+        // Busca estrita conjunta: os 3 campos (GPON + Serial + MAC) DEVEM coincidir juntos
+        if (cleanPon && cleanSerial && cleanMacNorm) {
+          etiqueta = candidateList.find(e => {
+            const eSerial = e.cpe_sn ? e.cpe_sn.trim().toUpperCase() : '';
+            const eMacNorm = e.mac ? e.mac.replace(/[^A-Za-z0-9]/g, '').toUpperCase() : '';
+            return eSerial === cleanSerial && eMacNorm === cleanMacNorm;
+          }) || null;
+        } else if (cleanPon && cleanSerial) {
+          etiqueta = candidateList.find(e => {
+            const eSerial = e.cpe_sn ? e.cpe_sn.trim().toUpperCase() : '';
+            return eSerial === cleanSerial;
+          }) || null;
+        } else {
+          etiqueta = candidateList[0];
+        }
+      }
+
       const hasPassword = etiqueta && hasValidPassword(etiqueta.password_router);
       const newSuperUser = hasPassword ? 'Sim' : 'Não';
 
@@ -1820,7 +1888,7 @@ const DEFAULT_MODELS_SEED = [
 
 // App Version Check for Auto-Update
 app.get('/api/version', (req, res) => {
-  res.json({ version: 'v1.6.0' });
+  res.json({ version: 'v1.6.1' });
 });
 
 // GET all models from Postgres
@@ -3190,6 +3258,21 @@ app.get('/api/consulta-unidade/:query', async (req, res) => {
       searchSerial = cleanQuery;
     }
 
+    let searchMac = recebimento?.mac || palletRes.rows[0]?.mac || retornoRes.rows[0]?.mac || '';
+    if (!searchMac) {
+      const candidatesMac = [rawQuery, cleanQuery];
+      for (const cand of candidatesMac) {
+        if (cand) {
+          const c = String(cand).trim().toUpperCase().replace(/[^A-Za-z0-9]/g, '');
+          if (c.length === 12 && !c.startsWith('2102315') && !c.startsWith('T25') && !c.startsWith('ZTE') && !c.startsWith('TLCT') && !c.startsWith('HWTC') && !c.startsWith('48575443')) {
+            searchMac = c;
+            break;
+          }
+        }
+      }
+    }
+    const searchMacNorm = searchMac ? searchMac.replace(/[^A-Za-z0-9]/g, '').toUpperCase() : '';
+
     const isF6600P = (unitModelo || '').toUpperCase().includes('F6600P') ||
                      (preAlerta?.descricao || '').toUpperCase().includes('F6600P') ||
                      (searchPon && (searchPon.startsWith('ZTE3') || searchPon.startsWith('ZTEG')));
@@ -3212,7 +3295,7 @@ app.get('/api/consulta-unidade/:query', async (req, res) => {
     let superUserVal = recebimento?.super_user || null;
 
     // Consulta de senha no 2º banco para F6600P, NP7287 e HG8145 (tanto para recebidas quanto para aguardando recebimento)
-    if (shouldCheckPassword && secondPool && (searchPon || searchSerial)) {
+    if (shouldCheckPassword && secondPool && (searchPon || searchSerial || searchMacNorm)) {
       try {
         let ponAlt = '';
         if (searchPon) {
@@ -3223,30 +3306,51 @@ app.get('/api/consulta-unidade/:query', async (req, res) => {
           }
         }
 
-        // 1. Busca estrita pelo GPON primeiro
         let chk;
-        if (searchPon || ponAlt) {
+        // Busca estrita conjunta: os 3 campos (GPON + Serial + MAC) DEVEM coincidir juntos
+        if ((searchPon || ponAlt) && searchSerial && searchMacNorm) {
+          chk = await secondPool.query(
+            `SELECT password_router, modelo, fabricante, cpe_sn, mac 
+             FROM etiquetas_scan_onu 
+             WHERE ( UPPER(TRIM(gpon_sn)) = UPPER(TRIM($1)) OR ( $2 != '' AND UPPER(TRIM(gpon_sn)) = UPPER(TRIM($2)) ) )
+               AND UPPER(TRIM(cpe_sn)) = UPPER(TRIM($3))
+               AND ( UPPER(REPLACE(REPLACE(TRIM(mac), ':', ''), '-', '')) = $4 OR UPPER(TRIM(mac)) = $4 )
+             LIMIT 1`,
+            [searchPon || '', ponAlt || '', searchSerial, searchMacNorm]
+          );
+        } else if ((searchPon || ponAlt) && searchSerial) {
+          chk = await secondPool.query(
+            `SELECT password_router, modelo, fabricante, cpe_sn, mac 
+             FROM etiquetas_scan_onu 
+             WHERE ( UPPER(TRIM(gpon_sn)) = UPPER(TRIM($1)) OR ( $2 != '' AND UPPER(TRIM(gpon_sn)) = UPPER(TRIM($2)) ) )
+               AND UPPER(TRIM(cpe_sn)) = UPPER(TRIM($3))
+             LIMIT 1`,
+            [searchPon || '', ponAlt || '', searchSerial]
+          );
+        } else if (searchPon || ponAlt) {
           chk = await secondPool.query(
             `SELECT password_router, modelo, fabricante, cpe_sn, mac 
              FROM etiquetas_scan_onu 
              WHERE UPPER(TRIM(gpon_sn)) = UPPER(TRIM($1))
                 OR ( $2 != '' AND UPPER(TRIM(gpon_sn)) = UPPER(TRIM($2)) )
-             ORDER BY (CASE WHEN cpe_sn IS NOT NULL AND cpe_sn != '' AND UPPER(cpe_sn) != 'N/A' THEN 1 ELSE 0 END) DESC,
-                      (CASE WHEN mac IS NOT NULL AND mac != '' AND UPPER(mac) != 'N/A' THEN 1 ELSE 0 END) DESC
              LIMIT 1`,
             [searchPon || '', ponAlt || '']
           );
-        }
-
-        // 2. Fallback por Serial somente se não encontrou nada pelo GPON
-        if ((!chk || chk.rows.length === 0) && searchSerial) {
+        } else if (searchSerial) {
           chk = await secondPool.query(
             `SELECT password_router, modelo, fabricante, cpe_sn, mac 
              FROM etiquetas_scan_onu 
              WHERE UPPER(TRIM(cpe_sn)) = UPPER(TRIM($1))
-             ORDER BY (CASE WHEN mac IS NOT NULL AND mac != '' AND UPPER(mac) != 'N/A' THEN 1 ELSE 0 END) DESC
              LIMIT 1`,
             [searchSerial]
+          );
+        } else if (searchMacNorm) {
+          chk = await secondPool.query(
+            `SELECT password_router, modelo, fabricante, cpe_sn, mac 
+             FROM etiquetas_scan_onu 
+             WHERE UPPER(REPLACE(REPLACE(TRIM(mac), ':', ''), '-', '')) = $1 OR UPPER(TRIM(mac)) = $1
+             LIMIT 1`,
+            [searchMacNorm]
           );
         }
 
@@ -3635,18 +3739,33 @@ async function handleEditarSeries(req, res) {
               editPonAlt = 'HWTC' + cleanNewGpon.slice(8);
             }
           }
+          const cleanNewMacNorm = cleanNewMac ? cleanNewMac.replace(/[^A-Za-z0-9]/g, '').toUpperCase() : '';
 
           let chk;
-          if (cleanNewGpon || editPonAlt) {
+          // Busca estrita conjunta: os 3 campos (GPON + Serial + MAC) DEVEM coincidir juntos
+          if ((cleanNewGpon || editPonAlt) && cleanNewSerial && cleanNewMacNorm) {
+            chk = await secondPool.query(`
+              SELECT password_router FROM etiquetas_scan_onu 
+              WHERE ( UPPER(TRIM(gpon_sn)) = UPPER(TRIM($1)) OR ( $2 != '' AND UPPER(TRIM(gpon_sn)) = UPPER(TRIM($2)) ) )
+                AND UPPER(TRIM(cpe_sn)) = UPPER(TRIM($3))
+                AND ( UPPER(REPLACE(REPLACE(TRIM(mac), ':', ''), '-', '')) = $4 OR UPPER(TRIM(mac)) = $4 )
+              LIMIT 1
+            `, [cleanNewGpon || '', editPonAlt || '', cleanNewSerial, cleanNewMacNorm]);
+          } else if ((cleanNewGpon || editPonAlt) && cleanNewSerial) {
+            chk = await secondPool.query(`
+              SELECT password_router FROM etiquetas_scan_onu 
+              WHERE ( UPPER(TRIM(gpon_sn)) = UPPER(TRIM($1)) OR ( $2 != '' AND UPPER(TRIM(gpon_sn)) = UPPER(TRIM($2)) ) )
+                AND UPPER(TRIM(cpe_sn)) = UPPER(TRIM($3))
+              LIMIT 1
+            `, [cleanNewGpon || '', editPonAlt || '', cleanNewSerial]);
+          } else if (cleanNewGpon || editPonAlt) {
             chk = await secondPool.query(`
               SELECT password_router FROM etiquetas_scan_onu 
               WHERE UPPER(TRIM(gpon_sn)) = UPPER(TRIM($1))
                  OR ( $2 != '' AND UPPER(TRIM(gpon_sn)) = UPPER(TRIM($2)) )
               LIMIT 1
             `, [cleanNewGpon || '', editPonAlt || '']);
-          }
-
-          if ((!chk || chk.rows.length === 0) && cleanNewSerial) {
+          } else if (cleanNewSerial) {
             chk = await secondPool.query(`
               SELECT password_router FROM etiquetas_scan_onu 
               WHERE UPPER(TRIM(cpe_sn)) = UPPER(TRIM($1))
@@ -4992,6 +5111,114 @@ app.post('/api/expedicao-tim/sync-all', async (req, res) => {
   } finally {
     client.release();
   }
+});
+
+// ============================================================
+// Romaneio Livre - Routes & Armazenamento MinIO / PostgreSQL
+// ============================================================
+let romaneiosLivresMemory = [];
+
+app.get('/api/romaneios-livres', async (req, res) => {
+  try {
+    const result = await pool.query(
+      `SELECT id, number, header_data, items, usuario, created_at, updated_at
+       FROM romaneios_livres
+       ORDER BY created_at DESC`
+    );
+    if (result.rows && result.rows.length > 0) {
+      const romaneios = result.rows.map(r => ({
+        id: r.id,
+        number: r.number,
+        headerData: r.header_data || {},
+        items: r.items || [],
+        usuario: r.usuario || 'ADMIN',
+        createdAt: r.created_at,
+        updatedAt: r.updated_at
+      }));
+      romaneiosLivresMemory = romaneios;
+      return res.json({ success: true, romaneios });
+    }
+  } catch (err) {
+    console.warn('PostgreSQL offline ao listar romaneios livres (consultando MinIO):', err.message);
+  }
+
+  try {
+    const minioList = await getExpedicaoMinio('romaneios-livres/index.json');
+    if (Array.isArray(minioList) && minioList.length > 0) {
+      romaneiosLivresMemory = minioList;
+      return res.json({ success: true, romaneios: minioList });
+    }
+  } catch (e) {}
+
+  res.json({ success: true, romaneios: romaneiosLivresMemory });
+});
+
+app.post('/api/romaneios-livres', async (req, res) => {
+  const { id, number, headerData, items, usuario } = req.body;
+  const romId = id || ('ROML-' + Date.now());
+  const nowIso = new Date().toISOString();
+
+  const record = {
+    id: romId,
+    number: number || 1,
+    headerData: headerData || {},
+    items: Array.isArray(items) ? items : [],
+    usuario: usuario || 'ADMIN',
+    createdAt: nowIso,
+    updatedAt: nowIso
+  };
+
+  // Atualizar memória e MinIO
+  const idx = romaneiosLivresMemory.findIndex(r => r.id === romId);
+  if (idx >= 0) {
+    record.createdAt = romaneiosLivresMemory[idx].createdAt || nowIso;
+    romaneiosLivresMemory[idx] = record;
+  } else {
+    romaneiosLivresMemory.unshift(record);
+  }
+
+  saveExpedicaoMinio(`romaneios-livres/${romId}.json`, record).catch(() => {});
+  saveExpedicaoMinio('romaneios-livres/index.json', romaneiosLivresMemory).catch(() => {});
+
+  try {
+    await pool.query(
+      `INSERT INTO romaneios_livres (id, number, header_data, items, usuario, created_at, updated_at)
+       VALUES ($1, $2, $3, $4, $5, NOW(), NOW())
+       ON CONFLICT (id) DO UPDATE SET
+         number = EXCLUDED.number,
+         header_data = EXCLUDED.header_data,
+         items = EXCLUDED.items,
+         usuario = EXCLUDED.usuario,
+         updated_at = NOW()`,
+      [
+        romId,
+        record.number,
+        JSON.stringify(record.headerData),
+        JSON.stringify(record.items),
+        record.usuario
+      ]
+    );
+    res.json({ success: true, romaneio: record, message: 'Romaneio livre salvo com sucesso!' });
+  } catch (err) {
+    console.warn('PostgreSQL offline ao salvar romaneio livre (salvo no MinIO):', err.message);
+    res.json({ success: true, romaneio: record, offline: true, message: 'Romaneio livre salvo no MinIO!' });
+  }
+});
+
+app.delete('/api/romaneios-livres/:id', async (req, res) => {
+  const { id } = req.params;
+  romaneiosLivresMemory = romaneiosLivresMemory.filter(r => r.id !== id);
+
+  deleteExpedicaoMinio(`romaneios-livres/${id}.json`).catch(() => {});
+  saveExpedicaoMinio('romaneios-livres/index.json', romaneiosLivresMemory).catch(() => {});
+
+  try {
+    await pool.query(`DELETE FROM romaneios_livres WHERE id = $1`, [id]);
+  } catch (err) {
+    console.warn('PostgreSQL offline ao excluir romaneio livre:', err.message);
+  }
+
+  res.json({ success: true, message: 'Romaneio livre excluído com sucesso.' });
 });
 
 const PORT = process.env.PORT || 4000;
