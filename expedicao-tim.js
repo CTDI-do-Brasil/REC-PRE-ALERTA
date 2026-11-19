@@ -1907,9 +1907,14 @@ function openRomaneioModal(lotId) {
   if (!lot) return;
   CURRENT_ROMANEIO_LOT_ID = lot.id;
 
+  const html = buildRomaneioHtml(lot);
   const preview = document.getElementById('romaneio-paper-preview');
   if (preview) {
-    preview.innerHTML = buildRomaneioHtml(lot);
+    preview.innerHTML = html;
+  }
+  const printEl = document.getElementById('print-only-container');
+  if (printEl) {
+    printEl.innerHTML = html;
   }
   openModal('modal-romaneio');
 }

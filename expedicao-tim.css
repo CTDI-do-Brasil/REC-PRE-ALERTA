@@ -855,10 +855,16 @@
     padding: 0 !important;
     margin: 0 !important;
   }
+  /* Oculta toda a interface do sistema e modais (mesmo que com .open / display: flex) */
   .app-container,
   .sidebar,
   .content,
   .modal-overlay,
+  .modal-overlay.open,
+  .exp-modal-scope.modal-overlay,
+  .exp-modal-scope.modal-overlay.open,
+  #modal-romaneio,
+  .modal,
   #toast-container,
   .no-print {
     display: none !important;
@@ -874,18 +880,30 @@
   }
   #print-only-container .romaneio-paper {
     box-shadow: none !important;
+    border: none !important;
+    border-radius: 0 !important;
     max-width: 100% !important;
+    width: 100% !important;
     padding: 0 !important;
     margin: 0 !important;
-    border-radius: 0 !important;
   }
   #print-only-container table th,
   #print-only-container table td {
     color: #000000 !important;
   }
+  #print-only-container table {
+    page-break-inside: auto;
+  }
+  #print-only-container tr {
+    page-break-inside: avoid;
+    page-break-after: auto;
+  }
+  #print-only-container thead {
+    display: table-header-group;
+  }
   @page {
     size: A4 portrait;
-    margin: 12mm 15mm;
+    margin: 10mm 12mm;
   }
 }
 

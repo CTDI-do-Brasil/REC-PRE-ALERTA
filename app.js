@@ -4975,7 +4975,12 @@ function buildRomaneioLivreHtml() {
 function renderRomaneioLivrePreview() {
     const previewEl = document.getElementById('roml-paper-preview');
     if (!previewEl) return;
-    previewEl.innerHTML = buildRomaneioLivreHtml();
+    const html = buildRomaneioLivreHtml();
+    previewEl.innerHTML = html;
+    const printEl = document.getElementById('print-only-container');
+    if (printEl) {
+        printEl.innerHTML = html;
+    }
 }
 
 function printRomaneioLivre() {
